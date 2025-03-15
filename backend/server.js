@@ -8,10 +8,14 @@ const path = require('path');
 const diskusage = require('diskusage');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 6005;
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: '*', // Разрешить запросы с любого источника (только для разработки!)
+  methods: ['GET', 'POST', 'DELETE', 'PUT', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
 // Пути к смонтированным дискам на веб-сервере

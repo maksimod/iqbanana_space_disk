@@ -7,7 +7,7 @@ services:
       dockerfile: Dockerfile
     container_name: disk-manager-backend
     ports:
-      - "5000:5000"
+      - "6005:80"
     volumes:
       - /mnt/disk_sda1:/mnt/disk_sda1
       - /mnt/disk_sdb1:/mnt/disk_sdb1
@@ -24,7 +24,7 @@ services:
       dockerfile: Dockerfile
     container_name: disk-manager-frontend
     ports:
-      - "80:80"
+      - "6001:80"
     depends_on:
       - backend
     restart: unless-stopped

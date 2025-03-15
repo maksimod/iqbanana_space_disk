@@ -13,7 +13,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   
-  const API_URL = 'http://localhost:5000/api';
+  const API_URL = 'http://192.168.0.100:6005/api';
   
   // Загрузка списка дисков при монтировании компонента
   useEffect(() => {

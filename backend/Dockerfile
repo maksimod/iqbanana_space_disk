@@ -13,7 +13,7 @@ RUN npm install
 COPY . .
 
 # Экспорт порта
-EXPOSE 5000
+EXPOSE 6005
 
 # Запуск сервера
 CMD ["node", "server.js"]
