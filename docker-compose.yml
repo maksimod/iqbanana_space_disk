@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: disk-manager-backend
+    ports:
+      - "5000:5000"
+    volumes:
+      - /mnt/disk_sda1:/mnt/disk_sda1
+      - /mnt/disk_sdb1:/mnt/disk_sdb1
+      - /mnt/disk_sdb5:/mnt/disk_sdb5
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+    networks:
+      - disk-manager-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: disk-manager-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - disk-manager-network
+
+networks:
+  disk-manager-network:
+    driver: bridge
