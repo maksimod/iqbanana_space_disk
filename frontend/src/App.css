@@ -164,6 +164,26 @@ body {
   gap: 10px;
 }
 
+.upload-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.progress-bar {
+  width: 100px;
+  height: 10px;
+  background-color: #e9ecef;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background-color: #28a745;
+  border-radius: 5px;
+}
+
 input[type="file"] {
   max-width: 230px;
 }
@@ -238,6 +258,24 @@ input[type="text"] {
 
 .directory-name:hover {
   text-decoration: underline;
+}
+
+.file-actions-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.download-button {
+  background-color: #28a745;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.download-button:hover {
+  background-color: #218838;
 }
 
 .delete-button {

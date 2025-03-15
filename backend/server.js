@@ -202,6 +202,68 @@ app.post('/api/disks/:disk/createFolder', (req, res) => {
   });
 });
 
+// API для скачивания файла
+app.get('/api/disks/:disk/download', (req, res) => {
+  const { disk } = req.params;
+  const filePath = req.query.path || '';
+  
+  if (!disks[disk]) {
+    return res.status(404).json({ error: 'Диск не найден' });
+  }
+  
+  const fullPath = path.join(disks[disk], filePath);
+  
+  fs.stat(fullPath, (err, stats) => {
+    if (err) {
+      console.error('Ошибка при доступе к файлу:', err);
+      return res.status(404).json({ error: 'Файл не найден' });
+    }
+    
+    if (stats.isDirectory()) {
+      // Если это директория, создаем zip-архив
+      const archiveName = path.basename(filePath) || 'archive';
+      const zipFilePath = path.join('/tmp', `${archiveName}-${Date.now()}.zip`);
+      
+      const output = fs.createWriteStream(zipFilePath);
+      const archive = require('archiver')('zip', {
+        zlib: { level: 9 } // Максимальный уровень сжатия
+      });
+      
+      output.on('close', () => {
+        res.download(zipFilePath, `${archiveName}.zip`, (err) => {
+          if (err) {
+            console.error('Ошибка при отправке архива:', err);
+          }
+          
+          // Удаляем временный архив после отправки
+          fs.unlink(zipFilePath, (err) => {
+            if (err) console.error('Ошибка при удалении временного архива:', err);
+          });
+        });
+      });
+      
+      archive.on('error', (err) => {
+        console.error('Ошибка при создании архива:', err);
+        res.status(500).json({ error: 'Ошибка при создании архива' });
+      });
+      
+      archive.pipe(output);
+      archive.directory(fullPath, false);
+      archive.finalize();
+    } else {
+      // Если это файл, отправляем его напрямую
+      res.download(fullPath, path.basename(fullPath), (err) => {
+        if (err) {
+          console.error('Ошибка при скачивании файла:', err);
+          if (!res.headersSent) {
+            res.status(500).json({ error: 'Ошибка при скачивании файла' });
+          }
+        }
+      });
+    }
+  });
+});
+
 // Запуск сервера
 app.listen(PORT, () => {
   console.log(`Сервер запущен на порту ${PORT}`);

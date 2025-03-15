@@ -1,7 +1,7 @@
 // App.js
 import React, { useState, useEffect } from 'react';
 import './App.css';
-import { FaFolder, FaFile, FaTrash, FaUpload, FaFolderPlus, FaArrowLeft } from 'react-icons/fa';
+import { FaFolder, FaFile, FaTrash, FaUpload, FaFolderPlus, FaArrowLeft, FaDownload } from 'react-icons/fa';
 
 function App() {
   const [disks, setDisks] = useState([]);
@@ -12,6 +12,7 @@ function App() {
   const [folderName, setFolderName] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [uploadProgress, setUploadProgress] = useState(0);
   
   const API_URL = 'http://192.168.0.100:6005/api';
   
@@ -96,7 +97,7 @@ function App() {
     setSelectedFile(event.target.files[0]);
   };
   
-  // Загрузка файла
+  // Загрузка файла с прогрессом
   const handleUpload = async () => {
     if (!selectedFile) {
       alert('Пожалуйста, выберите файл для загрузки');
@@ -107,24 +108,38 @@ function App() {
     formData.append('file', selectedFile);
     
     try {
-      const response = await fetch(`${API_URL}/disks/${currentDisk}/upload?path=${currentPath}`, {
-        method: 'POST',
-        body: formData,
+      // Создаем XMLHttpRequest для отслеживания прогресса
+      const xhr = new XMLHttpRequest();
+      
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) {
+          const progress = Math.round((event.loaded / event.total) * 100);
+          setUploadProgress(progress);
+        }
       });
       
-      if (!response.ok) {
-        throw new Error('Ошибка при загрузке файла');
-      }
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+          setUploadProgress(0);
+          
+          if (xhr.status === 200) {
+            alert('Файл успешно загружен');
+            setSelectedFile(null);
+            document.getElementById('file-upload').value = '';
+            fetchFiles();
+            fetchDisks(); // Обновляем информацию о дисках после загрузки
+          } else {
+            alert('Ошибка при загрузке файла. Пожалуйста, попробуйте снова.');
+          }
+        }
+      };
       
-      const data = await response.json();
-      alert('Файл успешно загружен');
-      setSelectedFile(null);
-      document.getElementById('file-upload').value = '';
-      fetchFiles();
-      fetchDisks(); // Обновляем информацию о дисках после загрузки
+      xhr.open('POST', `${API_URL}/disks/${currentDisk}/upload?path=${currentPath}`, true);
+      xhr.send(formData);
     } catch (err) {
       console.error('Ошибка при загрузке файла:', err);
       alert('Не удалось загрузить файл. Пожалуйста, попробуйте снова.');
+      setUploadProgress(0);
     }
   };
   
@@ -155,6 +170,20 @@ function App() {
       console.error('Ошибка при удалении файла:', err);
       alert('Не удалось удалить файл. Пожалуйста, попробуйте снова.');
     }
+  };
+  
+  // Скачивание файла или папки
+  const handleDownload = (file) => {
+    // Создаем ссылку для скачивания
+    const downloadUrl = `${API_URL}/disks/${currentDisk}/download?path=${file.path}`;
+    
+    // Создаем временный элемент <a> для скачивания
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = file.name; // Имя файла для скачивания
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
   
   // Создание новой папки
@@ -271,6 +300,17 @@ function App() {
               <button className="action-button" onClick={handleUpload}>
                 <FaUpload /> Загрузить
               </button>
+              {uploadProgress > 0 && (
+                <div className="upload-progress">
+                  <div className="progress-bar">
+                    <div 
+                      className="progress-fill" 
+                      style={{ width: `${uploadProgress}%` }}
+                    ></div>
+                  </div>
+                  <span>{uploadProgress}%</span>
+                </div>
+              )}
             </div>
             
             <div className="create-folder-section">
@@ -279,6 +319,7 @@ function App() {
                 placeholder="Имя новой папки"
                 value={folderName}
                 onChange={(e) => setFolderName(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleCreateFolder()}
               />
               <button className="action-button" onClick={handleCreateFolder}>
                 <FaFolderPlus /> Создать папку
@@ -326,12 +367,22 @@ function App() {
                         </td>
                         <td>{file.isDirectory ? '-' : formatFileSize(file.size)}</td>
                         <td>
-                          <button 
-                            className="delete-button"
-                            onClick={() => handleDelete(file)}
-                          >
-                            <FaTrash />
-                          </button>
+                          <div className="file-actions-buttons">
+                            <button 
+                              className="download-button"
+                              onClick={() => handleDownload(file)}
+                              title="Скачать"
+                            >
+                              <FaDownload />
+                            </button>
+                            <button 
+                              className="delete-button"
+                              onClick={() => handleDelete(file)}
+                              title="Удалить"
+                            >
+                              <FaTrash />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
