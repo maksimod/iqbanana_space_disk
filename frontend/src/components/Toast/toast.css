@@ -1,0 +1,124 @@
+@import '../../styles/variables.css';
+
+/* Контейнер для уведомлений */
+.toast-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 350px;
+}
+
+/* Стили для уведомления */
+.toast {
+  background-color: white;
+  border-radius: var(--border-radius);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 15px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  animation: slideInRight 0.3s ease-out forwards;
+  border-left: 4px solid transparent;
+}
+
+/* Анимация появления уведомления */
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* Типы уведомлений */
+.toast-info {
+  border-left-color: var(--primary-color);
+}
+
+.toast-success {
+  border-left-color: var(--success-color);
+}
+
+.toast-warning {
+  border-left-color: var(--warning-color);
+}
+
+.toast-error {
+  border-left-color: var(--danger-color);
+}
+
+/* Содержимое уведомления */
+.toast-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex: 1;
+}
+
+/* Иконка уведомления */
+.toast-icon {
+  font-size: 20px;
+  margin-top: 2px;
+}
+
+.toast-info .toast-icon {
+  color: var(--primary-color);
+}
+
+.toast-success .toast-icon {
+  color: var(--success-color);
+}
+
+.toast-warning .toast-icon {
+  color: var(--warning-color);
+}
+
+.toast-error .toast-icon {
+  color: var(--danger-color);
+}
+
+/* Текст уведомления */
+.toast-message {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--secondary-color);
+  word-break: break-word;
+}
+
+/* Кнопка закрытия */
+.toast-close {
+  background: none;
+  border: none;
+  color: var(--gray-color);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0;
+  margin-left: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.toast-close:hover {
+  color: var(--gray-dark);
+}
+
+/* Адаптивность для мобильных устройств */
+@media (max-width: 576px) {
+  .toast-container {
+    left: 20px;
+    right: 20px;
+    max-width: none;
+  }
+  
+  .toast {
+    width: 100%;
+  }
+}

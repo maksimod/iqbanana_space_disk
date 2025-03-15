@@ -1,13 +1,13 @@
-# Dockerfile для фронтенда
-FROM node:16-alpine as build
+FROM node:18-alpine AS build
 
+# Установка рабочей директории
 WORKDIR /app
 
-# Копирование package.json и package-lock.json
+# Копирование файлов package.json и package-lock.json (если есть)
 COPY package*.json ./
 
 # Установка зависимостей
-RUN npm install
+RUN npm ci 
 
 # Копирование исходного кода
 COPY . .
@@ -15,10 +15,10 @@ COPY . .
 # Сборка приложения
 RUN npm run build
 
-# Вторая стадия для использования nginx
+# Этап запуска приложения
 FROM nginx:alpine
 
-# Копирование файлов сборки из предыдущей стадии
+# Копирование собранных файлов из предыдущего этапа
 COPY --from=build /app/build /usr/share/nginx/html
 
 # Копирование конфигурации nginx

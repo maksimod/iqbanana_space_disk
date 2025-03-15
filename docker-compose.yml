@@ -2,35 +2,33 @@ version: '3.8'
 
 services:
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    build: ./backend
     container_name: disk-manager-backend
-    ports:
-      - "6005:80"
-    volumes:
-      - /mnt/disk_sda1:/mnt/disk_sda1
-      - /mnt/disk_sdb1:/mnt/disk_sdb1
-      - /mnt/disk_sdb5:/mnt/disk_sdb5
     restart: unless-stopped
+    volumes:
+      - /mnt/disk_sda1:/mnt/disk_sda1:ro
+      - /mnt/disk_sdb1:/mnt/disk_sdb1:ro
+      - /mnt/disk_sdb5:/mnt/disk_sdb5:ro
+      - ./backend/logs:/app/logs
+    ports:
+      - "6005:6005"
     environment:
       - NODE_ENV=production
+      - PORT=6005
     networks:
-      - disk-manager-network
+      - app-network
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
+    build: ./frontend
     container_name: disk-manager-frontend
+    restart: unless-stopped
     ports:
       - "6001:80"
     depends_on:
       - backend
-    restart: unless-stopped
     networks:
-      - disk-manager-network
+      - app-network
 
 networks:
-  disk-manager-network:
+  app-network:
     driver: bridge

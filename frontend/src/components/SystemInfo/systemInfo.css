@@ -1,0 +1,129 @@
+@import '../../styles/variables.css';
+
+.system-info {
+  background-color: var(--white-color);
+  border-radius: var(--border-radius);
+  box-shadow: var(--box-shadow);
+  overflow: hidden;
+  margin-top: var(--spacing-lg);
+  transition: all 0.3s ease;
+}
+
+.system-info-header {
+  display: flex;
+  align-items: center;
+  padding: var(--spacing-md);
+  cursor: pointer;
+  background-color: var(--light-color);
+  border-bottom: 1px solid var(--gray-light);
+  transition: background-color 0.2s ease;
+}
+
+.system-info-header:hover {
+  background-color: var(--gray-light);
+}
+
+.system-info-icon {
+  margin-right: var(--spacing-sm);
+  color: var(--primary-color);
+}
+
+.system-info-toggle {
+  margin-left: auto;
+  color: var(--gray-color);
+  font-size: 12px;
+}
+
+.system-info-content {
+  padding: var(--spacing-md);
+  animation: fadeIn 0.3s ease-in;
+}
+
+.system-info-section {
+  margin-bottom: var(--spacing-md);
+}
+
+.system-info-section h4 {
+  display: flex;
+  align-items: center;
+  margin: 0 0 var(--spacing-sm) 0;
+  color: var(--secondary-color);
+  font-size: 16px;
+}
+
+.section-icon {
+  margin-right: var(--spacing-xs);
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--spacing-sm);
+}
+
+.info-item {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: var(--spacing-sm);
+}
+
+.info-label {
+  font-size: 12px;
+  color: var(--gray-color);
+  margin-bottom: 2px;
+}
+
+.info-value {
+  font-size: 14px;
+}
+
+.disk-mount-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--spacing-sm);
+}
+
+.disk-mount-item {
+  display: flex;
+  flex-direction: column;
+  padding: var(--spacing-sm);
+  background-color: var(--light-color);
+  border-radius: var(--border-radius-sm);
+}
+
+.disk-name {
+  font-weight: 500;
+  color: var(--primary-color);
+}
+
+.disk-mount {
+  font-size: 12px;
+  color: var(--gray-color);
+  margin-top: 2px;
+  word-break: break-all;
+}
+
+.system-info-loading, .system-info-error {
+  padding: var(--spacing-md);
+  text-align: center;
+  color: var(--gray-color);
+}
+
+.system-info-error {
+  color: var(--danger-color);
+}
+
+/* Анимации */
+.system-info.expanded {
+  margin-bottom: var(--spacing-lg);
+}
+
+.system-info.collapsed {
+  margin-bottom: var(--spacing-sm);
+}
+
+@media (max-width: 576px) {
+  .info-grid, .disk-mount-list {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,111 @@
+@import './variables.css';
+
+/* Стили для дисков и визуализации использования */
+.disks-container {
+  background-color: var(--white-color);
+  border-radius: var(--border-radius);
+  padding: var(--spacing-lg);
+  box-shadow: var(--box-shadow);
+}
+
+.disks-container h2 {
+  margin-bottom: var(--spacing-lg);
+  color: var(--secondary-color);
+  text-align: center;
+}
+
+.disks-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: var(--spacing-lg);
+}
+
+.disk-card {
+  background-color: var(--light-color);
+  border-radius: var(--border-radius);
+  padding: var(--spacing-md);
+  box-shadow: var(--box-shadow-sm);
+  cursor: pointer;
+  transition: transform var(--transition-time), box-shadow var(--transition-time);
+}
+
+.disk-card:hover {
+  transform: translateY(-5px);
+  box-shadow: var(--box-shadow-lg);
+}
+
+.disk-card h3 {
+  margin-bottom: var(--spacing-md);
+  color: var(--secondary-color);
+}
+
+.usage-bar {
+  height: 10px;
+  background-color: var(--gray-light);
+  border-radius: 5px;
+  margin-bottom: var(--spacing);
+  overflow: hidden;
+}
+
+.usage-fill {
+  height: 100%;
+  background-color: var(--primary-color);
+  border-radius: 5px;
+}
+
+.disk-info {
+  font-size: 14px;
+  margin-bottom: 5px;
+  color: var(--gray-color);
+}
+
+.error-text {
+  color: var(--error-border);
+}
+
+/* Стили для круговой диаграммы */
+.disk-usage-chart {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: var(--spacing-md);
+}
+
+.disk-usage-chart .chart {
+  width: 120px;
+  height: 120px;
+  margin-bottom: var(--spacing-md);
+}
+
+.usage-details {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.usage-detail {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+}
+
+.usage-detail .label {
+  color: var(--gray-color);
+}
+
+.usage-detail .value {
+  font-weight: 500;
+  color: var(--secondary-color);
+}
+
+@media (max-width: 768px) {
+  .disks-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .disk-usage-chart .chart {
+    width: 100px;
+    height: 100px;
+  }
+}

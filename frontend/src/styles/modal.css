@@ -1,0 +1,115 @@
+@import './variables.css';
+
+/* Стили для модальных окон */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.file-info-modal {
+  background-color: var(--white-color);
+  border-radius: var(--border-radius);
+  box-shadow: 0 5px 20px rgba(0, 0, 0, 0.2);
+  width: 90%;
+  max-width: 500px;
+  animation: slideInFromBottom 0.3s ease-out;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-bottom: 1px solid var(--gray-light);
+}
+
+.modal-header h3 {
+  margin: 0;
+  color: var(--secondary-color);
+  font-size: 18px;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  color: var(--gray-color);
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: 50%;
+  transition: background-color var(--transition-time), color var(--transition-time);
+}
+
+.close-button:hover {
+  background-color: var(--gray-light);
+  color: var(--secondary-color);
+}
+
+.file-info-content {
+  padding: var(--spacing-lg);
+  display: flex;
+  gap: var(--spacing-lg);
+}
+
+.file-icon-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-right: var(--spacing);
+}
+
+.file-info-icon {
+  font-size: 60px;
+  margin-bottom: var(--spacing-sm);
+}
+
+.file-extension {
+  background-color: var(--gray-light);
+  color: var(--gray-dark);
+  padding: 2px 6px;
+  border-radius: var(--border-radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.file-details {
+  flex: 1;
+}
+
+.file-detail-row {
+  margin-bottom: var(--spacing);
+  display: flex;
+  flex-direction: column;
+}
+
+.detail-label {
+  font-size: 14px;
+  color: var(--gray-color);
+  margin-bottom: 2px;
+}
+
+.detail-value {
+  font-size: 16px;
+  word-break: break-word;
+}
+
+.modal-footer {
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-top: 1px solid var(--gray-light);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing);
+}
