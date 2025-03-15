@@ -192,9 +192,10 @@ app.post('/api/disks/:disk/createFolder', (req, res) => {
   
   const fullPath = path.join(disks[disk], folderPath, folderName);
   
-  fs.mkdir(fullPath, { recursive: true }, (err) => {
+  // Используем наш специальный скрипт через sudo
+  exec(`sudo /usr/local/bin/create-folder.sh "${fullPath}"`, (err, stdout, stderr) => {
     if (err) {
-      console.error('Ошибка при создании директории:', err);
+      console.error('Ошибка при создании директории:', err, stderr);
       return res.status(500).json({ error: 'Не удалось создать директорию' });
     }
     
