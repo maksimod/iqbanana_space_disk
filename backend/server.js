@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 6005;
 
 // Middleware
 app.use(cors({
-  origin: '*', // Разрешить запросы с любого источника (только для разработки!)
+  origin: ['http://46.35.241.37:6001', 'http://localhost:6001'], // Specify allowed origins
   methods: ['GET', 'POST', 'DELETE', 'PUT', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));

@@ -14,7 +14,8 @@ function App() {
   const [error, setError] = useState('');
   const [uploadProgress, setUploadProgress] = useState(0);
   
-  const API_URL = 'http://192.168.0.100:6005/api';
+  // Use relative URL for API requests
+  const API_URL = 'http://46.35.241.37:6005/api';
   
   // Загрузка списка дисков при монтировании компонента
   useEffect(() => {
