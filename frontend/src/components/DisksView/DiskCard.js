@@ -1,3 +1,4 @@
+// frontend/src/components/DisksView/DiskCard.js
 import React from 'react';
 import { formatFileSize, calculateUsagePercent } from '../../utils/formatters';
 import DiskUsageChart from './DiskUsageChart';
@@ -26,6 +27,8 @@ const DiskCard = ({ disk, onSelect }) => {
               style={{ width: `${calculateUsagePercent(disk.used, disk.total)}%` }}
             ></div>
           </div>
+          
+          {/* Убираем дублирующий блок с размерами, если он есть */}
         </>
       )}
     </div>

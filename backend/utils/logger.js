@@ -11,6 +11,33 @@ if (!fs.existsSync(logDir)) {
 const errorLogPath = path.join(logDir, 'error.log');
 const accessLogPath = path.join(logDir, 'access.log');
 
+
+const debugLogPath = path.join(logDir, 'debug.log');
+
+/**
+ * Детальное логирование для отладки
+ * @param {string} message - сообщение для логирования
+ * @param {object} data - дополнительные данные
+ */
+const debug = (message, data = null) => {
+  const timestamp = new Date().toISOString();
+  let logMessage = `[${timestamp}] [DEBUG] ${message}`;
+  
+  if (data) {
+    logMessage += `\nData: ${typeof data === 'object' ? JSON.stringify(data, null, 2) : data}`;
+  }
+  
+  logMessage += '\n';
+  
+  // Вывод в консоль
+  console.debug('\x1b[35m%s\x1b[0m', logMessage);
+  
+  // Запись в файл
+  fs.appendFile(debugLogPath, logMessage, (err) => {
+    if (err) console.error(`Ошибка записи в лог отладки: ${err.message}`);
+  });
+};
+
 /**
  * Логирование в файл и консоль
  * @param {string} message - сообщение для логирования
@@ -93,5 +120,6 @@ module.exports = {
   info,
   warn,
   error,
+  debug,
   requestLogger
 };

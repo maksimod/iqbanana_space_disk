@@ -18,40 +18,53 @@ const getFiles = (req, res, next) => {
   }
   
   const fullPath = path.join(config.disks[disk], folderPath);
-  logger.info(`Запрос списка файлов: ${disk}:${folderPath}`);
+  logger.info(`Запрос списка файлов: ${disk}:${folderPath} (полный путь: ${fullPath})`);
   
-  fs.readdir(fullPath, { withFileTypes: true }, (err, files) => {
+  // Проверяем существование и доступность директории
+  fs.access(fullPath, fs.constants.F_OK | fs.constants.R_OK, (err) => {
     if (err) {
-      logger.error(`Ошибка при чтении директории: ${fullPath}`, err);
-      return res.status(500).json({ error: 'Не удалось прочитать директорию' });
+      logger.error(`Ошибка доступа к директории: ${fullPath}`, err);
+      return res.status(404).json({ error: 'Директория не найдена или нет прав на чтение' });
     }
     
-    try {
-      const filesList = files.map(file => {
-        const isDirectory = file.isDirectory();
-        const filePath = path.join(fullPath, file.name);
-        let fileSize = 0;
-        
-        try {
-          const stats = fs.statSync(filePath);
-          fileSize = stats.size;
-        } catch (error) {
-          logger.warn(`Ошибка при получении размера для ${filePath}`, error);
-        }
-        
-        return {
-          name: file.name,
-          isDirectory,
-          size: fileSize,
-          path: path.join(folderPath, file.name)
-        };
-      });
+    // Получаем список файлов
+    fs.readdir(fullPath, { withFileTypes: true }, (err, files) => {
+      if (err) {
+        logger.error(`Ошибка при чтении директории: ${fullPath}`, err);
+        return res.status(500).json({ error: 'Не удалось прочитать директорию' });
+      }
       
-      logger.info(`Получено ${filesList.length} файлов и папок из ${disk}:${folderPath}`);
-      res.json(filesList);
-    } catch (error) {
-      next(error);
-    }
+      try {
+        // Для лучшей отладки логируем содержимое директории
+        logger.info(`Найдено ${files.length} файлов в директории ${fullPath}`);
+        
+        const filesList = files.map(file => {
+          const isDirectory = file.isDirectory();
+          const filePath = path.join(fullPath, file.name);
+          let fileSize = 0;
+          
+          try {
+            const stats = fs.statSync(filePath);
+            fileSize = stats.size;
+          } catch (error) {
+            logger.warn(`Ошибка при получении размера для ${filePath}`, error);
+          }
+          
+          return {
+            name: file.name,
+            isDirectory,
+            size: fileSize,
+            path: path.join(folderPath, file.name)
+          };
+        });
+        
+        logger.info(`Отправка списка из ${filesList.length} файлов и папок`);
+        res.json(filesList);
+      } catch (error) {
+        logger.error(`Ошибка при обработке списка файлов: ${fullPath}`, error);
+        next(error);
+      }
+    });
   });
 };
 

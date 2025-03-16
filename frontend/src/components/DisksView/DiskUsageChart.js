@@ -8,7 +8,12 @@ const DiskUsageChart = ({ used, total, free }) => {
   // Рассчитываем угол для заполненной части
   const usedPercent = calculateUsagePercent(used, total);
   const angle = (usedPercent / 100) * 360;
-  
+
+  // Явно форматируем размеры здесь
+  const formattedTotal = formatFileSize(total);
+  const formattedUsed = formatFileSize(used);
+  const formattedFree = formatFileSize(free);
+
   // Цвета для диаграммы в зависимости от заполненности
   const getChartColor = (percent) => {
     if (percent < 70) return '#3498db'; // синий
@@ -59,15 +64,15 @@ const DiskUsageChart = ({ used, total, free }) => {
       <div className="usage-details">
         <div className="usage-detail">
           <span className="label">Всего:</span>
-          <span className="value">{formatFileSize(total)}</span>
+          <span className="value">{formattedTotal}</span>
         </div>
         <div className="usage-detail">
           <span className="label">Занято:</span>
-          <span className="value">{formatFileSize(used)}</span>
+          <span className="value">{formattedUsed}</span>
         </div>
         <div className="usage-detail">
           <span className="label">Свободно:</span>
-          <span className="value">{formatFileSize(free)}</span>
+          <span className="value">{formattedFree}</span>
         </div>
       </div>
     </div>
