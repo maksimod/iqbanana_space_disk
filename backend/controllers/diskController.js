@@ -29,8 +29,8 @@ const getDisks = async (req, res, next) => {
           };
         }
         
-        // Используем df -h для получения человекочитаемых размеров
-        const { stdout } = await execPromise(`df -h "${mountPoint}" | tail -n 1`);
+        // Получаем данные в мегабайтах для большей точности
+        const { stdout } = await execPromise(`df --block-size=1M "${mountPoint}" | tail -n 1`);
         
         // Парсим вывод команды df
         const parts = stdout.trim().split(/\s+/);
@@ -47,12 +47,18 @@ const getDisks = async (req, res, next) => {
           };
         }
         
-        // Преобразуем значения размеров в байты для единообразия
-        const total = convertToBytes(parts[1]);
-        const used = convertToBytes(parts[2]);
-        const free = convertToBytes(parts[3]);
+        // Получаем значения в мегабайтах и убираем 'M' суффикс
+        const totalMB = parseInt(parts[1].replace('M', ''), 10);
+        const usedMB = parseInt(parts[2].replace('M', ''), 10);
+        const freeMB = parseInt(parts[3].replace('M', ''), 10);
         
-        logger.info(`Диск ${name} (${mountPoint}): total=${parts[1]}, used=${parts[2]}, free=${parts[3]}`);
+        // Конвертируем в байты для единообразия и сохранения точности
+        const total = totalMB * 1024 * 1024;
+        const used = usedMB * 1024 * 1024;
+        const free = freeMB * 1024 * 1024;
+        
+        logger.info(`Диск ${name} размеры (мегабайты): total=${totalMB}MB, used=${usedMB}MB, free=${freeMB}MB`);
+        logger.info(`Диск ${name} размеры (в байтах): total=${total}, used=${used}, free=${free}`);
         
         return {
           name,
@@ -102,11 +108,11 @@ function convertToBytes(sizeStr) {
   if (!sizeStr || typeof sizeStr !== 'string') return 0;
   
   // Находим число и единицу измерения (K, M, G, T)
-  const match = sizeStr.match(/^(\d+(?:\.\d+)?)([KMGT])?/i);
+  const match = sizeStr.match(/^([\d.]+)([KMGT])?/i);
   if (!match) return 0;
   
   const [, size, unit] = match;
-  const numSize = parseFloat(size);
+  const numSize = parseFloat(size); // Используем parseFloat вместо parseInt
   
   switch (unit && unit.toUpperCase()) {
     case 'T': return numSize * 1024 * 1024 * 1024 * 1024;
