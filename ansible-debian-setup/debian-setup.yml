@@ -1,0 +1,23 @@
+---
+- name: Настройка Debian сервера
+  hosts: debian_servers
+  become: false  # Начинаем без sudo, т.к. его еще нужно установить
+  gather_facts: false  # Отключаем сбор фактов, т.к. может потребовать sudo
+
+  tasks:
+    - name: Установка sudo
+      raw: apt-get update && apt-get install -y sudo
+      register: sudo_install
+      changed_when: "'0 upgraded, 0 newly installed' not in sudo_install.stdout"
+
+    - name: Настройка sudo для текущего пользователя
+      raw: echo "debianuser ALL=(ALL:ALL) NOPASSWD:ALL" | tee /etc/sudoers.d/debianuser
+      register: sudo_config
+      changed_when: sudo_config.rc == 0
+
+  roles:
+    - common
+    - network
+    - users
+    - database
+    - docker

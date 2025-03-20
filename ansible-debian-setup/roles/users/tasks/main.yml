@@ -1,0 +1,38 @@
+---
+# roles/users/tasks/main.yml
+- name: Создание нового пользователя aller
+  user:
+    name: aller
+    password: "{{ '2864' | password_hash('sha512') }}"
+    shell: /bin/bash
+    groups: sudo
+    append: yes
+    state: present
+  become: yes
+
+- name: Копирование домашней директории от debianuser к aller
+  shell: rsync -a /home/debianuser/ /home/aller/
+  become: yes
+  changed_when: false
+
+- name: Изменение владельца файлов в домашней директории aller
+  file:
+    path: /home/aller
+    owner: aller
+    group: aller
+    recurse: yes
+  become: yes
+
+- name: Настройка sudo для нового пользователя
+  copy:
+    content: "aller ALL=(ALL:ALL) NOPASSWD:ALL"
+    dest: /etc/sudoers.d/aller
+    mode: '0440'
+  become: yes
+
+- name: Удаление старой конфигурации sudo
+  file:
+    path: /etc/sudoers.d/debianuser
+    state: absent
+  become: yes
+  when: ansible_user != 'debianuser'

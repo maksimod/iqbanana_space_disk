@@ -1,0 +1,40 @@
+---
+# roles/database/tasks/main.yml
+- name: Установка зависимостей для PostgreSQL
+  apt:
+    name: 
+      - gnupg2
+      - lsb-release
+    state: present
+  become: yes
+
+- name: Добавление ключа репозитория PostgreSQL
+  apt_key:
+    url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    state: present
+  become: yes
+
+- name: Добавление репозитория PostgreSQL
+  apt_repository:
+    repo: "deb http://apt.postgresql.org/pub/repos/apt/ {{ ansible_distribution_release }}-pgdg main"
+    state: present
+    filename: pgdg
+  become: yes
+
+- name: Обновление списка пакетов после добавления репозитория
+  apt:
+    update_cache: yes
+  become: yes
+
+- name: Установка PostgreSQL
+  apt:
+    name: postgresql
+    state: present
+  become: yes
+
+- name: Убедимся, что служба PostgreSQL запущена
+  service:
+    name: postgresql
+    state: started
+    enabled: yes
+  become: yes

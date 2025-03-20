@@ -1,0 +1,21 @@
+---
+# roles/network/tasks/main.yml
+- name: Получение имени сетевого интерфейса
+  shell: "ip -o -4 route show to default | awk '{print $5}'"
+  register: interface_name
+  become: yes
+  changed_when: false
+
+- name: Создание файла конфигурации сети для статического IP
+  template:
+    src: interfaces.j2
+    dest: /etc/network/interfaces
+  become: yes
+  register: network_config
+
+- name: Перезапуск сетевой службы
+  service:
+    name: networking
+    state: restarted
+  become: yes
+  when: network_config.changed

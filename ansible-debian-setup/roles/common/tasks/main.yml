@@ -1,0 +1,30 @@
+---
+# roles/common/tasks/main.yml
+- name: Обновление списка пакетов
+  apt:
+    update_cache: yes
+  become: yes
+
+- name: Установка python3
+  apt:
+    name: python3
+    state: present
+  become: yes
+
+- name: Установка python3-pip
+  apt:
+    name: python3-pip
+    state: present
+  become: yes
+
+- name: Установка nano
+  apt:
+    name: nano
+    state: present
+  become: yes
+
+- name: Установка samba
+  apt:
+    name: samba
+    state: present
+  become: yes

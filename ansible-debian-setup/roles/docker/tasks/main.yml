@@ -1,0 +1,56 @@
+---
+# roles/docker/tasks/main.yml
+- name: Установка зависимостей для Docker
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    state: present
+  become: yes
+
+- name: Добавление ключа GPG для Docker
+  apt_key:
+    url: https://download.docker.com/linux/debian/gpg
+    state: present
+  become: yes
+
+- name: Добавление репозитория Docker
+  apt_repository:
+    repo: "deb [arch=amd64] https://download.docker.com/linux/debian {{ ansible_distribution_release }} stable"
+    state: present
+    filename: docker
+  become: yes
+
+- name: Установка Docker
+  apt:
+    name: 
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: Установка Docker Compose
+  get_url:
+    url: https://github.com/docker/compose/releases/download/v2.18.1/docker-compose-linux-x86_64
+    dest: /usr/local/bin/docker-compose
+    mode: '0755'
+  become: yes
+
+- name: Добавление пользователя в группу docker
+  user:
+    name: "{{ 'aller' if ansible_user == 'aller' else ansible_user }}"
+    groups: docker
+    append: yes
+  become: yes
+
+- name: Запуск и включение службы Docker
+  service:
+    name: docker
+    state: started
+    enabled: yes
+  become: yes
