@@ -15,11 +15,11 @@ const config = {
   apiVersion: 'v1',
   
   // Пути к смонтированным дискам на веб-сервере
- disks: {
- 'disk_sda_1': '/mnt/disk_sda_1',
- 'disk_sdb_1': '/mnt/disk_sdb_1',
- 'disk_sdb_5': '/mnt/disk_sdb_5'
- }
+  disks: {
+    'disk_sda1': '/mnt/disk_sda1',
+    'disk_sdb1': '/mnt/disk_sdb1',
+    'disk_sdb5': '/mnt/disk_sdb5'
+  }
 };
 
 module.exports = config;

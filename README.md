@@ -185,3 +185,11 @@ npm start
   - `/mnt/disk_sdb1`
   - `/mnt/disk_sdb5`
 
+
+
+ПОСЛЕ ЗАПУСКА sync-disks.sh ВЫПОЛНИТЬ:
+sudo crontab -e
+@reboot /home/apper/iqbanana-disk/sync-disks.sh >> /var/log/disk-monitor/sync.log 2>&1
+
+
+НА СЕРВЕРЕ-ХРАНИЛИЩЕ ВЫПОЛНИТЬ export-disks.sh
