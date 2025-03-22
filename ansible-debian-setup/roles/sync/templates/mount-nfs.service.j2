@@ -1,18 +1,18 @@
 [Unit]
-Description=Mount NFS Disks from Agger Server
-After=network-online.target rpcbind.service
+Description=Монтирование NFS дисков
+After=network-online.target
 Wants=network-online.target
 Requires=rpcbind.service
+After=rpcbind.service
 
 [Service]
 Type=oneshot
-ExecStartPre=/bin/sleep 10
-ExecStart=/home/apper/mount-nfs.sh --force
+ExecStart=/home/apper/mount-nfs.sh
 RemainAfterExit=yes
 User=root
-TimeoutStartSec=180
+TimeoutSec=180
 Restart=on-failure
-RestartSec=30
+RestartSec=30s
 
 [Install]
 WantedBy=multi-user.target 

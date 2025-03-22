@@ -37,58 +37,60 @@ log() {
 log "Запуск скрипта монтирования NFS"
 
 # Проверка наличия необходимых пакетов
-if ! dpkg -l | grep -q "nfs-common"; then
-    log "ОШИБКА: Пакет nfs-common не установлен. Устанавливаем..."
+if ! command -v showmount &> /dev/null || ! command -v mount.nfs &> /dev/null; then
+    log "ОШИБКА: Пакеты NFS не установлены. Устанавливаем..."
     apt-get update && apt-get install -y nfs-common rpcbind
     systemctl start rpcbind
     systemctl enable rpcbind
 fi
 
+# Проверка и запуск необходимых сервисов
+if ! systemctl is-active --quiet rpcbind; then
+    log "Сервис rpcbind не запущен. Запускаем..."
+    systemctl start rpcbind
+fi
+
 # Проверка доступности NFS сервера
 log "Проверка доступности сервера $REMOTE_IP..."
+server_available=false
 for i in $(seq 1 $RETRY_COUNT); do
     if ping -c 1 -W 2 $REMOTE_IP >/dev/null 2>&1; then
         log "Сервер $REMOTE_IP доступен!"
+        server_available=true
         break
     else
         log "Попытка $i: Сервер $REMOTE_IP не отвечает. Повторная попытка через $RETRY_DELAY секунды..."
         sleep $RETRY_DELAY
-        if [ $i -eq $RETRY_COUNT ]; then
-            log "ОШИБКА: Сервер $REMOTE_IP недоступен после $RETRY_COUNT попыток."
-            exit 1
-        fi
     fi
 done
 
-# Проверка доступности RPC порта (111)
-log "Проверка доступности порта RPC (111)..."
-for i in $(seq 1 $RETRY_COUNT); do
-    if timeout 3 bash -c "echo > /dev/tcp/$REMOTE_IP/111" >/dev/null 2>&1; then
-        log "Порт RPC доступен!"
-        break
-    else
-        log "Попытка $i: Порт RPC недоступен. Повторная попытка через $RETRY_DELAY секунды..."
-        sleep $RETRY_DELAY
-        if [ $i -eq $RETRY_COUNT ]; then
-            log "ОШИБКА: Порт RPC недоступен после $RETRY_COUNT попыток."
-            exit 1
-        fi
-    fi
-done
+if [ "$server_available" = false ]; then
+    log "ОШИБКА: Сервер $REMOTE_IP недоступен после $RETRY_COUNT попыток."
+    exit 1
+fi
 
-# Проверка доступности NFS порта (2049)
-log "Проверка доступности порта NFS (2049)..."
-for i in $(seq 1 $RETRY_COUNT); do
-    if timeout 3 bash -c "echo > /dev/tcp/$REMOTE_IP/2049" >/dev/null 2>&1; then
-        log "Порт NFS доступен!"
-        break
-    else
-        log "Попытка $i: Порт NFS недоступен. Повторная попытка через $RETRY_DELAY секунды..."
-        sleep $RETRY_DELAY
-        if [ $i -eq $RETRY_COUNT ]; then
-            log "ОШИБКА: Порт NFS недоступен после $RETRY_COUNT попыток."
-            exit 1
+# Проверка доступности RPC и NFS портов
+for port in 111 2049; do
+    port_name="RPC"
+    [ $port -eq 2049 ] && port_name="NFS"
+    
+    log "Проверка доступности порта $port_name ($port)..."
+    port_available=false
+    
+    for i in $(seq 1 $RETRY_COUNT); do
+        if timeout 3 bash -c "echo > /dev/tcp/$REMOTE_IP/$port" >/dev/null 2>&1; then
+            log "Порт $port_name доступен!"
+            port_available=true
+            break
+        else
+            log "Попытка $i: Порт $port_name недоступен. Повторная попытка через $RETRY_DELAY секунды..."
+            sleep $RETRY_DELAY
         fi
+    done
+    
+    if [ "$port_available" = false ]; then
+        log "ОШИБКА: Порт $port_name недоступен после $RETRY_COUNT попыток."
+        exit 1
     fi
 done
 
@@ -119,10 +121,11 @@ done
 if [ "$success" = false ] || [ ${#exports[@]} -eq 0 ]; then
     log "Не удалось получить список экспортов. Используем стандартный список..."
     exports=(
+        "/mnt/disk_sda1"
         "/mnt/disk_sdb1"
         "/mnt/disk_sdb5"
-        "/mnt/disk_sda1"
         "/mnt/disk_sdc1"
+        "/mnt/disk_sdd1"
     )
 fi
 
@@ -132,7 +135,22 @@ for export_path in "${exports[@]}"; do
     log "  - $export_path"
 done
 
+# Создаем резервную копию /etc/fstab перед изменениями
+if [ ! -f "/etc/fstab.backup" ]; then
+    log "Создание резервной копии /etc/fstab..."
+    cp /etc/fstab /etc/fstab.backup
+fi
+
+# Очищаем предыдущие NFS записи из fstab, если используем force режим
+if [ "$FORCE_MODE" = true ]; then
+    log "Удаление предыдущих NFS монтирований из /etc/fstab..."
+    sed -i "/^$REMOTE_IP:/d" /etc/fstab
+fi
+
 # Перебор экспортов и их монтирование
+mounted_count=0
+failed_count=0
+
 for export_path in "${exports[@]}"; do
     # Создаем локальную точку монтирования с тем же именем
     dir_name=$(basename "$export_path")
@@ -146,34 +164,69 @@ for export_path in "${exports[@]}"; do
     fi
     
     # Проверяем, смонтирован ли уже этот экспорт и доступен ли он
-    if mountpoint -q "$mount_point" && timeout 2 ls -la "$mount_point" >/dev/null 2>&1; then
-        if [ "$FORCE_MODE" = true ]; then
-            log "Принудительное перемонтирование $mount_point..."
-            umount -f "$mount_point" 2>/dev/null || umount -l "$mount_point" 2>/dev/null
+    if mountpoint -q "$mount_point"; then
+        if timeout 2 ls -la "$mount_point" >/dev/null 2>&1; then
+            if [ "$FORCE_MODE" = true ]; then
+                log "Принудительное перемонтирование $mount_point..."
+                umount -f "$mount_point" 2>/dev/null || umount -l "$mount_point" 2>/dev/null
+            else
+                log "Точка $mount_point уже смонтирована и доступна. Пропускаем."
+                mounted_count=$((mounted_count + 1))
+                continue
+            fi
         else
-            log "Точка $mount_point уже смонтирована и доступна. Пропускаем."
-            continue
+            log "Точка $mount_point смонтирована, но не отвечает. Размонтирование..."
+            umount -f "$mount_point" 2>/dev/null || umount -l "$mount_point" 2>/dev/null
         fi
-    elif mountpoint -q "$mount_point"; then
-        log "Точка $mount_point смонтирована, но не отвечает. Размонтирование..."
-        umount -f "$mount_point" 2>/dev/null || umount -l "$mount_point" 2>/dev/null
     fi
     
     # Монтирование NFS экспорта
     log "Монтирование $REMOTE_IP:$export_path в $mount_point..."
-    if mount -t nfs -o rw,hard,timeo=600,retrans=3,proto=tcp,noatime $REMOTE_IP:$export_path $mount_point; then
-        log "Успешно смонтировано $mount_point"
-        
-        # Добавляем в /etc/fstab, если нет такой записи
-        if ! grep -q "$REMOTE_IP:$export_path" /etc/fstab; then
-            log "Добавление записи в /etc/fstab для автоматического монтирования..."
-            echo "$REMOTE_IP:$export_path $mount_point nfs rw,hard,timeo=600,retrans=3,proto=tcp,noatime 0 0" >> /etc/fstab
-            log "Запись добавлена в /etc/fstab"
+    mount_success=false
+    
+    for i in $(seq 1 3); do
+        if mount -t nfs -o rw,hard,timeo=600,retrans=3,proto=tcp,noatime $REMOTE_IP:$export_path $mount_point; then
+            log "Успешно смонтировано $mount_point"
+            mount_success=true
+            
+            # Добавляем в /etc/fstab, если нет такой записи
+            if ! grep -q "$REMOTE_IP:$export_path $mount_point" /etc/fstab; then
+                log "Добавление записи в /etc/fstab для автоматического монтирования..."
+                echo "$REMOTE_IP:$export_path $mount_point nfs rw,hard,timeo=600,retrans=3,proto=tcp,noatime 0 0" >> /etc/fstab
+                log "Запись добавлена в /etc/fstab"
+            fi
+            
+            mounted_count=$((mounted_count + 1))
+            break
+        else
+            log "Попытка $i: Не удалось смонтировать $REMOTE_IP:$export_path. Повторная попытка..."
+            sleep 2
         fi
-    else
-        log "ОШИБКА: Не удалось смонтировать $REMOTE_IP:$export_path в $mount_point"
+    done
+    
+    if [ "$mount_success" = false ]; then
+        log "ОШИБКА: Не удалось смонтировать $REMOTE_IP:$export_path в $mount_point после 3 попыток"
+        failed_count=$((failed_count + 1))
     fi
 done
 
-log "Монтирование NFS завершено"
+log "Монтирование NFS завершено: успешно - $mounted_count, с ошибками - $failed_count"
+
+# Проверка смонтированных разделов
+log "Проверка доступности смонтированных разделов:"
+for export_path in "${exports[@]}"; do
+    dir_name=$(basename "$export_path")
+    mount_point="$MOUNT_PREFIX/$dir_name"
+    
+    if mountpoint -q "$mount_point"; then
+        if timeout 2 ls -la "$mount_point" >/dev/null 2>&1; then
+            log "  - $mount_point: успешно смонтирован и доступен"
+        else
+            log "  - $mount_point: смонтирован, но НЕ ДОСТУПЕН"
+        fi
+    else
+        log "  - $mount_point: НЕ СМОНТИРОВАН"
+    fi
+done
+
 exit 0 

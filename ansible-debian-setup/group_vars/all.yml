@@ -1,0 +1,13 @@
+---
+# Настройки NFS
+nfs_server_ip: 192.168.0.104
+nfs_mounts:
+  - disk_sda1
+  - disk_sdb1
+  - disk_sdb5
+  - disk_sdc1
+  - disk_sdd1
+
+# Общие настройки
+timezone: Europe/Moscow
+locale: ru_RU.UTF-8 

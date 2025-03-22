@@ -1,87 +1,76 @@
 ---
 # roles/sync/tasks/main.yml
 
+# Настройка пользовательских переменных
+- name: Установка пользовательских переменных
+  set_fact:
+    nfs_mounts:
+      - disk_sda1
+      - disk_sdb1
+      - disk_sdb5
+      - disk_sdc1
+      - disk_sdd1
+
 # Настраиваем SSH ключи для доступа к apper серверу
+- name: Проверка наличия публичного ключа на сервере agger
+  stat:
+    path: /home/agger/.ssh/id_rsa.pub
+  register: agger_pubkey_file
+  delegate_to: "{{ nfs_server_ip }}"
+  when: inventory_hostname != nfs_server_ip
+  ignore_errors: yes
+
+- name: Создание SSH ключа на сервере agger, если он отсутствует
+  shell: ssh-keygen -t rsa -b 4096 -f /home/agger/.ssh/id_rsa -N "" -q
+  when: 
+    - inventory_hostname != nfs_server_ip
+    - not agger_pubkey_file.stat.exists | default(false)
+  delegate_to: "{{ nfs_server_ip }}"
+  ignore_errors: yes
+
 - name: Получение публичного ключа с сервера agger
-  command: cat /home/agger/.ssh/id_rsa.pub
+  shell: cat /home/agger/.ssh/id_rsa.pub
   register: agger_pubkey_content
   changed_when: false
-  delegate_to: agger
+  delegate_to: "{{ nfs_server_ip }}"
+  when: inventory_hostname != nfs_server_ip
+  ignore_errors: yes
 
 - name: Копирование SSH ключа на сервер apper
   authorized_key:
     user: apper
-    key: "{{ agger_pubkey_content.stdout }}"
+    key: "{{ agger_pubkey_content.stdout | default('') }}"
     state: present
-  delegate_to: apper
   become: true
+  when: 
+    - inventory_hostname != nfs_server_ip
+    - agger_pubkey_content.stdout is defined
+    - agger_pubkey_content.stdout != ''
+  ignore_errors: yes
 
-# Добавляем задачу для установки SSHFS и sshpass
-- name: Установка SSHFS и sshpass на сервере apper
-  apt:
-    name:
-      - sshfs
-      - sshpass
-    state: present
-  delegate_to: apper
-  become: true
+# Проверка SSH соединения с сервером agger
+- name: Проверка SSH соединения с сервером NFS
+  wait_for: 
+    host: "{{ nfs_server_ip }}"
+    port: 22
+    timeout: 10
+  register: ssh_check_result
+  ignore_errors: yes
 
-- name: Создание улучшенного скрипта синхронизации на сервере apper
-  template:
-    src: sync-disks.sh.j2
-    dest: /home/apper/sync-disks.sh
-    owner: apper
-    group: apper
-    mode: '0755'
-  delegate_to: apper
+- name: Вывод информации о доступности сервера
+  debug:
+    msg: "Сервер NFS {{ nfs_server_ip }} {% if ssh_check_result.failed %}недоступен!{% else %}доступен.{% endif %}"
 
-- name: Удаление старого сервиса, если существует
-  file:
-    path: "/etc/systemd/system/{{ item }}"
-    state: absent
-  loop:
-    - disk-check.service
-    - disk-check.timer
-    - cifs-monitor.service
-    - cifs-monitor.timer
-  delegate_to: apper
-
-- name: Создание systemd сервиса для синхронизации
-  template:
-    src: sync-disks.service.j2
-    dest: /etc/systemd/system/sync-disks.service
-  delegate_to: apper
-
-- name: Создание systemd таймера для синхронизации
-  template:
-    src: sync-disks.timer.j2
-    dest: /etc/systemd/system/sync-disks.timer
-  delegate_to: apper
-
-- name: Перезагрузка systemd
-  systemd:
-    daemon_reload: yes
-  delegate_to: apper
-
-- name: Включение и запуск таймера
-  systemd:
-    name: sync-disks.timer
-    state: started
-    enabled: yes
-  delegate_to: apper
-
-- name: Выполнение первичной синхронизации
-  command: /home/apper/sync-disks.sh --force
-  delegate_to: apper
-
-# Добавляем задачу для установки NFS клиента
-- name: Установка NFS клиента на сервере apper
+# Добавляем задачу для установки NFS клиента и других необходимых пакетов
+- name: Установка необходимых пакетов на клиенте
   apt:
     name:
       - nfs-common
       - rpcbind
+      - sshfs
+      - sshpass
     state: present
-  delegate_to: apper
+    update_cache: yes
   become: true
 
 - name: Убедиться, что rpcbind запущен и включен
@@ -89,77 +78,235 @@
     name: rpcbind
     state: started
     enabled: yes
-  delegate_to: apper
+  become: true
 
-- name: Создание улучшенного скрипта монтирования NFS на сервере apper
+# Получение списка доступных NFS экспортов с сервера agger
+- name: Проверка доступности NFS сервера
+  command: ping -c 1 -W 2 {{ nfs_server_ip }}
+  register: ping_result
+  changed_when: false
+  ignore_errors: yes
+  become: true
+
+- name: Получение списка NFS экспортов с сервера agger
+  command: "showmount -e {{ nfs_server_ip }}"
+  register: nfs_exports
+  changed_when: false
+  ignore_errors: yes
+  become: true
+  when: ping_result is success
+
+- name: Вывод доступных NFS экспортов
+  debug:
+    var: nfs_exports.stdout_lines | default([])
+  when: nfs_exports is defined and not nfs_exports.failed is defined
+
+# Создаем каталоги для монтирования всех дисков
+- name: Создание каталогов для монтирования NFS
+  file:
+    path: "/mnt/{{ item }}"
+    state: directory
+    mode: '0777'
+    owner: apper
+    group: apper
+  loop: "{{ nfs_mounts }}"
+  become: true
+
+- name: Создание fstab.nfs файла для NFS монтирований
+  copy:
+    dest: /etc/fstab.nfs
+    content: |
+      # NFS монтирования созданные Ansible
+      {% for disk in nfs_mounts %}
+      {{ nfs_server_ip }}:/mnt/{{ disk }} /mnt/{{ disk }} nfs rw,hard,timeo=600,retrans=3,proto=tcp,noatime 0 0
+      {% endfor %}
+    mode: '0644'
+  become: true
+  register: fstab_nfs
+
+# Добавление записей в /etc/fstab для автоматического монтирования при загрузке
+- name: Проверка, добавлены ли NFS монтирования в /etc/fstab
+  lineinfile:
+    path: /etc/fstab
+    line: "# ВКЛЮЧЕНИЕ NFS МОНТИРОВАНИЙ (см. /etc/fstab.nfs)"
+    state: present
+  check_mode: yes
+  register: fstab_check
+  become: true
+
+- name: Добавление инклюда NFS монтирований в /etc/fstab
+  lineinfile:
+    path: /etc/fstab
+    line: "# ВКЛЮЧЕНИЕ NFS МОНТИРОВАНИЙ (см. /etc/fstab.nfs)"
+    state: present
+  become: true
+  when: fstab_check.changed
+
+- name: Добавление инклюда в /etc/fstab
+  lineinfile:
+    path: /etc/fstab
+    line: "include /etc/fstab.nfs"
+    state: present
+  become: true
+  when: fstab_check.changed
+
+# Монтирование NFS разделов
+- name: Монтирование NFS разделов
+  mount:
+    path: "/mnt/{{ item }}"
+    src: "{{ nfs_server_ip }}:/mnt/{{ item }}"
+    fstype: nfs
+    opts: "rw,hard,timeo=600,retrans=3,proto=tcp,noatime"
+    state: mounted
+  loop: "{{ nfs_mounts }}"
+  ignore_errors: yes
+  become: true
+  register: mount_result
+  tags: nfs_mount
+
+# Проверка монтирования
+- name: Проверка монтирования NFS
+  shell: "mount | grep {{ nfs_server_ip }}"
+  register: mount_check
+  changed_when: false
+  ignore_errors: yes
+  become: true
+  tags: nfs_mount
+
+- name: Вывод информации о смонтированных разделах
+  debug:
+    var: mount_check.stdout_lines | default([])
+  when: mount_check is defined
+  tags: nfs_mount
+
+- name: Проверка доступности смонтированных разделов
+  shell: |
+    for disk in {{ nfs_mounts | join(' ') }}; do
+      if [ -d "/mnt/$disk" ]; then
+        ls -la "/mnt/$disk" &>/dev/null && echo "$disk: OK" || echo "$disk: ERROR"
+      else
+        echo "$disk: NOT_MOUNTED"
+      fi
+    done
+  register: access_check
+  changed_when: false
+  ignore_errors: yes
+  become: true
+  tags: nfs_mount
+
+- name: Вывод информации о доступности
+  debug:
+    var: access_check.stdout_lines | default([])
+  when: access_check is defined
+  tags: nfs_mount
+
+# Альтернативное монтирование, если стандартное не удалось
+- name: Создание скрипта для принудительного монтирования
   template:
     src: mount-nfs.sh.j2
     dest: /home/apper/mount-nfs.sh
     owner: apper
     group: apper
     mode: '0755'
-  delegate_to: apper
+  become: true
 
-- name: Удаление старого сервиса, если существует
-  file:
-    path: "/etc/systemd/system/{{ item }}"
-    state: absent
-  loop:
-    - disk-check.service
-    - disk-check.timer
-    - cifs-monitor.service
-    - cifs-monitor.timer
-    - sync-disks.service
-    - sync-disks.timer
-  delegate_to: apper
-
+# Создание сервисов и watchdog
 - name: Создание systemd сервиса для монтирования NFS
   template:
     src: mount-nfs.service.j2
     dest: /etc/systemd/system/mount-nfs.service
-  delegate_to: apper
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  tags: nfs_mount
 
-- name: Создание скрипта автоперезапуска монтирования при падении
+- name: Создание watchdog скрипта
   template:
     src: nfs-watchdog.sh.j2
     dest: /home/apper/nfs-watchdog.sh
     owner: apper
     group: apper
     mode: '0755'
-  delegate_to: apper
+  become: true
+  tags: nfs_mount
 
 - name: Создание systemd сервиса для watchdog
   template:
     src: nfs-watchdog.service.j2
     dest: /etc/systemd/system/nfs-watchdog.service
-  delegate_to: apper
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  tags: nfs_mount
 
 - name: Создание systemd таймера для watchdog
   template:
     src: nfs-watchdog.timer.j2
     dest: /etc/systemd/system/nfs-watchdog.timer
-  delegate_to: apper
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  tags: nfs_mount
 
 - name: Перезагрузка systemd
   systemd:
     daemon_reload: yes
-  delegate_to: apper
+  become: true
+  tags: nfs_mount
 
-- name: Выполнение первичного монтирования вручную
-  command: /home/apper/mount-nfs.sh --force
-  delegate_to: apper
+# Принудительное монтирование для случаев, когда обычное монтирование не сработало
+- name: Проверка, смонтированы ли разделы NFS
+  shell: "mount | grep nfs | wc -l"
+  register: nfs_mounted_count
+  changed_when: false
   ignore_errors: yes
+  become: true
+  tags: nfs_mount
 
-- name: Пауза перед запуском сервисов
-  pause:
-    seconds: 5
-  delegate_to: apper
+- name: Запуск скрипта принудительного монтирования, если необходимо
+  command: /home/apper/mount-nfs.sh --force
+  become: true
+  when: nfs_mounted_count.stdout | default("0") | int < 3
+  ignore_errors: yes
+  tags: nfs_mount
 
-- name: Запуск только таймера watchdog (не запускаем mount-nfs.service напрямую)
+- name: Запуск и включение watchdog таймера
   systemd:
-    name: "{{ item }}"
+    name: nfs-watchdog.timer
     state: started
     enabled: yes
-  loop:
-    - nfs-watchdog.timer
-  delegate_to: apper
+  become: true
+  tags: nfs_mount
+
+- name: Включение сервиса монтирования NFS
+  systemd:
+    name: mount-nfs.service
+    state: started
+    enabled: yes
+  become: true
+  ignore_errors: yes
+  tags: nfs_mount
+
+- name: Вывод итоговой информации о настройке
+  debug:
+    msg:
+      - "NFS клиент настроен."
+      - "При проблемах с доступом к дискам используйте команду: sudo systemctl restart mount-nfs.service"
+      - "Для проверки статуса монтирования используйте: mount | grep '{{ nfs_server_ip }}'"
+  tags: nfs_mount
+
+# Окончательная проверка монтирования
+- name: Финальная проверка монтирования NFS
+  shell: "df -h | grep nfs"
+  register: final_mount_check
+  changed_when: false
+  ignore_errors: yes
+  become: true
+
+- name: Вывод итоговой информации о смонтированных разделах
+  debug:
+    var: final_mount_check.stdout_lines | default([])
+  when: final_mount_check is defined

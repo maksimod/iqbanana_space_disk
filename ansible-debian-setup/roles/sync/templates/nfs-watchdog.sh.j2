@@ -1,70 +1,116 @@
 #!/bin/bash
 
 # Настройки
-REMOTE_IP="192.168.0.104"
+REMOTE_IP="{{ nfs_server_ip }}"
 MOUNT_PREFIX="/mnt"
 LOG_FILE="/var/log/nfs-watchdog.log"
-TRIGGER_FILE="/tmp/nfs_trigger"
+MAX_LOG_SIZE=5242880  # 5MB
 
 # Функция для логирования
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
+# Ротация лог-файла, если он стал слишком большим
+if [ -f "$LOG_FILE" ] && [ $(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0) -gt $MAX_LOG_SIZE ]; then
+    mv "$LOG_FILE" "${LOG_FILE}.old"
+    touch "$LOG_FILE"
+fi
+
 # Создаём лог-файл с правильными правами, если его нет
 mkdir -p /var/log
 touch "$LOG_FILE"
-sudo chown apper:apper "$LOG_FILE"
-sudo chmod 644 "$LOG_FILE"
+chown apper:apper "$LOG_FILE"
+chmod 644 "$LOG_FILE"
+
+log "=== Запуск проверки NFS монтирований ==="
 
 # Проверка доступности NFS сервера
 if ! ping -c 2 -w 3 $REMOTE_IP >/dev/null 2>&1; then
     log "ПРЕДУПРЕЖДЕНИЕ: Сервер $REMOTE_IP недоступен"
-    exit 0
+    exit 1
+fi
+
+# Проверка доступности NFS порта
+if ! timeout 3 bash -c "echo > /dev/tcp/$REMOTE_IP/2049" >/dev/null 2>&1; then
+    log "ПРЕДУПРЕЖДЕНИЕ: NFS порт на сервере $REMOTE_IP недоступен"
+    exit 1
 fi
 
 # Проверка состояния NFS монтирований
-failed_mounts=0
-total_mounts=0
+mounted=()
+not_responding=()
+not_mounted=()
 
-# Находим все NFS монтирования в /etc/fstab
+# Находим все NFS точки монтирования из fstab
 while read -r line; do
     if [[ "$line" == *"$REMOTE_IP:"* && "$line" == *"nfs"* ]]; then
         mount_point=$(echo "$line" | awk '{print $2}')
-        total_mounts=$((total_mounts + 1))
+        src_path=$(echo "$line" | awk '{print $1}')
+        
+        # Создаем директорию, если она не существует
+        if [ ! -d "$mount_point" ]; then
+            log "Создание директории $mount_point..."
+            mkdir -p "$mount_point"
+            chmod 777 "$mount_point"
+        fi
         
         # Проверка точки монтирования
         if ! mountpoint -q "$mount_point"; then
             log "ОШИБКА: $mount_point не смонтирован"
-            failed_mounts=$((failed_mounts + 1))
+            not_mounted+=("$mount_point")
         else
             # Проверка доступа к точке монтирования
             if ! timeout 5 ls -la "$mount_point" &>/dev/null; then
                 log "ОШИБКА: $mount_point не отвечает"
-                failed_mounts=$((failed_mounts + 1))
+                not_responding+=("$mount_point")
+            else
+                mounted+=("$mount_point")
             fi
         fi
     fi
 done < /etc/fstab
 
-# Если обнаружены проблемы, создаем триггер для перемонтирования
-if [ $failed_mounts -gt 0 ]; then
-    log "Обнаружено $failed_mounts проблемных монтирований из $total_mounts"
-    touch "$TRIGGER_FILE"
+log "Итоги проверки:"
+log "- Смонтировано и доступно: ${#mounted[@]} (${mounted[*]})"
+[ ${#not_responding[@]} -gt 0 ] && log "- Смонтировано, но не отвечает: ${#not_responding[@]} (${not_responding[*]})"
+[ ${#not_mounted[@]} -gt 0 ] && log "- Не смонтировано: ${#not_mounted[@]} (${not_mounted[*]})"
+
+# Если обнаружены проблемы, принимаем меры
+if [ ${#not_responding[@]} -gt 0 ] || [ ${#not_mounted[@]} -gt 0 ]; then
+    log "Обнаружены проблемы с NFS монтированиями. Принимаем меры..."
     
-    # Принудительно размонтируем проблемные точки
-    for mount in $(mount | grep "type nfs" | grep "$MOUNT_PREFIX" | awk '{print $3}'); do
-        if ! timeout 5 ls -la "$mount" &>/dev/null; then
-            log "Принудительное размонтирование $mount"
-            sudo umount -f -l "$mount" 2>/dev/null
-        fi
+    # Размонтируем проблемные точки
+    for mount in "${not_responding[@]}"; do
+        log "Размонтирование неотвечающей точки $mount"
+        umount -f "$mount" 2>/dev/null || umount -l "$mount" 2>/dev/null
     done
     
     # Запускаем скрипт монтирования
     log "Запуск скрипта повторного монтирования..."
-    sudo /home/apper/mount-nfs.sh
+    /home/apper/mount-nfs.sh --force
+    
+    # Проверяем результат
+    sleep 5
+    remount_success=true
+    
+    for mount in "${not_responding[@]}" "${not_mounted[@]}"; do
+        if ! mountpoint -q "$mount" || ! timeout 5 ls -la "$mount" &>/dev/null; then
+            log "ОШИБКА: Не удалось восстановить $mount"
+            remount_success=false
+        else
+            log "УСПЕХ: Точка $mount успешно восстановлена"
+        fi
+    done
+    
+    if [ "$remount_success" = true ]; then
+        log "Все проблемы с монтированием успешно устранены"
+    else
+        log "ВНИМАНИЕ: Не все проблемы с монтированием удалось устранить. Требуется проверка"
+        # Можно добавить отправку уведомления администратору
+    fi
 else
-    log "Все NFS монтирования ($total_mounts шт.) в порядке"
+    log "Все NFS монтирования в порядке"
 fi
 
 exit 0 
