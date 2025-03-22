@@ -4,12 +4,7 @@
 # Настройка пользовательских переменных
 - name: Установка пользовательских переменных
   set_fact:
-    nfs_mounts:
-      - disk_sda1
-      - disk_sdb1
-      - disk_sdb5
-      - disk_sdc1
-      - disk_sdd1
+    nfs_server_ip: "{{ nfs_server_ip | default('192.168.0.104') }}"
 
 # Настраиваем SSH ключи для доступа к apper серверу
 - name: Проверка наличия публичного ключа на сервере agger
@@ -101,105 +96,6 @@
     var: nfs_exports.stdout_lines | default([])
   when: nfs_exports is defined and not nfs_exports.failed is defined
 
-# Создаем каталоги для монтирования всех дисков
-- name: Создание каталогов для монтирования NFS
-  file:
-    path: "/mnt/{{ item }}"
-    state: directory
-    mode: '0777'
-    owner: apper
-    group: apper
-  loop: "{{ nfs_mounts }}"
-  become: true
-
-- name: Создание fstab.nfs файла для NFS монтирований
-  copy:
-    dest: /etc/fstab.nfs
-    content: |
-      # NFS монтирования созданные Ansible
-      {% for disk in nfs_mounts %}
-      {{ nfs_server_ip }}:/mnt/{{ disk }} /mnt/{{ disk }} nfs rw,hard,timeo=600,retrans=3,proto=tcp,noatime 0 0
-      {% endfor %}
-    mode: '0644'
-  become: true
-  register: fstab_nfs
-
-# Добавление записей в /etc/fstab для автоматического монтирования при загрузке
-- name: Проверка, добавлены ли NFS монтирования в /etc/fstab
-  lineinfile:
-    path: /etc/fstab
-    line: "# ВКЛЮЧЕНИЕ NFS МОНТИРОВАНИЙ (см. /etc/fstab.nfs)"
-    state: present
-  check_mode: yes
-  register: fstab_check
-  become: true
-
-- name: Добавление инклюда NFS монтирований в /etc/fstab
-  lineinfile:
-    path: /etc/fstab
-    line: "# ВКЛЮЧЕНИЕ NFS МОНТИРОВАНИЙ (см. /etc/fstab.nfs)"
-    state: present
-  become: true
-  when: fstab_check.changed
-
-- name: Добавление инклюда в /etc/fstab
-  lineinfile:
-    path: /etc/fstab
-    line: "include /etc/fstab.nfs"
-    state: present
-  become: true
-  when: fstab_check.changed
-
-# Монтирование NFS разделов
-- name: Монтирование NFS разделов
-  mount:
-    path: "/mnt/{{ item }}"
-    src: "{{ nfs_server_ip }}:/mnt/{{ item }}"
-    fstype: nfs
-    opts: "rw,hard,timeo=600,retrans=3,proto=tcp,noatime"
-    state: mounted
-  loop: "{{ nfs_mounts }}"
-  ignore_errors: yes
-  become: true
-  register: mount_result
-  tags: nfs_mount
-
-# Проверка монтирования
-- name: Проверка монтирования NFS
-  shell: "mount | grep {{ nfs_server_ip }}"
-  register: mount_check
-  changed_when: false
-  ignore_errors: yes
-  become: true
-  tags: nfs_mount
-
-- name: Вывод информации о смонтированных разделах
-  debug:
-    var: mount_check.stdout_lines | default([])
-  when: mount_check is defined
-  tags: nfs_mount
-
-- name: Проверка доступности смонтированных разделов
-  shell: |
-    for disk in {{ nfs_mounts | join(' ') }}; do
-      if [ -d "/mnt/$disk" ]; then
-        ls -la "/mnt/$disk" &>/dev/null && echo "$disk: OK" || echo "$disk: ERROR"
-      else
-        echo "$disk: NOT_MOUNTED"
-      fi
-    done
-  register: access_check
-  changed_when: false
-  ignore_errors: yes
-  become: true
-  tags: nfs_mount
-
-- name: Вывод информации о доступности
-  debug:
-    var: access_check.stdout_lines | default([])
-  when: access_check is defined
-  tags: nfs_mount
-
 # Альтернативное монтирование, если стандартное не удалось
 - name: Создание скрипта для принудительного монтирования
   template:
@@ -209,6 +105,7 @@
     group: apper
     mode: '0755'
   become: true
+  tags: nfs_mount
 
 # Создание сервисов и watchdog
 - name: Создание systemd сервиса для монтирования NFS
@@ -257,19 +154,10 @@
   become: true
   tags: nfs_mount
 
-# Принудительное монтирование для случаев, когда обычное монтирование не сработало
-- name: Проверка, смонтированы ли разделы NFS
-  shell: "mount | grep nfs | wc -l"
-  register: nfs_mounted_count
-  changed_when: false
-  ignore_errors: yes
-  become: true
-  tags: nfs_mount
-
-- name: Запуск скрипта принудительного монтирования, если необходимо
+# Принудительное монтирование с автоматическим обнаружением дисков
+- name: Запуск скрипта принудительного монтирования с автоматическим обнаружением
   command: /home/apper/mount-nfs.sh --force
   become: true
-  when: nfs_mounted_count.stdout | default("0") | int < 3
   ignore_errors: yes
   tags: nfs_mount
 
@@ -290,6 +178,42 @@
   ignore_errors: yes
   tags: nfs_mount
 
+# Проверка монтирования
+- name: Проверка монтирования NFS
+  shell: "mount | grep {{ nfs_server_ip }}"
+  register: mount_check
+  changed_when: false
+  ignore_errors: yes
+  become: true
+  tags: nfs_mount
+
+- name: Вывод информации о смонтированных разделах
+  debug:
+    var: mount_check.stdout_lines | default([])
+  when: mount_check is defined
+  tags: nfs_mount
+
+- name: Проверка доступности смонтированных разделов
+  shell: |
+    for disk in $(mount | grep "{{ nfs_server_ip }}:/mnt" | awk '{print $3}' | xargs -n1 basename); do
+      if [ -d "/mnt/$disk" ]; then
+        ls -la "/mnt/$disk" &>/dev/null && echo "$disk: OK" || echo "$disk: ERROR"
+      else
+        echo "$disk: NOT_MOUNTED"
+      fi
+    done
+  register: access_check
+  changed_when: false
+  ignore_errors: yes
+  become: true
+  tags: nfs_mount
+
+- name: Вывод информации о доступности
+  debug:
+    var: access_check.stdout_lines | default([])
+  when: access_check is defined
+  tags: nfs_mount
+
 - name: Вывод итоговой информации о настройке
   debug:
     msg:
@@ -300,7 +224,7 @@
 
 # Окончательная проверка монтирования
 - name: Финальная проверка монтирования NFS
-  shell: "df -h | grep nfs"
+  shell: "df -h | grep {{ nfs_server_ip }}"
   register: final_mount_check
   changed_when: false
   ignore_errors: yes

@@ -7,6 +7,7 @@ LOG_FILE="/var/log/mount-nfs.log"
 RETRY_COUNT=10
 RETRY_DELAY=3
 FORCE_MODE=false
+AUTO_DISCOVER=true
 
 # Проверка аргументов
 for arg in "$@"; do
@@ -14,9 +15,13 @@ for arg in "$@"; do
         --force)
             FORCE_MODE=true
             ;;
+        --no-auto-discover)
+            AUTO_DISCOVER=false
+            ;;
         --help)
-            echo "Использование: $0 [--force] [--help]"
+            echo "Использование: $0 [--force] [--no-auto-discover] [--help]"
             echo "  --force: Принудительное перемонтирование всех точек"
+            echo "  --no-auto-discover: Не выполнять автоматическое обнаружение доступных дисков"
             echo "  --help: Показать эту справку"
             exit 0
             ;;
@@ -95,38 +100,82 @@ for port in 111 2049; do
 done
 
 # Получение списка экспортов NFS
-log "Получение списка NFS экспортов..."
-exports=()
-success=false
+if [ "$AUTO_DISCOVER" = true ]; then
+    log "Получение списка NFS экспортов (автоматическое обнаружение)..."
+    exports=()
+    success=false
 
-for i in $(seq 1 $RETRY_COUNT); do
-    if output=$(showmount -e $REMOTE_IP 2>/dev/null); then
-        # Извлекаем только пути из вывода команды showmount
-        while read -r line; do
-            if [[ "$line" != "Export list for"* ]]; then
-                export_path=$(echo "$line" | awk '{print $1}')
-                exports+=("$export_path")
+    for i in $(seq 1 $RETRY_COUNT); do
+        if output=$(showmount -e $REMOTE_IP 2>/dev/null); then
+            # Извлекаем только пути из вывода команды showmount
+            # Фильтруем только экспорты, начинающиеся с /mnt/disk_
+            while read -r line; do
+                if [[ "$line" != "Export list for"* ]]; then
+                    export_path=$(echo "$line" | awk '{print $1}')
+                    # Проверяем, что путь соответствует формату /mnt/disk_*
+                    if [[ "$export_path" == /mnt/disk_* ]]; then
+                        exports+=("$export_path")
+                    fi
+                fi
+            done <<< "$output"
+            
+            if [ ${#exports[@]} -gt 0 ]; then
+                success=true
+                break
+            else
+                log "Попытка $i: Не найдено подходящих экспортов. Повторная попытка..."
+                sleep $RETRY_DELAY
             fi
-        done <<< "$output"
-        
-        success=true
-        break
-    else
-        log "Попытка $i: Не удалось получить список экспортов. Повторная попытка через $RETRY_DELAY секунды..."
-        sleep $RETRY_DELAY
-    fi
-done
+        else
+            log "Попытка $i: Не удалось получить список экспортов. Повторная попытка через $RETRY_DELAY секунды..."
+            sleep $RETRY_DELAY
+        fi
+    done
+else
+    log "Автоматическое обнаружение отключено. Проверка имеющихся монтирований..."
+    success=false
+fi
 
-# Если не удалось получить список экспортов, используем стандартный список
+# Если не удалось получить список экспортов или автоматическое обнаружение отключено,
+# попробуем получить список уже существующих монтирований из fstab
 if [ "$success" = false ] || [ ${#exports[@]} -eq 0 ]; then
-    log "Не удалось получить список экспортов. Используем стандартный список..."
-    exports=(
-        "/mnt/disk_sda1"
-        "/mnt/disk_sdb1"
-        "/mnt/disk_sdb5"
-        "/mnt/disk_sdc1"
-        "/mnt/disk_sdd1"
-    )
+    log "Получение списка из fstab..."
+    while read -r line; do
+        if [[ "$line" == *"$REMOTE_IP:/mnt/disk_"* && "$line" == *"nfs"* ]]; then
+            remote_path=$(echo "$line" | awk '{print $1}')
+            exports+=("$remote_path")
+        fi
+    done < /etc/fstab
+    
+    # Если и в fstab нет данных, проверяем на сервере все возможные стандартные пути
+    if [ ${#exports[@]} -eq 0 ]; then
+        log "Проверка наличия стандартных путей на сервере..."
+        # Перебираем все возможные имена дисков sda-sdz и sda1-sdz9
+        for letter in {a..z}; do
+            for num in {1..9}; do
+                path="/mnt/disk_sd${letter}${num}"
+                # Проверяем доступность пути на сервере
+                if ssh -o ConnectTimeout=2 -o BatchMode=yes -o StrictHostKeyChecking=no $REMOTE_IP "[ -d $path ]" 2>/dev/null; then
+                    exports+=("$path")
+                    log "Обнаружен путь: $path"
+                fi
+            done
+            # Проверяем также диски без номера раздела
+            path="/mnt/disk_sd${letter}"
+            if ssh -o ConnectTimeout=2 -o BatchMode=yes -o StrictHostKeyChecking=no $REMOTE_IP "[ -d $path ]" 2>/dev/null; then
+                exports+=("$path")
+                log "Обнаружен путь: $path"
+            fi
+        done
+    fi
+    
+    # Если все равно не нашли ни одного диска, используем стандартный набор
+    if [ ${#exports[@]} -eq 0 ]; then
+        log "Не удалось найти ни одного диска. Использую стандартный набор для проверки..."
+        for disk in sda1 sdb1 sdb5 sdc1 sdd1; do
+            exports+=("/mnt/disk_$disk")
+        done
+    fi
 fi
 
 # Отображение найденных экспортов

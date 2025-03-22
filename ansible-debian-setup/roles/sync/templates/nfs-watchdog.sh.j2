@@ -42,11 +42,33 @@ mounted=()
 not_responding=()
 not_mounted=()
 
+# Получаем список всех экспортированных дисков
+if command -v showmount >/dev/null 2>&1; then
+    log "Получение списка доступных NFS экспортов..."
+    all_exports=()
+    if output=$(showmount -e $REMOTE_IP 2>/dev/null); then
+        while read -r line; do
+            if [[ "$line" != "Export list for"* ]] && [[ "$line" == */mnt/disk_* ]]; then
+                export_path=$(echo "$line" | awk '{print $1}')
+                all_exports+=("$export_path")
+            fi
+        done <<< "$output"
+        log "Найдено ${#all_exports[@]} доступных экспортов NFS"
+    else
+        log "Не удалось получить список экспортов с помощью showmount"
+    fi
+fi
+
 # Находим все NFS точки монтирования из fstab
 while read -r line; do
     if [[ "$line" == *"$REMOTE_IP:"* && "$line" == *"nfs"* ]]; then
         mount_point=$(echo "$line" | awk '{print $2}')
         src_path=$(echo "$line" | awk '{print $1}')
+        
+        # Добавляем этот путь в список всех экспортов, если его там нет
+        if [[ " ${all_exports[*]} " != *" $src_path "* ]]; then
+            all_exports+=("$src_path")
+        fi
         
         # Создаем директорию, если она не существует
         if [ ! -d "$mount_point" ]; then
@@ -70,6 +92,27 @@ while read -r line; do
         fi
     fi
 done < /etc/fstab
+
+# Дополнительно проверяем все текущие монтирования NFS
+while read -r line; do
+    if [[ "$line" == *"$REMOTE_IP:/mnt/disk_"* ]]; then
+        mount_point=$(echo "$line" | awk '{print $3}')
+        src_path=$(echo "$line" | awk '{print $1}')
+        
+        # Если эта точка уже проверена выше, пропускаем
+        if [[ " ${mounted[*]} " == *" $mount_point "* ]] || [[ " ${not_responding[*]} " == *" $mount_point "* ]]; then
+            continue
+        fi
+        
+        # Проверка доступа к точке монтирования
+        if ! timeout 5 ls -la "$mount_point" &>/dev/null; then
+            log "ОШИБКА: $mount_point не отвечает"
+            not_responding+=("$mount_point")
+        else
+            mounted+=("$mount_point")
+        fi
+    fi
+done < <(mount)
 
 log "Итоги проверки:"
 log "- Смонтировано и доступно: ${#mounted[@]} (${mounted[*]})"
@@ -107,7 +150,6 @@ if [ ${#not_responding[@]} -gt 0 ] || [ ${#not_mounted[@]} -gt 0 ]; then
         log "Все проблемы с монтированием успешно устранены"
     else
         log "ВНИМАНИЕ: Не все проблемы с монтированием удалось устранить. Требуется проверка"
-        # Можно добавить отправку уведомления администратору
     fi
 else
     log "Все NFS монтирования в порядке"
