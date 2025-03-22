@@ -1,0 +1,72 @@
+#!/bin/bash
+
+# Путь к каталогу с бэкапами
+BACKUP_DIR="/home/apper/iqbanana-disk/backend/config"
+# Максимальное количество бэкапов
+MAX_BACKUPS=100
+# Паттерн для поиска файлов бэкапов
+BACKUP_PATTERN="config.js.backup.*"
+# Куда записывать логи
+LOG_FILE="/var/log/backup-rotation.log"
+
+# Создаём лог-файл с правильными правами, если его нет
+mkdir -p /var/log
+touch "$LOG_FILE"
+sudo chown apper:apper "$LOG_FILE"
+sudo chmod 644 "$LOG_FILE"
+
+# Функция логирования
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+# Проверяем существование директории с бэкапами
+if [ ! -d "$BACKUP_DIR" ]; then
+    log "Каталог бэкапов $BACKUP_DIR не существует. Выход."
+    exit 1
+fi
+
+log "Запуск скрипта ротации бэкапов"
+
+# Создаем бэкап только раз в час
+CURRENT_HOUR=$(date +%Y%m%d%H)
+LAST_BACKUP=$(find "$BACKUP_DIR" -name "config.js.backup.$CURRENT_HOUR*" -type f | head -n 1)
+
+if [ -z "$LAST_BACKUP" ] && [ -f "$BACKUP_DIR/config.js" ]; then
+    # Если в текущем часе нет бэкапов, создаем новый
+    BACKUP_FILE="$BACKUP_DIR/config.js.backup.$(date +%Y%m%d%H%M%S)"
+    cp "$BACKUP_DIR/config.js" "$BACKUP_FILE"
+    log "Создан новый бэкап: $BACKUP_FILE"
+else
+    log "Бэкап за текущий час уже существует, пропускаем создание"
+fi
+
+# Подсчитываем количество существующих бэкапов
+BACKUP_COUNT=$(find "$BACKUP_DIR" -name "$BACKUP_PATTERN" -type f | wc -l)
+log "Текущее количество бэкапов: $BACKUP_COUNT"
+
+# Если количество бэкапов превышает максимальное, удаляем самые старые
+if [ "$BACKUP_COUNT" -gt "$MAX_BACKUPS" ]; then
+    # Количество файлов для удаления
+    DELETE_COUNT=$((BACKUP_COUNT - MAX_BACKUPS))
+    
+    # Находим самые старые файлы и удаляем их
+    OLD_BACKUPS=$(find "$BACKUP_DIR" -name "$BACKUP_PATTERN" -type f | sort | head -n "$DELETE_COUNT")
+    
+    log "Необходимо удалить $DELETE_COUNT старых бэкапов"
+    
+    while IFS= read -r old_file; do
+        if [ -f "$old_file" ]; then
+            rm "$old_file"
+            log "Удален старый бэкап: $old_file"
+        fi
+    done <<< "$OLD_BACKUPS"
+else
+    log "Количество бэкапов не превышает лимит ($MAX_BACKUPS), удаление не требуется"
+fi
+
+FINAL_COUNT=$(find "$BACKUP_DIR" -name "$BACKUP_PATTERN" -type f | wc -l)
+log "Итоговое количество бэкапов: $FINAL_COUNT"
+log "Ротация бэкапов завершена"
+
+exit 0 

@@ -114,8 +114,13 @@ CONFIG_DISKS+="\n }"
 # Обновляем конфигурацию веб-приложения
 log "Обновление конфигурации веб-приложения..."
 if [ -f "$BACKEND_CONFIG" ]; then
-    # Создаем резервную копию
-    cp "$BACKEND_CONFIG" "$BACKEND_CONFIG.backup.$(date +%Y%m%d%H%M%S)"
+    # Вместо прямого создания бэкапов используем скрипт ротации
+    if [ -x "/usr/local/bin/rotate-backups.sh" ]; then
+        log "Запуск скрипта ротации бэкапов..."
+        /usr/local/bin/rotate-backups.sh
+    else
+        log "Скрипт ротации бэкапов не найден"
+    fi
 
     # Обновляем секцию disks в конфигурации
     awk -v disks="$CONFIG_DISKS" '

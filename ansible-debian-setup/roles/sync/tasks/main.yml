@@ -222,6 +222,81 @@
       - "Для проверки статуса монтирования используйте: mount | grep '{{ nfs_server_ip }}'"
   tags: nfs_mount
 
+# Установка скрипта синхронизации дисков
+- name: Создание скрипта синхронизации дисков
+  template:
+    src: sync-disks.sh.j2
+    dest: /home/apper/sync-disks.sh
+    owner: apper
+    group: apper
+    mode: '0755'
+  become: true
+  tags: sync_disks
+
+# Настройка регулярного создания бэкапов только на хосте apper
+- name: Создание скрипта ежечасного создания бэкапов конфигурации
+  template:
+    src: create-config-backup.sh.j2
+    dest: /home/apper/create-config-backup.sh
+    owner: apper
+    group: apper
+    mode: '0755'
+  become: true
+  when: "'apper' in inventory_hostname"
+  tags: config_backups
+
+- name: Создание задания cron для ежечасного создания бэкапов конфигурации
+  cron:
+    name: "Ежечасное создание бэкапов конфигурации"
+    user: apper
+    hour: "*"
+    minute: "0"
+    job: "/home/apper/create-config-backup.sh"
+  become: true
+  when: "'apper' in inventory_hostname"
+  tags: config_backups
+
+# Оповещение о настройке бэкапов
+- name: Вывод информации о настройке бэкапов
+  debug:
+    msg: "Настроено ежечасное создание бэкапов конфигурации на сервере apper."
+  when: "'apper' in inventory_hostname"
+  tags: config_backups
+
+- name: Создание systemd сервиса для синхронизации дисков
+  template:
+    src: sync-disks.service.j2
+    dest: /etc/systemd/system/sync-disks.service
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  tags: sync_disks
+
+- name: Создание systemd таймера для синхронизации дисков
+  template:
+    src: sync-disks.timer.j2
+    dest: /etc/systemd/system/sync-disks.timer
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  tags: sync_disks
+
+- name: Перезагрузка systemd для применения изменений
+  systemd:
+    daemon_reload: yes
+  become: true
+  tags: sync_disks
+
+- name: Запуск и включение таймера синхронизации дисков
+  systemd:
+    name: sync-disks.timer
+    state: started
+    enabled: yes
+  become: true
+  tags: sync_disks
+
 # Окончательная проверка монтирования
 - name: Финальная проверка монтирования NFS
   shell: "df -h | grep {{ nfs_server_ip }}"

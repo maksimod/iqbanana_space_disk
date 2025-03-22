@@ -278,4 +278,11 @@ for export_path in "${exports[@]}"; do
     fi
 done
 
+# Обновляем конфигурацию веб-приложения
+log "Обновление конфигурации веб-приложения..."
+if [ -f "$BACKEND_CONFIG" ]; then
+    # Обновляем секцию disks в конфигурации
+    # cp "$BACKEND_CONFIG" "$BACKEND_CONFIG.backup.$(date +%Y%m%d%H%M%S)"
+fi
+
 exit 0 

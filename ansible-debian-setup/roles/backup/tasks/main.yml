@@ -1,0 +1,28 @@
+---
+# Задачи для настройки резервного копирования и ротации
+
+- name: Создание папки для скриптов
+  file:
+    path: /usr/local/bin
+    state: directory
+    mode: '0755'
+  tags: backup
+
+- name: Копирование скрипта ротации бэкапов
+  template:
+    src: rotate-backups.sh.j2
+    dest: /usr/local/bin/rotate-backups.sh
+    owner: apper
+    group: apper
+    mode: '0755'
+  tags: backup
+
+- name: Установка задачи cron для ротации бэкапов (каждый час)
+  cron:
+    name: "Ротация бэкапов конфигурации"
+    user: apper
+    minute: "0"
+    hour: "*"
+    job: "/usr/local/bin/rotate-backups.sh > /dev/null 2>&1"
+    state: present
+  tags: backup 
