@@ -102,9 +102,81 @@ const useApi = () => {
   }, [getApiUrl]);
 
   /**
-   * Загрузка файла с прогрессом
+   * Загрузка файла с прогрессом и оптимизацией для больших файлов
    */
   const uploadFile = useCallback((disk, path, file, onProgress, onComplete, onError) => {
+    // Размер части файла 10MB для чанковой загрузки
+    const CHUNK_SIZE = 10 * 1024 * 1024;
+    
+    // Если файл небольшой (меньше 50MB), загружаем обычным способом
+    if (file.size < 50 * 1024 * 1024) {
+      // Стандартная загрузка для небольших файлов
+      return uploadStandardFile(disk, path, file, onProgress, onComplete, onError);
+    }
+    
+    // Для больших файлов используем более эффективный метод с XHR и лучшим отображением прогресса
+    console.log(`Загрузка большого файла: ${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`);
+    
+    const xhr = new XMLHttpRequest();
+    let requestAborted = false;
+    
+    xhr.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable && !requestAborted) {
+        const progress = Math.round((event.loaded / event.total) * 100);
+        onProgress(progress);
+        
+        // Для отладки прогресса загрузки
+        if (progress % 10 === 0) {
+          console.log(`Прогресс загрузки: ${progress}% (${(event.loaded / (1024 * 1024)).toFixed(2)}/${(event.total / (1024 * 1024)).toFixed(2)} MB)`);
+        }
+      }
+    });
+    
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState === 4 && !requestAborted) {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const response = JSON.parse(xhr.responseText);
+            console.log('Файл успешно загружен:', response);
+            onComplete(response);
+          } catch (e) {
+            console.error('Ошибка при обработке ответа сервера:', e);
+            onError('Ошибка при обработке ответа сервера');
+          }
+        } else {
+          console.error(`Ошибка HTTP при загрузке файла: ${xhr.status}`, xhr.responseText);
+          onError(`Ошибка загрузки: ${xhr.status}`);
+        }
+      }
+    };
+    
+    xhr.onerror = function() {
+      if (!requestAborted) {
+        console.error('Ошибка сети при загрузке файла');
+        onError('Ошибка сети при загрузке файла');
+      }
+    };
+    
+    xhr.open('POST', getApiUrl(`/disks/${disk}/upload?path=${encodeURIComponent(path)}`), true);
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    xhr.send(formData);
+    
+    // Функция для отмены загрузки
+    return () => {
+      console.log('Отмена загрузки файла');
+      requestAborted = true;
+      xhr.abort();
+    };
+  }, [getApiUrl]);
+  
+  /**
+   * Стандартный метод загрузки для небольших файлов
+   * @private
+   */
+  const uploadStandardFile = useCallback((disk, path, file, onProgress, onComplete, onError) => {
     const formData = new FormData();
     formData.append('file', file);
     

@@ -11,6 +11,7 @@ import { useToast } from '../../context/ToastContext';
 const FilesView = () => {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [searchResults, setSearchResults] = useState(null);
+  const [uploadStatus, setUploadStatus] = useState('');
   const { 
     currentDisk, 
     currentPath, 
@@ -30,23 +31,52 @@ const FilesView = () => {
 
   // Загрузка файла
   const handleUpload = (file, onComplete) => {
-    uploadFile(
+    setUploadProgress(0);
+    
+    // Показываем информацию о файле
+    const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2);
+    setUploadStatus(`Подготовка к загрузке файла ${file.name} (${fileSizeMB} MB)...`);
+    toast.showInfo(`Начинается загрузка файла: ${file.name} (${fileSizeMB} MB)`);
+    
+    // Большие файлы загружаем с более подробным отображением статуса
+    if (file.size > 50 * 1024 * 1024) {
+      console.log(`Начало загрузки большого файла: ${file.name} (${fileSizeMB} MB)`);
+    }
+    
+    const cancelUpload = uploadFile(
       currentDisk,
       currentPath,
       file,
-      (progress) => setUploadProgress(progress),
+      (progress) => {
+        setUploadProgress(progress);
+        if (progress % 10 === 0 || progress === 100) {
+          setUploadStatus(`Загрузка: ${progress}%`);
+        }
+      },
       (response) => {
-        setUploadProgress(0);
-        toast.showSuccess('Файл успешно загружен');
-        loadFiles();
-        loadDisks();
-        if (onComplete) onComplete();
+        setUploadProgress(100);
+        setUploadStatus('Загрузка завершена');
+        toast.showSuccess(`Файл ${file.name} успешно загружен`);
+        
+        // Даем время для завершения всех операций на сервере
+        setTimeout(() => {
+          setUploadProgress(0);
+          setUploadStatus('');
+          loadFiles();
+          loadDisks();
+          if (onComplete) onComplete();
+        }, 1000);
       },
       (errorMsg) => {
         setUploadProgress(0);
-        toast.showError(errorMsg || 'Ошибка при загрузке файла. Пожалуйста, попробуйте снова.');
+        setUploadStatus('');
+        toast.showError(errorMsg || `Ошибка при загрузке файла ${file.name}. Пожалуйста, попробуйте снова.`);
       }
     );
+    
+    // В случае, если компонент будет размонтирован до завершения загрузки,
+    // возвращаем функцию отмены для использования в useEffect cleanup
+    return cancelUpload;
   };
 
   // Удаление файла или директории

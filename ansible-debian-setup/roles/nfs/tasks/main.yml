@@ -7,6 +7,10 @@
   set_fact:
     nfs_disks: "{{ detect_disks_output.stdout | from_json }}"
 
+- name: Вывод обнаруженных дисков для NFS
+  debug:
+    msg: "Обнаружены диски для NFS: {{ nfs_disks | map(attribute='mount_point') | list }}"
+
 - name: Установка и настройка NFS сервера
   block:
     - name: Установка NFS сервера
@@ -43,19 +47,33 @@
         dest: /etc/sysctl.d/30-nfs-ports.conf
         mode: '0644'
       register: nfs_ports_config
+    
+    - name: Настройка оптимизаций производительности NFS
+      template:
+        src: 90-nfs-performance.conf.j2
+        dest: /etc/sysctl.d/90-nfs-performance.conf
+        mode: '0644'
+      register: nfs_performance_config
       
-    - name: Применение настроек sysctl
+    - name: Применение настроек sysctl для портов NFS
       command: sysctl -p /etc/sysctl.d/30-nfs-ports.conf
       when: nfs_ports_config.changed
       ignore_errors: yes
       register: sysctl_result
+    
+    - name: Применение настроек оптимизации NFS
+      command: sysctl -p /etc/sysctl.d/90-nfs-performance.conf
+      when: nfs_performance_config.changed
+      ignore_errors: yes
+      register: sysctl_perf_result
       
     - name: Проверка сообщения об ошибке sysctl
       debug:
         msg: "Предупреждение: не удалось применить все настройки sysctl, но плейбук продолжит выполнение."
-      when: sysctl_result.failed is defined and sysctl_result.failed
+      when: sysctl_result.failed is defined and sysctl_result.failed or 
+            sysctl_perf_result.failed is defined and sysctl_perf_result.failed
 
-    - name: Настройка экспортов NFS
+    - name: Настройка экспортов NFS с оптимизированными параметрами
       template:
         src: exports.j2
         dest: /etc/exports
@@ -113,7 +131,7 @@
   become: true
   when: "'agger' in inventory_hostname"
   
-- name: Настройка клиента NFS на apper
+- name: Настройка клиента NFS на apper с оптимизацией
   block:
     - name: Установка NFS клиента
       apt:
@@ -127,6 +145,18 @@
         name: rpcbind
         state: started
         enabled: yes
+    
+    - name: Настройка оптимизаций производительности NFS для клиента
+      template:
+        src: 90-nfs-performance.conf.j2
+        dest: /etc/sysctl.d/90-nfs-performance.conf
+        mode: '0644'
+      register: nfs_client_performance_config
+    
+    - name: Применение настроек оптимизации NFS для клиента
+      command: sysctl -p /etc/sysctl.d/90-nfs-performance.conf
+      when: nfs_client_performance_config.changed
+      ignore_errors: yes
         
     - name: Создание директорий для монтирования
       file:
@@ -136,6 +166,22 @@
       loop: "{{ nfs_disks }}"
       loop_control:
         label: "{{ item.directory_name }}"
+    
+    - name: Создание или обновление записей в /etc/fstab
+      blockinfile:
+        path: /etc/fstab
+        backup: yes
+        marker: "# {mark} ANSIBLE MANAGED BLOCK FOR NFS MOUNTS"
+        block: |
+          {% for disk in nfs_disks %}
+          agger:{{ disk.mount_point }} /mnt/{{ disk.directory_name }} nfs rw,vers=3,proto=tcp,rsize=1048576,wsize=1048576,async,noatime,nodiratime,actimeo=120,_netdev,soft,timeo=100 0 0
+          {% endfor %}
+      register: fstab_updated
+    
+    - name: Перемонтирование точек монтирования
+      command: mount -a
+      when: fstab_updated.changed
+      ignore_errors: yes
   
   become: true
   when: "'apper' in inventory_hostname" 

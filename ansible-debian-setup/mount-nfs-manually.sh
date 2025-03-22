@@ -82,17 +82,17 @@ echo "$SHARES" | grep -v "Export list" | while read share client; do
     
     echo "Монтирование $AGGER_IP:$share_path в $mount_point"
     
-    # Попытка монтирования с различными параметрами
-    if mount -t nfs -o vers=3,proto=tcp,noatime,nodiratime $AGGER_IP:$share_path $mount_point 2>/dev/null; then
-        echo -e "${GREEN}Успешно смонтировано!${NC}"
+    # Попытка монтирования с оптимизированными параметрами для быстрой передачи файлов
+    if mount -t nfs -o vers=3,proto=tcp,rsize=1048576,wsize=1048576,async,noatime,nodiratime,actimeo=120 $AGGER_IP:$share_path $mount_point 2>/dev/null; then
+        echo -e "${GREEN}Успешно смонтировано с оптимизированными параметрами!${NC}"
         echo "Проверка содержимого:"
         ls -la $mount_point | head -n 10
         echo ""
     else
         echo -e "${RED}Ошибка при монтировании. Пробуем альтернативные параметры...${NC}"
         
-        # Пробуем с другими параметрами
-        if mount -t nfs -o vers=3,soft,timeo=100 $AGGER_IP:$share_path $mount_point 2>/dev/null; then
+        # Пробуем с более консервативными параметрами
+        if mount -t nfs -o vers=3,proto=tcp,rsize=262144,wsize=262144,async,soft,timeo=100 $AGGER_IP:$share_path $mount_point 2>/dev/null; then
             echo -e "${GREEN}Успешно смонтировано с альтернативными параметрами!${NC}"
             echo "Проверка содержимого:"
             ls -la $mount_point | head -n 10
@@ -123,7 +123,7 @@ if [ "$add_fstab" = "y" ]; then
         if grep -q "$AGGER_IP:$share_path" /etc/fstab; then
             echo -e "${YELLOW}Запись для $AGGER_IP:$share_path уже существует в fstab${NC}"
         else
-            echo "$AGGER_IP:$share_path $mount_point nfs vers=3,proto=tcp,_netdev,soft,timeo=100 0 0" >> /etc/fstab
+            echo "$AGGER_IP:$share_path $mount_point nfs vers=3,proto=tcp,rsize=1048576,wsize=1048576,async,noatime,nodiratime,actimeo=120,_netdev,soft,timeo=100 0 0" >> /etc/fstab
             echo -e "${GREEN}Добавлена запись в fstab для $mount_point${NC}"
         fi
     done

@@ -84,7 +84,8 @@ export const AppProvider = ({ children }) => {
         loadFiles,
         handleDiskSelect,
         handleBack,
-        handleNavigate
+        handleNavigate,
+        setCurrentPath
       }}
     >
       {children}
