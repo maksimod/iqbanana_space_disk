@@ -16,12 +16,12 @@
   delegate_to: apper
   become: true
 
-# Добавляем задачу для установки SSHFS и sshpass
-- name: Установка SSHFS и sshpass на сервере apper
+# Устанавливаем необходимые пакеты
+- name: Установка CIFS-utils на сервере apper
   apt:
     name:
-      - sshfs
-      - sshpass
+      - cifs-utils
+      - smbclient
     state: present
   delegate_to: apper
   become: true
@@ -45,23 +45,27 @@
     - cifs-monitor.service
     - cifs-monitor.timer
   delegate_to: apper
+  become: true
 
 - name: Создание systemd сервиса для синхронизации
   template:
     src: sync-disks.service.j2
     dest: /etc/systemd/system/sync-disks.service
   delegate_to: apper
+  become: true
 
 - name: Создание systemd таймера для синхронизации
   template:
     src: sync-disks.timer.j2
     dest: /etc/systemd/system/sync-disks.timer
   delegate_to: apper
+  become: true
 
 - name: Перезагрузка systemd
   systemd:
     daemon_reload: yes
   delegate_to: apper
+  become: true
 
 - name: Включение и запуск таймера
   systemd:
@@ -69,7 +73,16 @@
     state: started
     enabled: yes
   delegate_to: apper
+  become: true
+
+- name: Размонтирование любых существующих SSHFS точек монтирования
+  shell: "for mount in $(mount | grep sshfs | awk '{print $3}'); do sudo umount -f -l $mount; done"
+  delegate_to: apper
+  become: true
+  failed_when: false
+  changed_when: true
 
 - name: Выполнение первичной синхронизации
   command: /home/apper/sync-disks.sh --force
   delegate_to: apper
+  become: true

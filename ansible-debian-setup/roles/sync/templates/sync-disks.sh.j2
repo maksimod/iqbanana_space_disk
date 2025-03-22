@@ -3,17 +3,11 @@
 # Настройки
 REMOTE_IP="192.168.0.104"
 REMOTE_USER="agger"
-REMOTE_PASS="2864"  # Пароль пользователя agger на сервере 192.168.0.104
+REMOTE_PASS="2864"
 MOUNT_PREFIX="/mnt"
 BACKEND_CONFIG="/home/apper/iqbanana-disk/backend/config/config.js"
 LOG_FILE="/var/log/sync-disks.log"
 TRIGGER_FILE="/tmp/sync_trigger"
-
-# Установка sshpass, если не установлен
-if ! command -v sshpass &> /dev/null; then
-    echo "Устанавливаем sshpass..."
-    sudo apt-get update && sudo apt-get install -y sshpass
-fi
 
 # Функция для логирования
 log() {
@@ -35,37 +29,38 @@ fi
 # Удаляем триггер после активации
 [ -f "$TRIGGER_FILE" ] && sudo rm -f "$TRIGGER_FILE" 2>/dev/null
 
-# Очистка старых ключей хостов
-if [ -f "/home/apper/.ssh/known_hosts" ]; then
-    log "Очистка известных ключей хостов для 192.168.0.104..."
-    ssh-keygen -f "/home/apper/.ssh/known_hosts" -R "192.168.0.104" 2>/dev/null || true
+# Установка необходимых пакетов
+if ! command -v cifs-utils &> /dev/null; then
+    log "Устанавливаем cifs-utils..."
+    sudo apt-get update && sudo apt-get install -y cifs-utils
 fi
 
-# Проверка SSH-соединения с использованием пароля
-log "Проверка SSH-доступа к $REMOTE_IP..."
-if ! sshpass -p "$REMOTE_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 $REMOTE_USER@$REMOTE_IP "echo test" >/dev/null 2>&1; then
-    log "ОШИБКА: Не удалось подключиться к $REMOTE_IP по SSH"
+# Проверка связи с сервером agger
+log "Проверка связи с $REMOTE_IP..."
+if ! ping -c 2 -W 5 $REMOTE_IP > /dev/null 2>&1; then
+    log "ОШИБКА: Сервер $REMOTE_IP недоступен"
     exit 1
 fi
 
-# Получение списка доступных дисков с Agger сервера
-log "Получение списка доступных дисков с Agger сервера..."
-REMOTE_DISKS=$(sshpass -p "$REMOTE_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $REMOTE_USER@$REMOTE_IP "find /mnt -maxdepth 1 -name 'disk_*' -type d | sort")
-
-if [ -z "$REMOTE_DISKS" ]; then
-    log "ОШИБКА: Не удалось получить список дисков с Agger сервера"
+# Проверяем доступность Samba на сервере
+log "Проверка доступности порта Samba на $REMOTE_IP..."
+if ! nc -z -w2 $REMOTE_IP 445; then
+    log "ОШИБКА: Порт Samba (445) недоступен на сервере $REMOTE_IP"
     exit 1
 fi
 
-# Логируем список доступных дисков
-log "Доступные диски на Agger сервере:"
-echo "$REMOTE_DISKS" | while IFS= read -r line; do log "  $line"; done
+# Сканируем диски на сервере agger
+log "Сканирование дисков на сервере $REMOTE_IP..."
+DISKS=$(sshpass -p "$REMOTE_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 $REMOTE_USER@$REMOTE_IP "find /mnt -maxdepth 1 -name 'disk_*' -type d | sort" 2>/dev/null)
 
-# Проверить и установить sshfs, если необходимо
-if ! command -v sshfs &> /dev/null; then
-    log "Устанавливаем sshfs..."
-    sudo apt-get update && sudo apt-get install -y sshfs
+if [ -z "$DISKS" ]; then
+    log "ОШИБКА: Не удалось найти диски на сервере $REMOTE_IP"
+    exit 1
 fi
+
+# Логируем список найденных дисков
+log "Найденные диски на сервере $REMOTE_IP:"
+echo "$DISKS" | while IFS= read -r line; do log "  $line"; done
 
 # Создаем директории для конфигурации приложения
 CONFIG_DISKS=" disks: {"
@@ -73,15 +68,24 @@ CONFIG_DISKS=" disks: {"
 # Очищаем точки монтирования
 log "Размонтирование старых точек монтирования..."
 for mount in $(mount | grep "$MOUNT_PREFIX/disk_" | awk '{print $3}'); do
-    sudo umount -f -l "$mount" 2>/dev/null || log "Ошибка принудительного размонтирования $mount"
+    sudo umount -f -l "$mount" 2>/dev/null || log "Ошибка размонтирования $mount"
     sleep 1
 done
 
-# Обрабатываем каждый диск с удаленного сервера
+# Обработка найденных дисков
 while IFS= read -r remote_disk; do
+    if [ -z "$remote_disk" ]; then
+        continue
+    fi
+
     disk_name=$(basename "$remote_disk")
     local_mount="$MOUNT_PREFIX/$disk_name"
     
+    # Преобразуем имя для CIFS шары (например, disk_sda1 -> DISK_SDA1)
+    share_name="DISK_$(echo ${disk_name#disk_} | tr '[:lower:]' '[:upper:]')"
+    
+    log "Обработка диска $disk_name, шара $share_name, монтирование в $local_mount"
+
     # Создаем локальную точку монтирования
     if [ ! -d "$local_mount" ]; then
         log "Создание точки монтирования $local_mount"
@@ -89,23 +93,31 @@ while IFS= read -r remote_disk; do
         sudo chown apper:apper "$local_mount"
         sudo chmod 775 "$local_mount"
     fi
-    
-    # Монтируем через sshfs с использованием пароля
+
+    # Монтируем через CIFS
     if ! mount | grep -q "$local_mount"; then
-        echo "$REMOTE_PASS" | sudo sshfs -o password_stdin,StrictHostKeyChecking=no,UserKnownHostsFile=/dev/null,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,allow_other,default_permissions,idmap=user,uid=$(id -u apper),gid=$(id -g apper) $REMOTE_USER@$REMOTE_IP:$remote_disk $local_mount
-        if [ $? -eq 0 ]; then
-            log "Успешно смонтирован $remote_disk на $local_mount через sshfs"
-            # Добавляем в конфигурацию приложения
-            CONFIG_DISKS+="\n '$disk_name': '$local_mount',"
+        if ! sudo mount -t cifs "//$REMOTE_IP/$share_name" "$local_mount" -o username=$REMOTE_USER,password=$REMOTE_PASS,vers=3.0,uid=$(id -u apper),gid=$(id -g apper),file_mode=0777,dir_mode=0777,iocharset=utf8,cache=strict; then
+            log "ПРЕДУПРЕЖДЕНИЕ: Не удалось смонтировать шару $share_name, пробуем прямое соединение через SSH..."
+            
+            # Альтернативное решение: монтирование через SSHFS
+            sudo mkdir -p "$local_mount"
+            sudo chown apper:apper "$local_mount"
+            
+            if sshfs -o StrictHostKeyChecking=no,password_stdin,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,allow_other,default_permissions,idmap=user,uid=$(id -u apper),gid=$(id -g apper) $REMOTE_USER@$REMOTE_IP:$remote_disk $local_mount <<< "$REMOTE_PASS"; then
+                log "Успешно смонтирован $remote_disk через SSHFS"
+                CONFIG_DISKS+="\n '$disk_name': '$local_mount',"
+            else
+                log "ОШИБКА: Не удалось смонтировать $remote_disk ни через CIFS, ни через SSHFS"
+            fi
         else
-            log "ОШИБКА: Не удалось смонтировать $remote_disk через sshfs"
+            log "Успешно смонтирован //$REMOTE_IP/$share_name через CIFS"
+            CONFIG_DISKS+="\n '$disk_name': '$local_mount',"
         fi
     else
         log "Точка $local_mount уже смонтирована"
-        # Добавляем в конфигурацию приложения
         CONFIG_DISKS+="\n '$disk_name': '$local_mount',"
     fi
-done <<< "$REMOTE_DISKS"
+done <<< "$DISKS"
 
 # Завершаем конфигурацию приложения
 CONFIG_DISKS=$(echo -e "$CONFIG_DISKS" | sed '$s/,$//')
@@ -151,16 +163,8 @@ fi
 
 # Проверяем, смонтированы ли диски
 log "Проверка смонтированных дисков..."
-mount_count=$(mount | grep sshfs | wc -l)
+mount_count=$(mount | grep "on $MOUNT_PREFIX/disk_" | wc -l)
 log "Успешно смонтировано $mount_count дисков"
-
-# Проверка стабильности соединения
-log "Проверка стабильности сетевого соединения..."
-if ping -c 5 -w 10 $REMOTE_IP >/dev/null 2>&1; then
-    log "Сетевое соединение с $REMOTE_IP стабильно"
-else
-    log "ПРЕДУПРЕЖДЕНИЕ: Возможны проблемы с сетевым соединением"
-fi
 
 # Итоги
 log "Синхронизация дисков завершена"
