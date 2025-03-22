@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Disk Synchronization Every 5 Minutes
+Requires=sync-disks.service
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Unit=sync-disks.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

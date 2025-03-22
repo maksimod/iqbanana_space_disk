@@ -1,0 +1,45 @@
+[global]
+   workgroup = WORKGROUP
+   server string = Agger Server
+   security = user
+   netbios name = AGGER
+   bind interfaces only = yes
+   interfaces = 192.168.0.104
+   min protocol = SMB2
+   server min protocol = SMB2
+   server max protocol = SMB3
+   socket options = TCP_NODELAY IPTOS_LOWDELAY SO_KEEPALIVE
+   deadtime = 5
+   keepalive = 60
+   log level = 1
+   max log size = 50
+   log file = /var/log/samba/log.%m
+
+[homes]
+   comment = Home Directories
+   browseable = no
+   read only = no
+   create mask = 0700
+   directory mask = 0700
+   valid users = %S
+
+{% for device in available_devices.stdout_lines %}
+{% set device_name = device %}
+{% set size_cmd = 'blockdev --getsize64 /dev/' + device + ' | awk \'{printf "%.0f", $1/1024/1024/1024}\'' %}
+{% set device_size_gb = lookup('pipe', size_cmd) | int %}
+{% set is_system_cmd = 'for mp in / /boot /var /home /swap.img; do if mountpoint -q $mp && findmnt -n -o SOURCE $mp | grep -q ' + device + '; then echo "system"; exit 0; fi; done; echo "not_system"' %}
+{% set is_system = lookup('pipe', is_system_cmd) %}
+{% if device_size_gb >= 4 and is_system == "not_system" and "loop" not in device %}
+[DISK_{{ device | upper }}]
+   comment = Disk /dev/{{ device }}
+   path = /mnt/disk_{{ device }}
+   browseable = yes
+   read only = no
+   writable = yes
+   valid users = agger
+   create mask = 0777
+   directory mask = 0777
+   force user = agger
+   force group = agger
+{% endif %}
+{% endfor %}

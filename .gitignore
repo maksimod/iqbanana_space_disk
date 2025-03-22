@@ -2,10 +2,7 @@
 node_modules/
 */node_modules/
 
-alpine-iso/
-*/alpine-iso/
-
-deb_iso/*.iso
+debian/mini.iso
 
 # Среды и конфигурации
 .env

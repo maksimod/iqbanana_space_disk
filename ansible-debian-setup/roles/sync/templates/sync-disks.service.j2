@@ -1,0 +1,12 @@
+[Unit]
+Description=Synchronize Disks with Agger Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/apper/sync-disks.sh
+User=root
+
+[Install]
+WantedBy=multi-user.target

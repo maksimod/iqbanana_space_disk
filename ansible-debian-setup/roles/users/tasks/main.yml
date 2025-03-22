@@ -1,38 +1,36 @@
 ---
 # roles/users/tasks/main.yml
-- name: Создание нового пользователя aller
+- name: Создание пользователя agger
   user:
-    name: aller
+    name: agger
     password: "{{ '2864' | password_hash('sha512') }}"
     shell: /bin/bash
     groups: sudo
     append: yes
     state: present
-  become: yes
-
-- name: Копирование домашней директории от debianuser к aller
-  shell: rsync -a /home/debianuser/ /home/aller/
-  become: yes
-  changed_when: false
-
-- name: Изменение владельца файлов в домашней директории aller
-  file:
-    path: /home/aller
-    owner: aller
-    group: aller
-    recurse: yes
-  become: yes
 
 - name: Настройка sudo для нового пользователя
   copy:
-    content: "aller ALL=(ALL:ALL) NOPASSWD:ALL"
-    dest: /etc/sudoers.d/aller
+    content: "agger ALL=(ALL:ALL) NOPASSWD:ALL"
+    dest: /etc/sudoers.d/agger
     mode: '0440'
-  become: yes
 
-- name: Удаление старой конфигурации sudo
+- name: Создание директории .ssh
   file:
-    path: /etc/sudoers.d/debianuser
-    state: absent
-  become: yes
-  when: ansible_user != 'debianuser'
+    path: /home/agger/.ssh
+    state: directory
+    owner: agger
+    group: agger
+    mode: '0700'
+
+- name: Генерация SSH ключа для пользователя agger
+  user:
+    name: agger
+    generate_ssh_key: yes
+    ssh_key_bits: 4096
+    ssh_key_file: .ssh/id_rsa
+
+- name: Получение публичного ключа
+  slurp:
+    src: /home/agger/.ssh/id_rsa.pub
+  register: agger_pubkey

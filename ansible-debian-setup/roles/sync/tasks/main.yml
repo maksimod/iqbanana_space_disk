@@ -1,0 +1,75 @@
+---
+# roles/sync/tasks/main.yml
+
+# Настраиваем SSH ключи для доступа к apper серверу
+- name: Получение публичного ключа с сервера agger
+  command: cat /home/agger/.ssh/id_rsa.pub
+  register: agger_pubkey_content
+  changed_when: false
+  delegate_to: agger
+
+- name: Копирование SSH ключа на сервер apper
+  authorized_key:
+    user: apper
+    key: "{{ agger_pubkey_content.stdout }}"
+    state: present
+  delegate_to: apper
+  become: true
+
+# Добавляем задачу для установки SSHFS и sshpass
+- name: Установка SSHFS и sshpass на сервере apper
+  apt:
+    name:
+      - sshfs
+      - sshpass
+    state: present
+  delegate_to: apper
+  become: true
+
+- name: Создание улучшенного скрипта синхронизации на сервере apper
+  template:
+    src: sync-disks.sh.j2
+    dest: /home/apper/sync-disks.sh
+    owner: apper
+    group: apper
+    mode: '0755'
+  delegate_to: apper
+
+- name: Удаление старого сервиса, если существует
+  file:
+    path: "/etc/systemd/system/{{ item }}"
+    state: absent
+  loop:
+    - disk-check.service
+    - disk-check.timer
+    - cifs-monitor.service
+    - cifs-monitor.timer
+  delegate_to: apper
+
+- name: Создание systemd сервиса для синхронизации
+  template:
+    src: sync-disks.service.j2
+    dest: /etc/systemd/system/sync-disks.service
+  delegate_to: apper
+
+- name: Создание systemd таймера для синхронизации
+  template:
+    src: sync-disks.timer.j2
+    dest: /etc/systemd/system/sync-disks.timer
+  delegate_to: apper
+
+- name: Перезагрузка systemd
+  systemd:
+    daemon_reload: yes
+  delegate_to: apper
+
+- name: Включение и запуск таймера
+  systemd:
+    name: sync-disks.timer
+    state: started
+    enabled: yes
+  delegate_to: apper
+
+- name: Выполнение первичной синхронизации
+  command: /home/apper/sync-disks.sh --force
+  delegate_to: apper

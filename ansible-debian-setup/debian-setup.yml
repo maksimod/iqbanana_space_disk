@@ -1,12 +1,12 @@
 ---
-- name: Настройка Debian сервера
+- name: Настройка Debian сервера (Agger)
   hosts: debian_servers
-  become: false  # Начинаем без sudo, т.к. его еще нужно установить
-  gather_facts: false  # Отключаем сбор фактов, т.к. может потребовать sudo
+  become: true
+  gather_facts: false
 
-  tasks:
+  pre_tasks:
     - name: Установка sudo
-      raw: apt-get update && apt-get install -y sudo
+      raw: apt-get update && apt-get install -y sudo python3
       register: sudo_install
       changed_when: "'0 upgraded, 0 newly installed' not in sudo_install.stdout"
 
@@ -15,9 +15,12 @@
       register: sudo_config
       changed_when: sudo_config.rc == 0
 
+    - name: Сбор фактов после установки необходимых пакетов
+      setup:
+
   roles:
-    - common
-    - network
-    - users
-    - database
-    - docker
+    - common            # Базовые пакеты
+    - network           # Настройка сети
+    - users             # Настройка пользователей
+    - samba             # Настройка Samba и монтирование дисков
+    - sync              # Настройка синхронизации между серверами

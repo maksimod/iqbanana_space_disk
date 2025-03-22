@@ -1,0 +1,52 @@
+---
+# roles/samba/tasks/main.yml
+- name: Установка Samba и связанных пакетов
+  apt:
+    name:
+      - samba
+      - samba-common
+      - smbclient
+      - cifs-utils
+      - ntfs-3g
+    state: present
+    update_cache: yes
+
+- name: Создание и активация пользователя Samba
+  shell: |
+    (echo '2864'; echo '2864') | smbpasswd -a agger && smbpasswd -e agger
+  register: samba_user_result
+  changed_when: "'added user agger' in samba_user_result.stderr or 'enabled user agger' in samba_user_result.stderr"
+  failed_when: false
+  notify: restart samba
+
+- name: Создание директории для точек монтирования
+  file:
+    path: /mnt
+    state: directory
+    mode: '0755'
+
+- name: Поиск доступных блочных устройств
+  shell: lsblk -rno NAME,TYPE | awk '$2=="part" {print $1}'
+  register: available_devices
+  changed_when: false
+
+- name: Обработка каждого устройства
+  include_tasks: process_device.yml
+  vars:
+    device_name: "{{ item }}"
+  loop: "{{ available_devices.stdout_lines }}"
+
+- name: Создание конфигурации Samba
+  template:
+    src: smb.conf.j2
+    dest: /etc/samba/smb.conf
+  notify: restart samba
+
+- name: Настройка автоматического запуска служб Samba
+  service:
+    name: "{{ item }}"
+    state: started
+    enabled: yes
+  loop:
+    - smbd
+    - nmbd

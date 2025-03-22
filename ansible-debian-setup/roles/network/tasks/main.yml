@@ -1,21 +1,20 @@
 ---
 # roles/network/tasks/main.yml
-- name: Получение имени сетевого интерфейса
-  shell: "ip -o -4 route show to default | awk '{print $5}'"
-  register: interface_name
-  become: yes
-  changed_when: false
+- name: Установка необходимых пакетов для сети
+  apt:
+    name:
+      - net-tools
+      - iproute2
+      - ifupdown
+      - netplan.io
+    state: present
 
-- name: Создание файла конфигурации сети для статического IP
+- name: Конфигурация статического IP через netplan
   template:
-    src: interfaces.j2
-    dest: /etc/network/interfaces
-  become: yes
-  register: network_config
+    src: netplan.j2
+    dest: /etc/netplan/01-netcfg.yaml
+  register: netplan_config
 
-- name: Перезапуск сетевой службы
-  service:
-    name: networking
-    state: restarted
-  become: yes
-  when: network_config.changed
+- name: Применение конфигурации netplan
+  command: netplan apply
+  when: netplan_config.changed

@@ -1,0 +1,9 @@
+---
+# roles/samba/handlers/main.yml
+- name: restart samba
+  service:
+    name: "{{ item }}"
+    state: restarted
+  loop:
+    - smbd
+    - nmbd

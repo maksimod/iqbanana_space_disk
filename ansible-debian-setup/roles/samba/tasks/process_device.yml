@@ -1,0 +1,70 @@
+---
+# roles/samba/tasks/process_device.yml
+- name: Получение размера устройства {{ device_name }}
+  shell: blockdev --getsize64 /dev/{{ device_name }} | awk '{printf "%.0f", $1/1024/1024/1024}'
+  register: device_size_gb
+  changed_when: false
+
+- name: Получение информации о файловой системе для {{ device_name }}
+  shell: blkid -s UUID -o value /dev/{{ device_name }}
+  register: device_uuid
+  failed_when: false
+  changed_when: false
+
+- name: Проверка системных точек монтирования для {{ device_name }}
+  shell: |
+    for mp in / /boot /var /home /swap.img; do
+      if mountpoint -q $mp && findmnt -n -o SOURCE $mp | grep -q {{ device_name }}; then
+        echo "system"
+        exit 0
+      fi
+    done
+    echo "not_system"
+  register: is_system_device
+  changed_when: false
+
+- name: Обработка устройства {{ device_name }}
+  block:
+    - name: Создание точки монтирования для {{ device_name }}
+      file:
+        path: "/mnt/disk_{{ device_name }}"
+        state: directory
+        owner: agger
+        group: agger
+        mode: '0775'
+
+    - name: Форматирование устройства если нет файловой системы
+      shell: mkfs.ext4 -F /dev/{{ device_name }}
+      when: device_uuid.stdout == ""
+      register: formatted
+      changed_when: formatted.rc == 0
+
+    - name: Получение UUID устройства {{ device_name }} после форматирования
+      shell: blkid -s UUID -o value /dev/{{ device_name }}
+      register: device_uuid_after
+      when: formatted is defined and formatted.changed
+      changed_when: false
+
+    - name: Получение типа файловой системы для {{ device_name }}
+      shell: blkid -s TYPE -o value /dev/{{ device_name }}
+      register: device_fstype
+      changed_when: false
+
+    - name: Добавление в fstab для автоматического монтирования {{ device_name }}
+      mount:
+        path: "/mnt/disk_{{ device_name }}"
+        src: "UUID={{ device_uuid.stdout | default(device_uuid_after.stdout) }}"
+        fstype: "{{ device_fstype.stdout }}"
+        opts: defaults,nofail
+        state: present
+
+    - name: Монтирование устройства {{ device_name }}
+      mount:
+        path: "/mnt/disk_{{ device_name }}"
+        src: "UUID={{ device_uuid.stdout | default(device_uuid_after.stdout) }}"
+        fstype: "{{ device_fstype.stdout }}"
+        state: mounted
+  when: 
+    - device_size_gb.stdout | int >= 4
+    - is_system_device.stdout == "not_system"
+    - "'loop' not in device_name"
