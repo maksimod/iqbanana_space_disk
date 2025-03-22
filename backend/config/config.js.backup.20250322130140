@@ -19,7 +19,6 @@ const config = {
  'disk_sda1': '/mnt/disk_sda1',
  'disk_sda5': '/mnt/disk_sda5',
  'disk_sdb1': '/mnt/disk_sdb1',
- 'disk_sdb5': '/mnt/disk_sdb5',
  'disk_sdc1': '/mnt/disk_sdc1'
  }
 };

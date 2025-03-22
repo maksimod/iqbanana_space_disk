@@ -1,0 +1,23 @@
+# Настройка статических портов для NFS и RPC сервисов
+# Эти настройки необходимы для корректной работы NFS через брандмауэр
+
+# Статические порты для mountd, statd, и lockd
+fs.nfs.nlm_tcpport = 32768
+fs.nfs.nlm_udpport = 32768
+
+# Оптимизации для повышения производительности
+fs.leases-enable = 1
+fs.file-max = 65536
+
+# Настройки производительности для сетевого стека
+net.core.rmem_default = 262144
+net.core.rmem_max = 4194304
+net.core.wmem_default = 262144
+net.core.wmem_max = 4194304
+
+# Буферы для RPC
+sunrpc.tcp_slot_table_entries = 128
+sunrpc.udp_slot_table_entries = 128
+
+# Примечание: порты для NFS сервера настраиваются в /etc/default/nfs-kernel-server
+# Для полной функциональности необходимо открыть порты 111, 2049, 32765-32768 в файрволе 

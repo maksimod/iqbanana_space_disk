@@ -73,3 +73,93 @@
 - name: Выполнение первичной синхронизации
   command: /home/apper/sync-disks.sh --force
   delegate_to: apper
+
+# Добавляем задачу для установки NFS клиента
+- name: Установка NFS клиента на сервере apper
+  apt:
+    name:
+      - nfs-common
+      - rpcbind
+    state: present
+  delegate_to: apper
+  become: true
+
+- name: Убедиться, что rpcbind запущен и включен
+  systemd:
+    name: rpcbind
+    state: started
+    enabled: yes
+  delegate_to: apper
+
+- name: Создание улучшенного скрипта монтирования NFS на сервере apper
+  template:
+    src: mount-nfs.sh.j2
+    dest: /home/apper/mount-nfs.sh
+    owner: apper
+    group: apper
+    mode: '0755'
+  delegate_to: apper
+
+- name: Удаление старого сервиса, если существует
+  file:
+    path: "/etc/systemd/system/{{ item }}"
+    state: absent
+  loop:
+    - disk-check.service
+    - disk-check.timer
+    - cifs-monitor.service
+    - cifs-monitor.timer
+    - sync-disks.service
+    - sync-disks.timer
+  delegate_to: apper
+
+- name: Создание systemd сервиса для монтирования NFS
+  template:
+    src: mount-nfs.service.j2
+    dest: /etc/systemd/system/mount-nfs.service
+  delegate_to: apper
+
+- name: Создание скрипта автоперезапуска монтирования при падении
+  template:
+    src: nfs-watchdog.sh.j2
+    dest: /home/apper/nfs-watchdog.sh
+    owner: apper
+    group: apper
+    mode: '0755'
+  delegate_to: apper
+
+- name: Создание systemd сервиса для watchdog
+  template:
+    src: nfs-watchdog.service.j2
+    dest: /etc/systemd/system/nfs-watchdog.service
+  delegate_to: apper
+
+- name: Создание systemd таймера для watchdog
+  template:
+    src: nfs-watchdog.timer.j2
+    dest: /etc/systemd/system/nfs-watchdog.timer
+  delegate_to: apper
+
+- name: Перезагрузка systemd
+  systemd:
+    daemon_reload: yes
+  delegate_to: apper
+
+- name: Выполнение первичного монтирования вручную
+  command: /home/apper/mount-nfs.sh --force
+  delegate_to: apper
+  ignore_errors: yes
+
+- name: Пауза перед запуском сервисов
+  pause:
+    seconds: 5
+  delegate_to: apper
+
+- name: Запуск только таймера watchdog (не запускаем mount-nfs.service напрямую)
+  systemd:
+    name: "{{ item }}"
+    state: started
+    enabled: yes
+  loop:
+    - nfs-watchdog.timer
+  delegate_to: apper

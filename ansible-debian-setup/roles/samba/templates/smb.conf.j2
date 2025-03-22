@@ -1,45 +1,43 @@
 [global]
    workgroup = WORKGROUP
-   server string = Agger Server
-   security = user
-   netbios name = AGGER
-   bind interfaces only = yes
-   interfaces = 192.168.0.104
-   min protocol = SMB2
-   server min protocol = SMB2
-   server max protocol = SMB3
-   socket options = TCP_NODELAY IPTOS_LOWDELAY SO_KEEPALIVE
-   deadtime = 5
-   keepalive = 60
-   log level = 1
-   max log size = 50
+   server string = Agger NFS/Samba Server
    log file = /var/log/samba/log.%m
+   max log size = 1000
+   logging = file
+   panic action = /usr/share/samba/panic-action %d
+   security = user
+   map to guest = Bad User
+   passdb backend = tdbsam
+   socket options = TCP_NODELAY IPTOS_LOWDELAY SO_RCVBUF=65536 SO_SNDBUF=65536
+   read raw = yes
+   write raw = yes
+   use sendfile = yes
+   aio read size = 16384
+   aio write size = 16384
+   hosts allow = 127.0.0.1 192.168.0.0/24
+   hosts deny = all
+   oplocks = no
+   level2 oplocks = no
+   strict locking = no
+   load printers = no
+   printing = bsd
+   printcap name = /dev/null
+   disable spoolss = yes
 
 [homes]
    comment = Home Directories
    browseable = no
-   read only = no
-   create mask = 0700
-   directory mask = 0700
    valid users = %S
-
-{% for device in available_devices.stdout_lines %}
-{% set device_name = device %}
-{% set size_cmd = 'blockdev --getsize64 /dev/' + device + ' | awk \'{printf "%.0f", $1/1024/1024/1024}\'' %}
-{% set device_size_gb = lookup('pipe', size_cmd) | int %}
-{% set is_system_cmd = 'for mp in / /boot /var /home /swap.img; do if mountpoint -q $mp && findmnt -n -o SOURCE $mp | grep -q ' + device + '; then echo "system"; exit 0; fi; done; echo "not_system"' %}
-{% set is_system = lookup('pipe', is_system_cmd) %}
-{% if device_size_gb >= 4 and is_system == "not_system" and "loop" not in device %}
-[DISK_{{ device | upper }}]
-   comment = Disk /dev/{{ device }}
-   path = /mnt/disk_{{ device }}
-   browseable = yes
-   read only = no
    writable = yes
-   valid users = agger
-   create mask = 0777
-   directory mask = 0777
-   force user = agger
-   force group = agger
-{% endif %}
+
+{% for disk in nfs_disks %}
+[{{ disk.directory_name }}]
+   comment = Shared Disk {{ disk.device }} ({{ disk.size }})
+   path = {{ disk.mount_point }}
+   browseable = yes
+   guest ok = no
+   read only = no
+   create mask = 0755
+   directory mask = 0755
+   valid users = agger @users
 {% endfor %}

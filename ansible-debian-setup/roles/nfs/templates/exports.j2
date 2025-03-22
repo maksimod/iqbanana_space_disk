@@ -1,0 +1,10 @@
+# /etc/exports - NFS exports configuration
+# 
+# Пример:
+# /srv/nfs  192.168.1.0/24(rw,sync,no_subtree_check)
+#
+# Настройки для дисков на agger (NFS сервер)
+
+{% for disk in nfs_disks %}
+{{ disk.mount_point }} {{ apper_ip }}(rw,sync,no_subtree_check,no_root_squash,insecure)
+{% endfor %} 

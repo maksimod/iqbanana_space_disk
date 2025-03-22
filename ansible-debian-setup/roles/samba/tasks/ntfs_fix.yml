@@ -1,0 +1,112 @@
+---
+# roles/samba/tasks/ntfs_fix.yml
+
+# Убедимся что пакет ntfs-3g установлен
+- name: Проверка установки ntfs-3g
+  apt:
+    name: ntfs-3g
+    state: present
+  
+# Проверяем смонтированные NTFS диски
+- name: Проверка смонтированных NTFS дисков
+  shell: "findmnt -n -t ntfs,fuseblk -o SOURCE,TARGET | grep '/dev/{{ device_name }}' || echo 'not_mounted'"
+  register: ntfs_mounts
+  changed_when: false
+
+# Если диск уже смонтирован, размонтируем его принудительно
+- name: Размонтирование уже смонтированных NTFS дисков
+  shell: |
+    umount -f '{{ item.split()[1] }}' || umount -f -l '{{ item.split()[1] }}' || true
+    sleep 1
+  when: ntfs_mounts.stdout != 'not_mounted'
+  with_items: "{{ ntfs_mounts.stdout_lines }}"
+  changed_when: true
+  failed_when: false
+
+# Проверяем, не занят ли диск какими-либо процессами
+- name: Проверка процессов, использующих NTFS диск
+  shell: "fuser -m /dev/{{ device_name }} || echo 'no_processes'"
+  register: processes_using_disk
+  changed_when: false
+  failed_when: false
+
+# Завершаем все процессы, которые могут держать диск
+- name: Завершение процессов, которые могут держать NTFS диски
+  shell: |
+    fuser -k -m /dev/{{ device_name }} || true
+    sleep 2
+  when: processes_using_disk.stdout != 'no_processes'
+  changed_when: true
+  failed_when: false
+
+# Проверяем состояние NTFS диска и запускаем ntfsfix
+- name: Проверка состояния NTFS диска
+  shell: |
+    set -e
+    echo "Запуск ntfsfix для /dev/{{ device_name }}"
+    ntfsfix -d /dev/{{ device_name }}
+    sleep 1
+  register: ntfsfix_result
+  changed_when: true
+  failed_when: false
+  
+# Устанавливаем правильные права на точку монтирования
+- name: Установка прав на точку монтирования
+  file:
+    path: "/mnt/disk_{{ device_name }}"
+    state: directory
+    owner: agger
+    group: agger
+    mode: '0777'
+
+# Создаем запись в fstab для надежного монтирования NTFS
+- name: Создание записи в fstab для NTFS диска
+  lineinfile:
+    path: /etc/fstab
+    regexp: "^UUID={{ device_uuid.stdout | default(device_uuid_after.stdout) }}.*"
+    line: "UUID={{ device_uuid.stdout | default(device_uuid_after.stdout) }} /mnt/disk_{{ device_name }} ntfs-3g defaults,nofail,remove_hiberfile,uid=1000,gid=1000,umask=0022,windows_names,big_writes,noatime 0 0"
+    state: present
+  register: fstab_updated
+  
+# Монтируем диск с правильными параметрами
+- name: Монтирование NTFS диска напрямую
+  shell: |
+    set -e
+    ntfs-3g -o remove_hiberfile,uid=1000,gid=1000,umask=0022,windows_names,big_writes,noatime /dev/{{ device_name }} "/mnt/disk_{{ device_name }}"
+    echo "Монтирование успешно"
+  register: direct_mount
+  changed_when: direct_mount.rc == 0
+  failed_when: false
+  
+# Проверяем успешность монтирования
+- name: Проверка успешности монтирования NTFS
+  shell: |
+    if mountpoint -q "/mnt/disk_{{ device_name }}"; then
+      echo "SUCCESS"
+      exit 0
+    else
+      echo "FAILED"
+      exit 1
+    fi
+  register: check_mount
+  changed_when: false
+  failed_when: false
+  
+# Если монтирование не удалось, пробуем через mount
+- name: Резервное монтирование через mount если прямое не удалось
+  shell: |
+    mount -t ntfs-3g -o remove_hiberfile,uid=1000,gid=1000,umask=0022,windows_names,big_writes,noatime /dev/{{ device_name }} "/mnt/disk_{{ device_name }}" || true
+  when: check_mount.stdout == "FAILED"
+  changed_when: true
+  failed_when: false
+  
+# Выводим окончательный результат
+- name: Вывод информации о диске для отладки
+  debug:
+    msg:
+      - "============= Диагностика NTFS диска ============="
+      - "Устройство: /dev/{{ device_name }}"
+      - "Файловая система: {{ device_fstype.stdout }}"
+      - "UUID: {{ device_uuid.stdout }}"
+      - "Статус монтирования: {{ check_mount.stdout | default('Неизвестно') }}"
+  when: device_fstype.stdout == "ntfs" or device_fstype.stdout == "fuseblk" 

@@ -1,9 +1,44 @@
 ---
 # roles/samba/handlers/main.yml
+- name: restart nfs services
+  shell: |
+    systemctl restart rpcbind
+    sleep 2
+    systemctl restart nfs-kernel-server
+    sleep 1
+    exportfs -rav
+  changed_when: true
+  
+- name: restart nfs
+  service:
+    name: nfs-kernel-server
+    state: restarted
+    
+- name: restart rpcbind
+  service:
+    name: rpcbind
+    state: restarted
+    
+- name: kill ntfs processes
+  shell: |
+    for pid in $(fuser -m /dev/{{ item }} 2>/dev/null); do
+      kill -9 $pid 2>/dev/null || true
+    done
+  with_items: "{{ ntfs_devices | default([]) }}"
+  changed_when: false
+  failed_when: false
+  
+- name: apply nfs exports
+  shell: exportfs -rav
+  changed_when: true
+
+# Обработчики для роли Samba
+
 - name: restart samba
   service:
     name: "{{ item }}"
     state: restarted
-  loop:
+  with_items:
     - smbd
     - nmbd
+  become: true

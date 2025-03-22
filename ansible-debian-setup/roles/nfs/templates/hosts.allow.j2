@@ -1,0 +1,12 @@
+# Правила доступа TCP Wrappers для NFS
+
+# Разрешаем доступ к NFS сервисам от клиента apper
+rpcbind: {{ apper_ip }}
+mountd: {{ apper_ip }}
+nfsd: {{ apper_ip }}
+statd: {{ apper_ip }}
+lockd: {{ apper_ip }}
+rquotad: {{ apper_ip }}
+
+# Локальный доступ всегда разрешен
+ALL: 127.0.0.1 localhost 

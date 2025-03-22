@@ -1,0 +1,18 @@
+# Конфигурация для nfs-kernel-server
+# Установка статических портов для обеспечения работы через брандмауэр
+
+# Количество нитей сервера
+RPCNFSDCOUNT=8
+
+# Опции для mountd (должен быть статический порт)
+RPCMOUNTDOPTS="--port 32767 --manage-gids"
+
+# Порт для статистики (не нужен для большинства установок)
+STATDOPTS="--port 32765 --outgoing-port 32766"
+
+# Опции для pid и отслеживания соединений
+PROCNFSD_MOUNTPOINT=/proc/fs/nfsd
+NEED_SVCGSSD=""
+
+# Включение NFSv4
+NEED_IDMAPD=yes 

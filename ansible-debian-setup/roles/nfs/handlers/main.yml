@@ -1,0 +1,11 @@
+---
+# Обработчики для роли NFS
+
+- name: restart nfs services
+  service:
+    name: "{{ item }}"
+    state: restarted
+  with_items:
+    - rpcbind
+    - nfs-kernel-server
+  become: true 

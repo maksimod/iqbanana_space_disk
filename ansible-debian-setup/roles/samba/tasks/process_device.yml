@@ -1,70 +1,88 @@
 ---
 # roles/samba/tasks/process_device.yml
-- name: Получение размера устройства {{ device_name }}
+- name: Получение информации о размере устройства
   shell: blockdev --getsize64 /dev/{{ device_name }} | awk '{printf "%.0f", $1/1024/1024/1024}'
-  register: device_size_gb
+  register: device_size
   changed_when: false
-
-- name: Получение информации о файловой системе для {{ device_name }}
-  shell: blkid -s UUID -o value /dev/{{ device_name }}
-  register: device_uuid
   failed_when: false
-  changed_when: false
 
-- name: Проверка системных точек монтирования для {{ device_name }}
+- name: Получение информации о типе устройства
+  shell: blkid -o value -s TYPE /dev/{{ device_name }} || echo "unknown"
+  register: device_type
+  changed_when: false
+  failed_when: false
+
+- name: Проверка, является ли устройство системным
   shell: |
-    for mp in / /boot /var /home /swap.img; do
-      if mountpoint -q $mp && findmnt -n -o SOURCE $mp | grep -q {{ device_name }}; then
+    for mp in / /boot /var /home /swap.img; do 
+      if mountpoint -q $mp && findmnt -n -o SOURCE $mp | grep -q '{{ device_name }}'; then 
         echo "system"
         exit 0
       fi
     done
     echo "not_system"
-  register: is_system_device
+  register: is_system
   changed_when: false
+  failed_when: false
 
-- name: Обработка устройства {{ device_name }}
-  block:
-    - name: Создание точки монтирования для {{ device_name }}
-      file:
-        path: "/mnt/disk_{{ device_name }}"
-        state: directory
-        owner: agger
-        group: agger
-        mode: '0775'
+- name: Установка переменных
+  set_fact:
+    device_size_gb: "{{ device_size.stdout | int }}"
+    device_fs_type: "{{ device_type.stdout }}"
+    is_system_device: "{{ 'system' in is_system.stdout }}"
 
-    - name: Форматирование устройства если нет файловой системы
-      shell: mkfs.ext4 -F /dev/{{ device_name }}
-      when: device_uuid.stdout == ""
-      register: formatted
-      changed_when: formatted.rc == 0
+- name: Вывод информации об устройстве
+  debug:
+    msg: "Устройство: /dev/{{ device_name }}, размер: {{ device_size_gb }} GB, тип ФС: {{ device_fs_type }}, системное: {{ is_system_device }}"
 
-    - name: Получение UUID устройства {{ device_name }} после форматирования
-      shell: blkid -s UUID -o value /dev/{{ device_name }}
-      register: device_uuid_after
-      when: formatted is defined and formatted.changed
-      changed_when: false
-
-    - name: Получение типа файловой системы для {{ device_name }}
-      shell: blkid -s TYPE -o value /dev/{{ device_name }}
-      register: device_fstype
-      changed_when: false
-
-    - name: Добавление в fstab для автоматического монтирования {{ device_name }}
-      mount:
-        path: "/mnt/disk_{{ device_name }}"
-        src: "UUID={{ device_uuid.stdout | default(device_uuid_after.stdout) }}"
-        fstype: "{{ device_fstype.stdout }}"
-        opts: defaults,nofail
-        state: present
-
-    - name: Монтирование устройства {{ device_name }}
-      mount:
-        path: "/mnt/disk_{{ device_name }}"
-        src: "UUID={{ device_uuid.stdout | default(device_uuid_after.stdout) }}"
-        fstype: "{{ device_fstype.stdout }}"
-        state: mounted
+- name: Создание точки монтирования
+  file:
+    path: "/mnt/disk_{{ device_name }}"
+    state: directory
+    mode: '0755'
   when: 
-    - device_size_gb.stdout | int >= 4
-    - is_system_device.stdout == "not_system"
+    - device_size_gb|int >= 4
+    - not is_system_device
     - "'loop' not in device_name"
+
+- name: Проверка, смонтировано ли устройство
+  shell: mountpoint -q "/mnt/disk_{{ device_name }}" || echo "not_mounted"
+  register: is_mounted
+  changed_when: false
+  failed_when: false
+  when: 
+    - device_size_gb|int >= 4
+    - not is_system_device
+    - "'loop' not in device_name"
+
+- name: Монтирование NTFS устройства
+  mount:
+    path: "/mnt/disk_{{ device_name }}"
+    src: "/dev/{{ device_name }}"
+    fstype: "{{ device_fs_type }}"
+    opts: "defaults,users,rw,uid=agger,gid=agger,umask=000"
+    state: mounted
+  register: mount_result
+  when: 
+    - device_size_gb|int >= 4
+    - not is_system_device
+    - "'loop' not in device_name"
+    - "'not_mounted' in is_mounted.stdout|default('')"
+    - device_fs_type == "ntfs"
+  ignore_errors: yes
+
+- name: Монтирование обычного устройства
+  mount:
+    path: "/mnt/disk_{{ device_name }}"
+    src: "/dev/{{ device_name }}"
+    fstype: "{{ device_fs_type }}"
+    opts: "defaults"
+    state: mounted
+  register: mount_result
+  when: 
+    - device_size_gb|int >= 4
+    - not is_system_device
+    - "'loop' not in device_name"
+    - "'not_mounted' in is_mounted.stdout|default('')"
+    - device_fs_type != "ntfs"
+  ignore_errors: yes
