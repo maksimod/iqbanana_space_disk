@@ -67,13 +67,24 @@ const FilesView = () => {
 
   // Создание новой папки
   const handleCreateFolder = async (folderName, onComplete) => {
-    const result = await createFolder(currentDisk, currentPath, folderName);
-    if (result) {
-      toast.showSuccess('Папка успешно создана');
-      loadFiles();
-      if (onComplete) onComplete();
-      // Сбрасываем результаты поиска после создания папки
-      setSearchResults(null);
+    try {
+      console.log('Отправка запроса на создание папки:', { folderName, path: currentPath });
+      
+      const result = await createFolder(currentDisk, currentPath, folderName);
+      if (result && result.success) {
+        toast.showSuccess('Папка успешно создана');
+        loadFiles();
+        if (onComplete) onComplete();
+        // Сбрасываем результаты поиска после создания папки
+        setSearchResults(null);
+      } else {
+        const errorMessage = result && result.error ? result.error : 'Не удалось создать папку';
+        toast.showError(errorMessage);
+        console.error('Ошибка создания папки:', errorMessage);
+      }
+    } catch (error) {
+      toast.showError('Ошибка при создании папки: ' + (error.message || 'Неизвестная ошибка'));
+      console.error('Ошибка при создании папки:', error);
     }
   };
 

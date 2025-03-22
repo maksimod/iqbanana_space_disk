@@ -74,14 +74,25 @@ const useApi = () => {
    * Создание новой папки
    */
   const createFolder = useCallback(async (disk, folderPath, folderName) => {
-    return await fetchData(`/disks/${disk}/createFolder`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ folderPath, folderName }),
-    });
-  }, [fetchData]);
+    try {
+      console.log('Отправка запроса на создание папки:', { 
+        disk, folderPath, folderName,
+        url: getApiUrl(`/disks/${disk}/createFolder`)
+      });
+      
+      return await fetchData(`/disks/${disk}/createFolder`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ folderPath, folderName }),
+      });
+    } catch (error) {
+      console.error('Ошибка создания папки:', error);
+      setError('Не удалось создать папку: ' + (error.message || 'Неизвестная ошибка'));
+      return null;
+    }
+  }, [fetchData, getApiUrl, setError]);
 
   /**
    * Получение URL для скачивания файла

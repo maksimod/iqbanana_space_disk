@@ -142,24 +142,49 @@ const createFolder = (req, res, next) => {
   const { disk } = req.params;
   const { folderPath, folderName } = req.body;
   
+  if (!folderName || typeof folderName !== 'string') {
+    logger.warn(`Попытка создания папки с недопустимым именем: ${folderName}`);
+    return res.status(400).json({ error: 'Недопустимое имя папки' });
+  }
+  
   if (!config.disks[disk]) {
     logger.warn(`Попытка создания папки на несуществующем диске: ${disk}`);
     return res.status(404).json({ error: 'Диск не найден' });
   }
   
-  const fullPath = path.join(config.disks[disk], folderPath, folderName);
-  logger.info(`Запрос на создание папки: ${disk}:${path.join(folderPath, folderName)}`);
+  // Очищаем имя папки от недопустимых символов
+  const sanitizedFolderName = folderName.replace(/[/\\?%*:|"<>]/g, '');
+  if (sanitizedFolderName !== folderName) {
+    logger.warn(`Имя папки содержало недопустимые символы: ${folderName} -> ${sanitizedFolderName}`);
+  }
   
-  // Используем наш специальный скрипт через sudo
-  exec(`sudo /usr/local/bin/create-folder.sh "${fullPath}"`, (err, stdout, stderr) => {
-    if (err) {
-      logger.error(`Ошибка при создании директории: ${fullPath}`, { error: err, stderr });
-      return res.status(500).json({ error: 'Не удалось создать директорию' });
+  const fullPath = path.join(config.disks[disk], folderPath || '', sanitizedFolderName);
+  logger.info(`Запрос на создание папки: ${disk}:${path.join(folderPath || '', sanitizedFolderName)} (полный путь: ${fullPath})`);
+  
+  try {
+    // Сперва пробуем создать папку напрямую без sudo
+    if (!fs.existsSync(fullPath)) {
+      fs.mkdirSync(fullPath, { recursive: true });
+      logger.info(`Папка создана: ${disk}:${path.join(folderPath || '', sanitizedFolderName)}`);
+      return res.json({ success: true, message: 'Директория успешно создана' });
+    } else {
+      logger.warn(`Папка уже существует: ${fullPath}`);
+      return res.status(409).json({ error: 'Папка с таким именем уже существует' });
     }
+  } catch (error) {
+    logger.error(`Ошибка при создании директории напрямую: ${fullPath}`, error);
     
-    logger.info(`Папка создана: ${disk}:${path.join(folderPath, folderName)}`);
-    res.json({ success: true, message: 'Директория успешно создана' });
-  });
+    // Если не удалось создать напрямую, пробуем через sudo скрипт
+    exec(`sudo /usr/local/bin/create-folder.sh "${fullPath}"`, (err, stdout, stderr) => {
+      if (err) {
+        logger.error(`Ошибка при создании директории через sudo: ${fullPath}`, { error: err, stderr });
+        return res.status(500).json({ error: 'Не удалось создать директорию' });
+      }
+      
+      logger.info(`Папка создана через sudo: ${disk}:${path.join(folderPath || '', sanitizedFolderName)}`);
+      res.json({ success: true, message: 'Директория успешно создана' });
+    });
+  }
 };
 
 /**
