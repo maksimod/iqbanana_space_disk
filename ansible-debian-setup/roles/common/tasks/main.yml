@@ -28,3 +28,11 @@
     name: samba
     state: present
   become: yes
+
+- name: Установка утилит для работы с сетью и дисками
+  apt:
+    name:
+      - cifs-utils
+      - smbclient
+      - samba
+    state: present

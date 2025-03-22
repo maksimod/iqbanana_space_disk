@@ -1,52 +1,84 @@
 ---
-# roles/samba/tasks/main.yml
 - name: Установка Samba и связанных пакетов
   apt:
     name:
       - samba
       - samba-common
-      - smbclient
       - cifs-utils
-      - ntfs-3g
+      - smbclient
+      - acl
     state: present
     update_cache: yes
 
-- name: Создание и активация пользователя Samba
-  shell: |
-    (echo '2864'; echo '2864') | smbpasswd -a agger && smbpasswd -e agger
-  register: samba_user_result
-  changed_when: "'added user agger' in samba_user_result.stderr or 'enabled user agger' in samba_user_result.stderr"
-  failed_when: false
-  notify: restart samba
-
-- name: Создание директории для точек монтирования
+- name: Создание директории для mount point
   file:
     path: /mnt
     state: directory
     mode: '0755'
 
-- name: Поиск доступных блочных устройств
-  shell: lsblk -rno NAME,TYPE | awk '$2=="part" {print $1}'
-  register: available_devices
-  changed_when: false
+- name: Определение и создание директорий для дисков
+  block:
+    - name: Получение списка дисков для шар
+      shell: >
+        lsblk -ndo NAME,TYPE,SIZE,MOUNTPOINT | 
+        awk '$2=="part" && $4=="" && $3 >= "4G" {print $1}' | 
+        grep -v "^[hsv]da"
+      register: available_disks
+      changed_when: false
 
-- name: Обработка каждого устройства
-  include_tasks: process_device.yml
-  vars:
-    device_name: "{{ item }}"
-  loop: "{{ available_devices.stdout_lines }}"
+    - name: Создание директорий для дисков
+      file:
+        path: "/mnt/disk_{{ item }}"
+        state: directory
+        owner: agger
+        group: agger
+        mode: '0777'
+      loop: "{{ available_disks.stdout_lines }}"
+      when: available_disks.stdout_lines | length > 0
 
-- name: Создание конфигурации Samba
+- name: Создание пользователя Samba
+  shell: |
+    (echo '2864'; echo '2864') | smbpasswd -a agger
+    smbpasswd -e agger
+  register: samba_user_result
+  changed_when: "'added user agger' in samba_user_result.stderr"
+  failed_when: false
+
+- name: Настройка конфигурации Samba
   template:
     src: smb.conf.j2
     dest: /etc/samba/smb.conf
+    owner: root
+    group: root
+    mode: '0644'
   notify: restart samba
 
-- name: Настройка автоматического запуска служб Samba
-  service:
+- name: Настройка прав для директорий шар
+  file:
+    path: "/mnt/disk_{{ item }}"
+    state: directory
+    owner: agger
+    group: agger
+    mode: '0777'
+    recurse: yes
+  loop: "{{ available_disks.stdout_lines }}"
+  when: available_disks.stdout_lines | length > 0
+
+- name: Открытие портов UFW для Samba
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop:
+    - 139
+    - 445
+  when: ansible_distribution == 'Debian'
+
+- name: Обеспечение автозапуска служб Samba
+  systemd:
     name: "{{ item }}"
-    state: started
     enabled: yes
+    state: started
   loop:
     - smbd
     - nmbd

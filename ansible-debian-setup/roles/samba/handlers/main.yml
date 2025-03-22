@@ -1,7 +1,6 @@
 ---
-# roles/samba/handlers/main.yml
 - name: restart samba
-  service:
+  systemd:
     name: "{{ item }}"
     state: restarted
   loop:

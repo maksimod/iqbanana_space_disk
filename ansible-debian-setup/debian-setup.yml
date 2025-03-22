@@ -1,4 +1,22 @@
 ---
+- name: Подготовка SSH-ключей
+  hosts: debian_servers
+  become: yes
+  gather_facts: false
+  tasks:
+    - name: Создание SSH-ключа для пользователя
+      user:
+        name: debianuser
+        generate_ssh_key: yes
+        ssh_key_bits: 2048
+        ssh_key_file: /home/debianuser/.ssh/id_rsa
+
+    - name: Установка authorized_keys
+      authorized_key:
+        user: debianuser
+        state: present
+        key: "{{ lookup('file', '/home/debianuser/.ssh/id_rsa.pub') }}"
+
 - name: Настройка Debian сервера (Agger)
   hosts: debian_servers
   become: true
