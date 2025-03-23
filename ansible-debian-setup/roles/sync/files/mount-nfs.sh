@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Настройки
-REMOTE_IP="{{ nfs_server_ip }}"
+REMOTE_IP="192.168.0.104"
 MOUNT_PREFIX="/mnt"
 LOG_FILE="/var/log/mount-nfs.log"
 RETRY_COUNT=10
@@ -346,4 +346,4 @@ fi
 
 # Завершение скрипта
 log "Скрипт монтирования NFS успешно завершен"
-exit 0
+exit 0 

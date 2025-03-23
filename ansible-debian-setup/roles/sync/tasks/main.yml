@@ -98,8 +98,8 @@
 
 # Альтернативное монтирование, если стандартное не удалось
 - name: Создание скрипта для принудительного монтирования
-  template:
-    src: mount-nfs.sh.j2
+  copy:
+    src: mount-nfs.sh
     dest: /home/apper/mount-nfs.sh
     owner: apper
     group: apper
@@ -109,8 +109,8 @@
 
 # Создание сервисов и watchdog
 - name: Создание systemd сервиса для монтирования NFS
-  template:
-    src: mount-nfs.service.j2
+  copy:
+    src: mount-nfs.service
     dest: /etc/systemd/system/mount-nfs.service
     owner: root
     group: root
@@ -118,9 +118,9 @@
   become: true
   tags: nfs_mount
 
-- name: Создание watchdog скрипта
-  template:
-    src: nfs-watchdog.sh.j2
+- name: Создание скрипта watchdog для мониторинга NFS
+  copy:
+    src: nfs-watchdog.sh
     dest: /home/apper/nfs-watchdog.sh
     owner: apper
     group: apper
@@ -129,8 +129,8 @@
   tags: nfs_mount
 
 - name: Создание systemd сервиса для watchdog
-  template:
-    src: nfs-watchdog.service.j2
+  copy:
+    src: nfs-watchdog.service
     dest: /etc/systemd/system/nfs-watchdog.service
     owner: root
     group: root
@@ -139,8 +139,8 @@
   tags: nfs_mount
 
 - name: Создание systemd таймера для watchdog
-  template:
-    src: nfs-watchdog.timer.j2
+  copy:
+    src: nfs-watchdog.timer
     dest: /etc/systemd/system/nfs-watchdog.timer
     owner: root
     group: root
@@ -333,7 +333,7 @@
 
 # Окончательная проверка монтирования
 - name: Финальная проверка монтирования NFS
-  shell: "df -h | grep {{ nfs_server_ip }}"
+  shell: "mount | grep {{ nfs_server_ip }}"
   register: final_mount_check
   changed_when: false
   ignore_errors: yes
@@ -343,3 +343,15 @@
   debug:
     var: final_mount_check.stdout_lines | default([])
   when: final_mount_check is defined
+
+- name: Проверка свободного места на NFS дисках
+  shell: "df -h | grep '/mnt/disk_'"
+  register: disk_space_check
+  changed_when: false
+  ignore_errors: yes
+  become: true
+
+- name: Вывод информации о свободном месте на NFS дисках
+  debug:
+    var: disk_space_check.stdout_lines | default([])
+  when: disk_space_check is defined

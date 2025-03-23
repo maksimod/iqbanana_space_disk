@@ -1,0 +1,14 @@
+[Unit]
+Description=NFS Mount Service
+After=network.target rpcbind.service
+Requires=rpcbind.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/apper/mount-nfs.sh
+RemainAfterExit=yes
+User=root
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target 

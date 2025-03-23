@@ -1,0 +1,245 @@
+#!/bin/bash
+
+# Настройки
+REMOTE_IP="192.168.0.104"
+LOG_FILE="/var/log/nfs-watchdog.log"
+
+# Создаём лог-файл с правильными правами, если его нет
+mkdir -p /var/log
+touch "$LOG_FILE"
+chown apper:apper "$LOG_FILE"
+chmod 644 "$LOG_FILE"
+
+# Функция для логирования
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+log "Запуск NFS watchdog"
+
+# Проверка доступности NFS сервера
+if ! ping -c 1 -W 2 $REMOTE_IP >/dev/null 2>&1; then
+    log "ОШИБКА: Сервер $REMOTE_IP недоступен"
+    exit 1
+fi
+
+# Проверка доступности NFS порта
+if ! timeout 3 bash -c "echo > /dev/tcp/$REMOTE_IP/2049" >/dev/null 2>&1; then
+    log "ПРЕДУПРЕЖДЕНИЕ: NFS порт на сервере $REMOTE_IP недоступен"
+    exit 1
+fi
+
+# Получаем текущий список доступных экспортов через showmount
+get_current_exports() {
+    local current_exports=()
+    if command -v showmount >/dev/null 2>&1; then
+        log "Получение списка доступных NFS экспортов..."
+        if output=$(showmount -e $REMOTE_IP 2>/dev/null); then
+            while read -r line; do
+                if [[ "$line" != "Export list for"* ]] && [[ "$line" == */mnt/disk_* ]]; then
+                    export_path=$(echo "$line" | awk '{print $1}')
+                    current_exports+=("$export_path")
+                fi
+            done <<< "$output"
+            log "Найдено ${#current_exports[@]} доступных экспортов NFS"
+        else
+            log "Не удалось получить список экспортов с помощью showmount"
+        fi
+    fi
+    echo "${current_exports[@]}"
+}
+
+# Проверка на изменения в списке экспортов
+check_exports_changes() {
+    local current_exports=($1)
+    local fstab_exports=()
+    local new_exports=()
+    local removed_exports=()
+    
+    # Получаем список экспортов из fstab
+    while read -r line; do
+        if [[ "$line" == *"$REMOTE_IP:"* && "$line" == *"nfs"* ]]; then
+            src_path=$(echo "$line" | awk '{print $1}')
+            src_path=${src_path#$REMOTE_IP:}
+            fstab_exports+=("$src_path")
+        fi
+    done < /etc/fstab
+    
+    # Находим новые экспорты, которых нет в fstab
+    for export_path in "${current_exports[@]}"; do
+        if [[ ! " ${fstab_exports[*]} " =~ " ${export_path} " ]]; then
+            new_exports+=("$export_path")
+        fi
+    done
+    
+    # Находим экспорты, которые есть в fstab, но отсутствуют на сервере
+    for fstab_export in "${fstab_exports[@]}"; do
+        if [[ ! " ${current_exports[*]} " =~ " ${fstab_export} " ]]; then
+            removed_exports+=("$fstab_export")
+        fi
+    done
+    
+    # Вывод результатов
+    if [ ${#new_exports[@]} -gt 0 ]; then
+        log "Обнаружены новые экспорты: ${new_exports[*]}"
+        return 1
+    fi
+    
+    if [ ${#removed_exports[@]} -gt 0 ]; then
+        log "Обнаружены удаленные экспорты: ${removed_exports[*]}"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Проверка состояния NFS монтирований
+mounted=()
+not_responding=()
+not_mounted=()
+
+# Получаем список всех экспортированных дисков
+all_exports=($(get_current_exports))
+
+# Проверяем изменения в списке экспортов
+if ! check_exports_changes "${all_exports[*]}"; then
+    log "Обнаружены изменения в списке доступных экспортов"
+    log "Запуск unified-nfs-manager.sh для обновления монтирований..."
+    
+    # Проверяем наличие unified-nfs-manager.sh
+    if [ -f "/home/apper/unified-nfs-manager.sh" ]; then
+        /home/apper/unified-nfs-manager.sh mount
+    else
+        log "ОШИБКА: Скрипт unified-nfs-manager.sh не найден"
+    fi
+fi
+
+# Находим все NFS точки монтирования из fstab
+while read -r line; do
+    if [[ "$line" == *"$REMOTE_IP:"* && "$line" == *"nfs"* ]]; then
+        mount_point=$(echo "$line" | awk '{print $2}')
+        src_path=$(echo "$line" | awk '{print $1}')
+        
+        # Добавляем этот путь в список всех экспортов, если его там нет
+        if [[ ! " ${all_exports[*]} " =~ " ${src_path} " ]]; then
+            all_exports+=("$src_path")
+        fi
+        
+        # Создаем директорию, если она не существует
+        if [ ! -d "$mount_point" ]; then
+            log "Создание директории $mount_point..."
+            mkdir -p "$mount_point"
+            chmod 777 "$mount_point"
+        fi
+        
+        # Проверка точки монтирования
+        if ! mountpoint -q "$mount_point"; then
+            log "ОШИБКА: $mount_point не смонтирован"
+            not_mounted+=("$mount_point")
+        else
+            # Улучшенная проверка доступа к точке монтирования с несколькими попытками
+            access_success=false
+            for attempt in {1..3}; do
+                if timeout 10 ls -la "$mount_point" &>/dev/null; then
+                    access_success=true
+                    break
+                else
+                    log "Попытка $attempt проверки $mount_point не удалась, ожидание 2 секунды..."
+                    sleep 2
+                fi
+            done
+            
+            if [ "$access_success" = false ]; then
+                log "ОШИБКА: $mount_point не отвечает после 3 попыток"
+                not_responding+=("$mount_point")
+            else
+                log "Доступ к $mount_point подтвержден"
+                mounted+=("$mount_point")
+            fi
+        fi
+    fi
+done < /etc/fstab
+
+# Дополнительно проверяем все текущие монтирования NFS
+while read -r line; do
+    if [[ "$line" == *"$REMOTE_IP:/mnt/disk_"* ]]; then
+        mount_point=$(echo "$line" | awk '{print $3}')
+        src_path=$(echo "$line" | awk '{print $1}')
+        
+        # Если эта точка уже проверена выше, пропускаем
+        if [[ " ${mounted[*]} " == *" $mount_point "* ]] || [[ " ${not_responding[*]} " == *" $mount_point "* ]]; then
+            continue
+        fi
+        
+        # Улучшенная проверка доступа к точке монтирования с несколькими попытками
+        access_success=false
+        for attempt in {1..3}; do
+            if timeout 10 ls -la "$mount_point" &>/dev/null; then
+                access_success=true
+                break
+            else
+                log "Попытка $attempt проверки $mount_point не удалась, ожидание 2 секунды..."
+                sleep 2
+            fi
+        done
+        
+        if [ "$access_success" = false ]; then
+            log "ОШИБКА: $mount_point не отвечает после 3 попыток"
+            not_responding+=("$mount_point")
+        else
+            log "Доступ к $mount_point подтвержден"
+            mounted+=("$mount_point")
+        fi
+    fi
+done < <(mount)
+
+log "Итоги проверки:"
+log "- Смонтировано и доступно: ${#mounted[@]} (${mounted[*]})"
+[ ${#not_responding[@]} -gt 0 ] && log "- Смонтировано, но не отвечает: ${#not_responding[@]} (${not_responding[*]})"
+[ ${#not_mounted[@]} -gt 0 ] && log "- Не смонтировано: ${#not_mounted[@]} (${not_mounted[*]})"
+
+# Если обнаружены проблемы, принимаем меры
+if [ ${#not_responding[@]} -gt 0 ] || [ ${#not_mounted[@]} -gt 0 ]; then
+    log "Обнаружены проблемы с NFS монтированиями. Принимаем меры..."
+    
+    # Размонтируем проблемные точки
+    for mount in "${not_responding[@]}"; do
+        log "Размонтирование неотвечающей точки $mount"
+        umount -f "$mount" 2>/dev/null || umount -l "$mount" 2>/dev/null
+    done
+    
+    # Запускаем скрипт монтирования
+    log "Запуск скрипта повторного монтирования..."
+    
+    # Проверяем наличие unified-nfs-manager.sh
+    if [ -f "/home/apper/unified-nfs-manager.sh" ]; then
+        log "Использование unified-nfs-manager.sh для монтирования..."
+        /home/apper/unified-nfs-manager.sh mount
+    else
+        log "Использование стандартного скрипта монтирования..."
+        /home/apper/mount-nfs.sh --force
+    fi
+    
+    # Проверяем результат
+    sleep 5
+    remount_success=true
+    
+    for mount in "${not_responding[@]}" "${not_mounted[@]}"; do
+        if ! mountpoint -q "$mount" || ! timeout 5 ls -la "$mount" &>/dev/null; then
+            log "ОШИБКА: Не удалось восстановить $mount"
+            remount_success=false
+        else
+            log "УСПЕХ: Точка $mount успешно восстановлена"
+        fi
+    done
+    
+    if [ "$remount_success" = true ]; then
+        log "Все проблемы с монтированием успешно устранены"
+    else
+        log "ВНИМАНИЕ: Не все проблемы с монтированием удалось устранить. Требуется проверка"
+    fi
+else
+    log "Все NFS монтирования в порядке"
+fi
+
+exit 0 
