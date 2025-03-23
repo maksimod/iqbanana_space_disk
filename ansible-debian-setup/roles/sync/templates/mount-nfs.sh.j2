@@ -185,23 +185,82 @@ for export_path in "${exports[@]}"; do
     log "  - $export_path"
 done
 
+# Функция для очистки устаревших монтирований
+clean_stale_mounts() {
+    log "=== Очистка устаревших NFS монтирований ==="
+    
+    # Создаем массив с актуальными экспортами
+    local actual_exports=()
+    for export_path in "${exports[@]}"; do
+        # Убираем префикс сервера, если он есть
+        if [[ "$export_path" == "$REMOTE_IP:"* ]]; then
+            export_path="${export_path#$REMOTE_IP:}"
+        fi
+        actual_exports+=("$export_path")
+    done
+    
+    # Получаем список всех NFS монтирований в fstab
+    local fstab_mounts=()
+    while read -r line; do
+        if [[ "$line" == *"$REMOTE_IP:/mnt/disk_"* && "$line" == *"nfs"* ]]; then
+            mount_entry=$(echo "$line" | awk '{print $1}')
+            # Убираем префикс сервера
+            mount_path="${mount_entry#$REMOTE_IP:}"
+            fstab_mounts+=("$mount_path")
+        fi
+    done < /etc/fstab
+    
+    # Проверяем каждую запись в fstab и удаляем неактуальные
+    for fstab_path in "${fstab_mounts[@]}"; do
+        local is_valid=false
+        
+        for actual_path in "${actual_exports[@]}"; do
+            if [ "$fstab_path" = "$actual_path" ]; then
+                is_valid=true
+                break
+            fi
+        done
+        
+        if [ "$is_valid" = false ]; then
+            log "Удаление устаревшей записи: $REMOTE_IP:$fstab_path"
+            
+            # Получаем точку монтирования
+            mount_point="$MOUNT_PREFIX/$(basename "$fstab_path")"
+            
+            # Размонтируем, если смонтировано
+            if mountpoint -q "$mount_point"; then
+                log "Размонтирование $mount_point..."
+                umount -f "$mount_point" 2>/dev/null || umount -l "$mount_point" 2>/dev/null
+            fi
+            
+            # Удаляем из fstab
+            sed -i "\|$REMOTE_IP:$fstab_path|d" /etc/fstab
+            log "Запись удалена из fstab"
+        fi
+    done
+    
+    log "Очистка устаревших монтирований завершена"
+}
+
 # Создаем резервную копию /etc/fstab перед изменениями
 if [ ! -f "/etc/fstab.backup" ]; then
     log "Создание резервной копии /etc/fstab..."
     cp /etc/fstab /etc/fstab.backup
 fi
 
-# Очищаем предыдущие NFS записи из fstab, если используем force режим
-if [ "$FORCE_MODE" = true ]; then
-    log "Удаление предыдущих NFS монтирований из /etc/fstab..."
-    sed -i "/^$REMOTE_IP:/d" /etc/fstab
-fi
+# Очистка устаревших монтирований
+clean_stale_mounts
 
 # Перебор экспортов и их монтирование
 mounted_count=0
 failed_count=0
 
 for export_path in "${exports[@]}"; do
+    # Если путь уже содержит адрес сервера, удаляем его
+    if [[ "$export_path" == "$REMOTE_IP:"* ]]; then
+        export_path="${export_path#$REMOTE_IP:}"
+    fi
+    
     # Создаем локальную точку монтирования с тем же именем
     dir_name=$(basename "$export_path")
     mount_point="$MOUNT_PREFIX/$dir_name"
@@ -265,6 +324,11 @@ log "Монтирование NFS завершено: успешно - $mounted_
 # Проверка смонтированных разделов
 log "Проверка доступности смонтированных разделов:"
 for export_path in "${exports[@]}"; do
+    # Если путь уже содержит адрес сервера, удаляем его
+    if [[ "$export_path" == "$REMOTE_IP:"* ]]; then
+        export_path="${export_path#$REMOTE_IP:}"
+    fi
+    
     dir_name=$(basename "$export_path")
     mount_point="$MOUNT_PREFIX/$dir_name"
     

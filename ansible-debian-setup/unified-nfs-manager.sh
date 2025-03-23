@@ -42,6 +42,58 @@ check_root() {
     fi
 }
 
+# Очистка устаревших монтирований
+clean_stale_mounts() {
+    log "${BLUE}=== Очистка устаревших NFS монтирований ===${NC}"
+    
+    # Получаем список текущих доступных экспортов
+    local available_exports=()
+    
+    # Если у нас есть обнаруженные диски через SSH или другие методы
+    if [ ${#DETECTED_DISKS[@]} -gt 0 ]; then
+        for disk in "${DETECTED_DISKS[@]}"; do
+            available_exports+=("$disk")
+        done
+    else
+        # Используем результат showmount
+        echo -e "$SHARES" | grep -v "Export list" | while read share client; do
+            [ -z "$share" ] && continue
+            share_path=$(echo $share | cut -d' ' -f1)
+            available_exports+=("$share_path")
+        done
+    fi
+    
+    # Находим все NFS записи в fstab
+    local fstab_entries=$(grep "$NFS_SERVER:/mnt/disk_" /etc/fstab | awk '{print $1}')
+    
+    # Проверяем каждую запись и удаляем недоступные
+    for entry in $fstab_entries; do
+        local found=false
+        for avail in "${available_exports[@]}"; do
+            if [ "$entry" = "$NFS_SERVER:$avail" ]; then
+                found=true
+                break
+            fi
+        done
+        
+        if [ "$found" = false ]; then
+            log "${YELLOW}Удаление устаревшей записи: $entry${NC}"
+            # Получаем точку монтирования
+            local mount_point=$(grep "$entry" /etc/fstab | awk '{print $2}')
+            # Размонтируем, если смонтировано
+            if mountpoint -q "$mount_point"; then
+                log "${YELLOW}Размонтирование $mount_point...${NC}"
+                umount -f "$mount_point" 2>/dev/null || umount -l "$mount_point" 2>/dev/null
+            fi
+            # Удаляем из fstab
+            sed -i "\|$entry|d" /etc/fstab
+            log "${GREEN}Запись для $entry удалена из fstab${NC}"
+        fi
+    done
+    
+    return 0
+}
+
 # Установка необходимых пакетов
 install_packages() {
     log "${BLUE}=== Установка необходимых пакетов ===${NC}"
@@ -159,6 +211,9 @@ get_shares() {
             echo "$SHARES"
         fi
     fi
+    
+    # После получения доступных шар, удаляем неактуальные монтирования
+    clean_stale_mounts
     
     return 0
 }
@@ -286,6 +341,10 @@ update_fstab_params() {
         sed -i '/nfs/ s/nodiratime/nodiratime,actimeo=120/' /etc/fstab
         sed -i '/actimeo=[0-9]*.*actimeo=[0-9]*/ s/actimeo=[0-9]*, actimeo=[0-9]*/actimeo=120/' /etc/fstab
         
+        # Удаляем дубликаты параметров
+        sed -i 's/,noatime,noatime/,noatime/g' /etc/fstab
+        sed -i 's/,nodiratime,nodiratime/,nodiratime/g' /etc/fstab
+        
         log "${GREEN}Файл /etc/fstab обновлен${NC}"
         log "NFS записи в /etc/fstab:"
         grep "nfs" /etc/fstab
@@ -300,11 +359,15 @@ update_fstab_params() {
 remount_shares() {
     log "${BLUE}=== Перемонтирование NFS точек монтирования ===${NC}"
     
+    # Получаем актуальный список шар перед перемонтированием
+    get_shares
+    
     # Получение списка смонтированных NFS шар
     MOUNTED_SHARES=$(mount | grep nfs | awk '{print $3}')
     
     if [ -z "$MOUNTED_SHARES" ]; then
         log "${YELLOW}Нет смонтированных NFS шар${NC}"
+        mount_shares
         return 0
     fi
     
@@ -371,6 +434,8 @@ show_help() {
     log "  sudo ./unified-nfs-manager.sh status   # Проверка статуса"
     log ""
     log "Примечание: Скрипт автоматически определяет все доступные диски на сервере."
+    log "При обнаружении новых или отсутствии ранее монтированных дисков выполняет"
+    log "соответствующие корректировки, добавляя новые и удаляя старые записи."
     log ""
     return 0
 }
