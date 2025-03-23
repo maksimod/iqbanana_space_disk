@@ -8,6 +8,7 @@ RETRY_COUNT=10
 RETRY_DELAY=3
 FORCE_MODE=false
 AUTO_DISCOVER=true
+BACKEND_CONFIG="/home/apper/iqbanana-disk/backend/config/config.js"
 
 # Проверка аргументов
 for arg in "$@"; do
@@ -281,8 +282,10 @@ done
 # Обновляем конфигурацию веб-приложения
 log "Обновление конфигурации веб-приложения..."
 if [ -f "$BACKEND_CONFIG" ]; then
-    # Обновляем секцию disks в конфигурации
-    # cp "$BACKEND_CONFIG" "$BACKEND_CONFIG.backup.$(date +%Y%m%d%H%M%S)"
+    # Пока просто логируем наличие файла конфигурации
+    log "Файл конфигурации $BACKEND_CONFIG найден"
 fi
 
-exit 0 
+# Завершение скрипта
+log "Скрипт монтирования NFS успешно завершен"
+exit 0

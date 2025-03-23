@@ -1,0 +1,14 @@
+---
+- name: Настройка NFS сервера
+  hosts: agger
+  become: true
+  roles:
+    - common
+    - nfs
+
+- name: Настройка клиента NFS
+  hosts: apper
+  become: true
+  roles:
+    - common
+    - sync

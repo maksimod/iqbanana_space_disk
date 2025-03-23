@@ -1,0 +1,6 @@
+---
+- name: Настройка системы резервного копирования
+  hosts: apper
+  become: true
+  roles:
+    - backup

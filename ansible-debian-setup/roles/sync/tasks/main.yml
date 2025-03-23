@@ -155,12 +155,45 @@
   tags: nfs_mount
 
 # Принудительное монтирование с автоматическим обнаружением дисков
-- name: Запуск скрипта принудительного монтирования с автоматическим обнаружением
-  command: /home/apper/mount-nfs.sh --force
+- name: Проверка наличия unified-nfs-manager.sh
+  stat:
+    path: /home/apper/unified-nfs-manager.sh
+  register: unified_nfs_manager
+  become: true
+  tags: nfs_mount
+
+- name: Копирование unified-nfs-manager.sh из корневой директории
+  copy:
+    src: "../../../unified-nfs-manager.sh"
+    dest: /home/apper/unified-nfs-manager.sh
+    owner: apper
+    group: apper
+    mode: '0755'
+  become: true
+  when: not unified_nfs_manager.stat.exists
+  tags: nfs_mount
+
+- name: Запуск unified-nfs-manager.sh для монтирования NFS
+  command: /home/apper/unified-nfs-manager.sh mount
   become: true
   ignore_errors: yes
   tags: nfs_mount
 
+- name: Запуск unified-nfs-manager.sh для оптимизации NFS
+  command: /home/apper/unified-nfs-manager.sh optimize
+  become: true
+  ignore_errors: yes
+  tags: nfs_mount
+
+# Запуск скрипта принудительного монтирования с автоматическим обнаружением теперь не нужен
+# Закомментировано для обратной совместимости
+# - name: Запуск скрипта принудительного монтирования с автоматическим обнаружением
+#   command: /home/apper/mount-nfs.sh --force
+#   become: true
+#   ignore_errors: yes
+#   tags: nfs_mount
+
+# Запуск и включение watchdog таймера
 - name: Запуск и включение watchdog таймера
   systemd:
     name: nfs-watchdog.timer
@@ -169,6 +202,7 @@
   become: true
   tags: nfs_mount
 
+# Включение сервиса монтирования NFS
 - name: Включение сервиса монтирования NFS
   systemd:
     name: mount-nfs.service
