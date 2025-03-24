@@ -714,8 +714,8 @@
 # Определяем опции монтирования для каждого типа файловой системы
 - name: Set mount options for different filesystem types
   set_fact:
-    ntfs_mount_opts: "defaults,uid=1000,gid=1000,umask=022,fmask=133,noatime,nofail"
-    exfat_mount_opts: "defaults,uid=1000,gid=1000,umask=022,noatime,nofail"
+    ntfs_mount_opts: "defaults,uid=1000,gid=1000,umask=022,fmask=133,noatime,nofail,rw"
+    exfat_mount_opts: "defaults,uid=1000,gid=1000,umask=022,noatime,nofail,rw"
     default_mount_opts: "defaults,noatime,nofail"
     network_mount_opts: "defaults,noatime,soft,timeo=20,retry=3,_netdev,nofail"
   when: verified_safe_partitions is defined and verified_safe_partitions | length > 0
@@ -737,6 +737,25 @@
     - "{{ fs_types.results | default([]) }}"
   when: verified_safe_partitions is defined and verified_safe_partitions | length > 0 and nfs_mount_base is defined
   register: mount_result
+  ignore_errors: yes
+
+# Перемонтирование NTFS разделов с поддержкой записи, если обычное монтирование не сработало
+- name: Remount NTFS partitions with write support if needed
+  shell: |
+    if [ "$(findmnt {{ nfs_mount_base }}/{{ item.0 | basename }} | grep -i 'ro,')" ]; then
+      umount {{ nfs_mount_base }}/{{ item.0 | basename }} 2>/dev/null
+      ntfs-3g {{ item.0 }} {{ nfs_mount_base }}/{{ item.0 | basename }} -o uid=1000,gid=1000,umask=022,fmask=133,noatime,rw
+      echo "remounted_rw"
+    else
+      echo "already_rw"
+    fi
+  with_together:
+    - "{{ verified_safe_partitions | default([]) }}"
+    - "{{ fs_types.results | default([]) }}"
+  when: >
+    verified_safe_partitions is defined and verified_safe_partitions | length > 0 and 
+    nfs_mount_base is defined and item.1.stdout is defined and item.1.stdout == 'ntfs'
+  register: ntfs_remount_result
   ignore_errors: yes
 
 # Логируем результаты монтирования
@@ -762,3 +781,42 @@
   with_items: "{{ mount_result.results | selectattr('failed', 'equalto', false) | map(attribute='item.0') | list }}"
   when: mount_result is defined and mount_result.results is defined and mount_result.results | selectattr('failed', 'equalto', false) | list | length > 0
   ignore_errors: yes
+
+# Получаем актуальную информацию о примонтированных разделах
+- name: Get mounted partitions info
+  shell: df -h | grep -E "(/dev/sd|/mnt/storage)" | sort
+  register: mounted_partitions_info
+  ignore_errors: yes
+
+# Создаем итоговый отчет о примонтированных дисках
+- name: Create summary report
+  set_fact:
+    mount_summary: "{{ [] }}"
+
+- name: Process mounted partitions for summary
+  set_fact:
+    mount_summary: "{{ mount_summary + [{'device': item.split()[0], 'mountpoint': item.split()[5], 'size': item.split()[1], 'used': item.split()[2], 'avail': item.split()[3], 'use%': item.split()[4]}] }}"
+  with_items: "{{ mounted_partitions_info.stdout_lines }}"
+  when: mounted_partitions_info.rc == 0 and mounted_partitions_info.stdout_lines | length > 0
+
+# Выводим красивый отчет о примонтированных дисках
+- name: Display formatted summary of mounted disks
+  debug:
+    msg: |
+      ============================================
+      📊 Итоговый отчет о примонтированных дисках:
+      ============================================
+      {% for line in mounted_partitions_info.stdout_lines %}
+      {{ line }}
+      {% endfor %}
+      ============================================
+  when: mounted_partitions_info.stdout_lines | length > 0
+
+# Вывод сообщения если ничего не примонтировано
+- name: Display no mounts message
+  debug:
+    msg: |
+      =========================================================
+                    NO DISKS WERE MOUNTED
+      =========================================================
+  when: (mount_summary is not defined) or (mount_summary | length == 0)
