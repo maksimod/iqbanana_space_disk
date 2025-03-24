@@ -1,6 +1,6 @@
 ---
 # Усовершенствованный скрипт для надежного определения и монтирования несистемных разделов
-# Решает проблемы с непримонтированными системными разделами, нестандартными разделами и LVM
+# Улучшенный подход без использования fstab для обнаружения дисков
 
 - name: Ensure system is fully booted before proceeding
   shell: systemctl is-system-running | grep -E 'running|degraded' || echo "not_ready"
@@ -89,63 +89,63 @@
     root_vg_name: "{{ root_vg.stdout }}"
   when: is_root_lvm and root_vg.stdout != ""
 
-# Получение всех системных точек монтирования из fstab
-- name: Get list of ALL mount points from /etc/fstab (even if not currently mounted)
-  shell: grep -v "^#" /etc/fstab | awk '{if ($2 != "none" && $2 != "swap") print $2}'
-  register: fstab_mount_points
+# Получение всех ТЕКУЩИХ точек монтирования вместо использования fstab
+- name: Get list of ALL currently mounted filesystems
+  shell: findmnt -l -o SOURCE,TARGET -n
+  register: current_mounts
   changed_when: false
-
-# Получение устройств из fstab
-- name: Get all devices from /etc/fstab
-  shell: grep -v "^#" /etc/fstab | awk '{if ($1 != "UUID=" && $1 != "LABEL=" && $1 != "/dev/disk/by-uuid/" && $1 != "/dev/disk/by-label/") print $1}'
-  register: fstab_devices
-  changed_when: false
-
-# Получаем UUID устройств из fstab
-- name: Get UUIDs from /etc/fstab
-  shell: grep -v "^#" /etc/fstab | grep -E 'UUID=|/dev/disk/by-uuid/' | awk '{print $1}' | sed -E 's/UUID=|\/dev\/disk\/by-uuid\///'
-  register: fstab_uuids
-  changed_when: false
-
-# Находим bind-монтирования в fstab
-- name: Identify bind mounts in fstab
-  shell: grep -v "^#" /etc/fstab | grep -E 'bind|rbind' | awk '{print $1" "$2}'
-  register: fstab_bind_mounts
-  changed_when: false
-  ignore_errors: yes
 
 # Создание расширенного списка системных путей
 - name: Create list of system mount paths
   set_fact:
     system_mount_paths: |
-      {{ fstab_mount_points.stdout_lines +
-         [
-           '/',
-           '/boot',
-           '/boot/efi',
-           '/home',
-           '/var',
-           '/var/log',
-           '/var/lib',
-           '/usr',
-           '/usr/local',
-           '/tmp',
-           '/opt',
-           '/srv',
-           None,
-           '[SWAP]',
-           'swap'
-         ] + (additional_system_paths | default([])) }}
+      [
+        '/',
+        '/boot',
+        '/boot/efi',
+        '/home',
+        '/var',
+        '/var/log',
+        '/var/lib',
+        '/usr',
+        '/usr/local',
+        '/tmp',
+        '/opt',
+        '/srv',
+        None,
+        '[SWAP]',
+        'swap'
+      ] + (additional_system_paths | default([]))
 
-# Получение текущих точек монтирования
-- name: Get currently mounted filesystems
-  shell: findmnt -l -o TARGET -n
-  register: current_mounts
-  changed_when: false
+# Получение списка системных устройств из текущих монтирований
+- name: Create list of currently mounted devices
+  set_fact:
+    current_mounted_devices: |
+      {% set devices = [] %}
+      {% for line in current_mounts.stdout_lines %}
+        {% set parts = line.split() %}
+        {% if parts|length >= 2 %}
+          {% set source = parts[0] %}
+          {% set target = parts[1] %}
+          {% if target in system_mount_paths %}
+            {% set devices = devices + [source] %}
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+      {{ devices | unique | list }}
 
+# Получение текущих точек монтирования для обновления списка системных путей
 - name: Update list of system mount paths with currently mounted paths
   set_fact:
-    system_mount_paths: "{{ system_mount_paths + current_mounts.stdout_lines }}"
+    system_mount_paths: |
+      {% set paths = system_mount_paths %}
+      {% for line in current_mounts.stdout_lines %}
+        {% set parts = line.split() %}
+        {% if parts|length >= 2 %}
+          {% set paths = paths + [parts[1]] %}
+        {% endif %}
+      {% endfor %}
+      {{ paths | unique | list }}
 
 # Создаем список bind-монтирований для исключения
 - name: Create list of bind mounted sources
@@ -154,14 +154,6 @@
       {% set sources = [] %}
       {% if bind_mounts.stdout_lines is defined %}
         {% for line in bind_mounts.stdout_lines %}
-          {% set parts = line.split() %}
-          {% if parts|length >= 2 %}
-            {% set sources = sources + [parts[0]] %}
-          {% endif %}
-        {% endfor %}
-      {% endif %}
-      {% if fstab_bind_mounts.stdout_lines is defined %}
-        {% for line in fstab_bind_mounts.stdout_lines %}
           {% set parts = line.split() %}
           {% if parts|length >= 2 %}
             {% set sources = sources + [parts[0]] %}
@@ -217,11 +209,14 @@
         {% set pvs_for_root_vg = vg_to_pv_mapping.get(root_vg_name, []) %}
         {% set devices = devices + pvs_for_root_vg %}
       {% endif %}
-      {% if fstab_devices.stdout_lines is defined %}
-        {% set devices = devices + fstab_devices.stdout_lines %}
+      {% if current_mounted_devices is defined %}
+        {% set devices = devices + current_mounted_devices %}
       {% endif %}
       {% if bind_mount_sources is defined %}
         {% set devices = devices + bind_mount_sources %}
+      {% endif %}
+      {% if excluded_devices is defined %}
+        {% set devices = devices + excluded_devices %}
       {% endif %}
       {{ devices | unique | list }}
 
@@ -276,26 +271,6 @@
       {% endfor %}
       {{ filtered_partitions }}
   when: is_root_lvm and vg_names.stdout_lines | length > 0
-
-# Исключение разделов с UUID, указанными в fstab
-- name: Remove partitions with UUIDs listed in fstab
-  shell: blkid "{{ item }}" | grep -o 'UUID="[^"]*"' | cut -d'"' -f2
-  register: partition_uuids
-  changed_when: false
-  with_items: "{{ non_system_partitions }}"
-  ignore_errors: yes
-
-- name: Filter out partitions based on UUID
-  set_fact:
-    non_system_partitions: >-
-      {% set filtered_partitions = [] %}
-      {% for i in range(non_system_partitions | length) %}
-        {% if partition_uuids.results[i].stdout not in fstab_uuids.stdout_lines %}
-          {% set filtered_partitions = filtered_partitions + [non_system_partitions[i]] %}
-        {% endif %}
-      {% endfor %}
-      {{ filtered_partitions }}
-  when: partition_uuids.results | length > 0 and fstab_uuids.stdout_lines | length > 0
 
 # Исключение уже используемых в bind-монтировании дисков
 - name: Filter out partitions used in bind mounts
@@ -352,59 +327,48 @@
       with_items: "{{ safe_partitions }}"
       ignore_errors: yes
 
-    - name: Get UUIDs for partitions
-      shell: blkid -s UUID -o value "{{ item }}"
-      register: uuid_values
+    # Дополнительная проверка работоспособности разделов перед монтированием
+    - name: Check filesystem integrity before mounting
+      shell: "if [ $(blkid -s TYPE -o value '{{ item }}') = 'ext4' ] || [ $(blkid -s TYPE -o value '{{ item }}') = 'ext3' ] || [ $(blkid -s TYPE -o value '{{ item }}') = 'ext2' ]; then e2fsck -n '{{ item }}' || echo 'fs_error'; else echo 'not_ext'; fi"
+      register: fs_integrity_checks
       changed_when: false
       with_items: "{{ safe_partitions }}"
       ignore_errors: yes
+
+    - name: Filter out partitions with filesystem errors
+      set_fact:
+        verified_safe_partitions: |
+          {% set result = [] %}
+          {% for i in range(safe_partitions | length) %}
+            {% if not fs_integrity_checks.results[i].stdout is defined or
+                  fs_integrity_checks.results[i].stdout != 'fs_error' %}
+              {% set result = result + [safe_partitions[i]] %}
+            {% endif %}
+          {% endfor %}
+          {{ result }}
 
     - name: Create mount points for non-system partitions
       file:
         path: "{{ nfs_mount_base }}/{{ item | basename }}"
         state: directory
         mode: '0755'
-      with_items: "{{ safe_partitions }}"
-      when: safe_partitions | length > 0
+      with_items: "{{ verified_safe_partitions }}"
+      when: verified_safe_partitions | length > 0
 
-    - name: Mount non-system partitions
+    - name: Mount non-system partitions with improved reliability
       mount:
         path: "{{ nfs_mount_base }}/{{ item.0 | basename }}"
         src: "{{ item.0 }}"
         fstype: "{{ item.1.stdout if item.1.stdout else 'auto' }}"
         state: mounted
-        opts: "defaults,noatime"
+        opts: "defaults,noatime,nofail"
       with_together:
-        - "{{ safe_partitions }}"
+        - "{{ verified_safe_partitions }}"
         - "{{ fs_types.results }}"
-      when: safe_partitions | length > 0
+      when: verified_safe_partitions | length > 0
       register: mount_result
-
-    - name: Add entries to fstab with appropriate options
-      mount:
-        path: "{{ nfs_mount_base }}/{{ item.0 | basename }}"
-        src: "UUID={{ item.2.stdout }}"
-        fstype: "{{ item.1.stdout if item.1.stdout else 'auto' }}"
-        state: present
-        opts: >-
-          {% if item.1.stdout in ['nfs', 'nfs4', 'cifs', 'smbfs', 'glusterfs', 'fuse.glusterfs'] %}
-          defaults,noatime,_netdev
-          {% else %}
-          defaults,noatime,nofail
-          {% endif %}
-      with_together:
-        - "{{ safe_partitions }}"
-        - "{{ fs_types.results }}"
-        - "{{ uuid_values.results }}"
-      when: safe_partitions | length > 0 and item.2.stdout != ""
-      register: fstab_result
       
     - name: Report mounting results
       debug:
         msg: "Successfully mounted {{ mount_result.results | selectattr('changed', 'equalto', true) | map(attribute='item.0') | list }}"
-      when: safe_partitions | length > 0 and mount_result.changed
-
-    - name: Report fstab entries added
-      debug:
-        msg: "Successfully added to fstab: {{ fstab_result.results | selectattr('changed', 'equalto', true) | map(attribute='item.0') | list }}"
-      when: safe_partitions | length > 0 and fstab_result.changed
+      when: verified_safe_partitions | length > 0 and mount_result.changed
