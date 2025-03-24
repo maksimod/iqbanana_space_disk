@@ -160,34 +160,37 @@
 # Создание расширенного списка системных путей с возможностью обнаружения нестандартных путей
 - name: Create list of system mount paths
   set_fact:
-    system_mount_paths: |
-      [
-        '/',
-        '/boot',
-        '/boot/efi',
-        '/home',
-        '/var',
-        '/var/log',
-        '/var/lib',
-        '/usr',
-        '/usr/local',
-        '/tmp',
-        '/opt',
-        '/srv',
-        '/run',
-        '/dev',
-        '/dev/shm',
-        '/sys',
-        '/proc',
-        '/etc',
-        '/bin',
-        '/sbin',
-        '/lib',
-        '/lib64',
-        None,
-        '[SWAP]',
-        'swap'
-      ] + (additional_system_paths | default([]))
+    system_mount_paths: 
+      - '/'
+      - '/boot'
+      - '/boot/efi'
+      - '/home'
+      - '/var'
+      - '/var/log'
+      - '/var/lib'
+      - '/usr'
+      - '/usr/local'
+      - '/tmp'
+      - '/opt'
+      - '/srv'
+      - '/run'
+      - '/dev'
+      - '/dev/shm'
+      - '/sys'
+      - '/proc'
+      - '/etc'
+      - '/bin'
+      - '/sbin'
+      - '/lib'
+      - '/lib64'
+      - null
+      - '[SWAP]'
+      - 'swap'
+
+- name: Add additional system paths if defined
+  set_fact:
+    system_mount_paths: "{{ system_mount_paths + additional_system_paths }}"
+  when: additional_system_paths is defined
 
 # Поиск нестандартных системных точек монтирования через анализ процессов
 - name: Detect non-standard system mount points
@@ -202,7 +205,12 @@
 # Обновление списка системных путей с найденными нестандартными путями
 - name: Update system mount paths with detected non-standard paths
   set_fact:
-    system_mount_paths: "{{ system_mount_paths + proc_mount_points.stdout_lines }}"
+    system_mount_paths: |
+      {% set paths = system_mount_paths %}
+      {% if proc_mount_points.stdout_lines is defined and proc_mount_points.stdout_lines | length > 0 %}
+        {% set paths = paths + proc_mount_points.stdout_lines %}
+      {% endif %}
+      {{ paths | unique | list }}
   when: proc_mount_points.stdout_lines is defined and proc_mount_points.stdout_lines | length > 0
 
 # Получение списка системных устройств из текущих монтирований
@@ -228,7 +236,10 @@
 - name: Update list of system mount paths with currently mounted paths
   set_fact:
     system_mount_paths: |
-      {% set paths = system_mount_paths %}
+      {% set paths = [] %}
+      {% for path in system_mount_paths %}
+        {% set paths = paths + [path] %}
+      {% endfor %}
       {% if current_mounts.stdout != "error" %}
         {% for line in current_mounts.stdout_lines %}
           {% set parts = line.split() %}
@@ -358,7 +369,7 @@
 
 # Получение списка блочных устройств с UUID для более надежной идентификации
 - name: Get all block device UUIDs
-  shell: blkid | grep -v "TYPE=\"swap\"" | awk -F": " '{print $1}' | xargs -I{} bash -c 'echo {} $(blkid -s UUID -o value {})' || echo "error"
+  shell: 'blkid | grep -v "TYPE=\"swap\"" | awk -F": " ''{print $1}'' | xargs -I{} bash -c ''echo {} $(blkid -s UUID -o value {})'' || echo "error"'
   register: block_uuids
   changed_when: false
   ignore_errors: yes
