@@ -836,47 +836,8 @@
   loop: "{{ mount_result.results }}"
   when: mount_result is defined and mount_result.results is defined and item.changed and not item.failed
 
-# После определения и монтирования дисков создаем простой отчет
+# Получаем текущие монтирования для отчета
 - name: Get current mounts for report
-  shell: findmnt -n -o SOURCE,TARGET,FSTYPE,SIZE | grep "{{ nfs_mount_base }}" || true
-  register: final_mounts
-  changed_when: false
-  ignore_errors: yes
-
-- name: Create report file
-  copy:
-    dest: "/tmp/ansible_mount_report.txt"
-    content: |
-      
-      
-      ╔════════════════════════════════════════════════════════════════════╗
-      ║                     MOUNTED DISKS REPORT                           ║
-      ╚════════════════════════════════════════════════════════════════════╝
-      {% if final_mounts.stdout_lines | length > 0 %}
-      Currently mounted disks:
-      {% for mount in final_mounts.stdout_lines %}
-      ┌──────────────────────────────────────────────────────────────────┐
-      │ Device:     {{ '%-52s'|format(mount.split()[0]) }} │
-      │ Mountpoint: {{ '%-52s'|format(mount.split()[1]) }} │
-      │ Type:       {{ '%-52s'|format(mount.split()[2]) }} │
-      │ Size:       {{ '%-52s'|format(mount.split()[3]) }} │
-      └──────────────────────────────────────────────────────────────────┘
-      {% endfor %}
-      {% else %}
-      No disks are currently mounted.
-      {% endif %}
-      ════════════════════════════════════════════════════════════════════
-      
-      
-  when: final_mounts is defined
-
-# Удаляем старый вывод отчета, так как он будет показан в конце плейбука
-- name: Remove old report display
-  meta: noop
-  when: true
-
-# Получаем текущие монтирования для размонтирования несистемных
-- name: Get all current mounts
   shell: findmnt -n -o SOURCE,TARGET,SIZE | grep "{{ nfs_mount_base }}" || true
   register: current_mounts
   changed_when: false
@@ -888,34 +849,3 @@
       - "Current mounts: {{ current_mounts.stdout_lines }}"
       - "System devices: {{ system_devices }}"
   when: ansible_verbosity > 1
-
-# Размонтируем несистемные диски
-- name: Unmount non-system disks
-  mount:
-    path: "{{ item.split()[1] }}"
-    src: "{{ item.split()[0] }}"
-    state: unmounted
-  with_items: "{{ current_mounts.stdout_lines }}"
-  when: >
-    current_mounts.stdout_lines is defined and 
-    current_mounts.stdout_lines | length > 0 and
-    (item.split()[0] not in system_devices) and
-    (item.split()[0] | regex_replace('/dev/','') not in small_disks.stdout_lines)
-  ignore_errors: yes
-
-# Проверяем, что все несистемные диски размонтированы
-- name: Verify unmounting
-  shell: findmnt -n -o SOURCE,TARGET | grep "{{ nfs_mount_base }}" || true
-  register: verify_unmount
-  changed_when: false
-  ignore_errors: yes
-
-- name: Force unmount remaining non-system disks
-  shell: umount -f "{{ item.split()[1] }}"
-  with_items: "{{ verify_unmount.stdout_lines }}"
-  when: >
-    verify_unmount.stdout_lines is defined and 
-    verify_unmount.stdout_lines | length > 0 and
-    (item.split()[0] not in system_devices) and
-    (item.split()[0] | regex_replace('/dev/','') not in small_disks.stdout_lines)
-  ignore_errors: yes
