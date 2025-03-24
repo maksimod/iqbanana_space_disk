@@ -72,3 +72,12 @@
         - "{{ temp_disk_info }}"
         - "{{ temp_mount_info }}"
       ignore_errors: yes
+
+# Добавляем отображение финального отчета в самом конце
+- name: Display Final Report
+  hosts: nfs_server
+  become: yes
+  tasks:
+    - name: Include report role
+      include_role:
+        name: report

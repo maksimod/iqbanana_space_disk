@@ -1,0 +1,20 @@
+---
+# Отображение финального отчета о монтировании дисков
+
+- name: Display final mount report
+  shell: cat /tmp/ansible_mount_report.txt || echo "No mount report available"
+  register: final_report
+  ignore_errors: yes
+  run_once: true
+
+- name: Show report
+  debug:
+    msg: "{{ final_report.stdout_lines }}"
+  run_once: true
+
+- name: Cleanup report file
+  file:
+    path: /tmp/ansible_mount_report.txt
+    state: absent
+  ignore_errors: yes
+  run_once: true 
