@@ -330,37 +330,66 @@
   set_fact:
     system_devices: |
       {% set devices = [] %}
-      {% if not is_root_lvm and root_disk_name.stdout != "" and root_disk_name.stdout != "error" %}
-        {% set devices = devices + ['/dev/' + root_disk_name.stdout] %}
+      
+      {% if not is_root_lvm and root_disk_name is defined and root_disk_name.stdout is defined %}
+        {% if root_disk_name.stdout != "" and root_disk_name.stdout != "error" %}
+          {% set devices = devices + ['/dev/' + root_disk_name.stdout] %}
+        {% endif %}
       {% endif %}
-      {% if system_disk_verification.stdout != "" and system_disk_verification.stdout != "error" %}
-        {% set devices = devices + ['/dev/' + system_disk_verification.stdout] %}
+      
+      {% if system_disk_verification is defined and system_disk_verification.stdout is defined %}
+        {% if system_disk_verification.stdout != "" and system_disk_verification.stdout != "error" %}
+          {% set devices = devices + ['/dev/' + system_disk_verification.stdout] %}
+        {% endif %}
       {% endif %}
-      {% if critical_mounts_disks.stdout_lines is defined and critical_mounts_disks.stdout != "error" %}
+      
+      {% if critical_mounts_disks is defined and critical_mounts_disks.stdout_lines is defined and critical_mounts_disks.stdout != "error" %}
         {% for disk in critical_mounts_disks.stdout_lines %}
-          {% set devices = devices + ['/dev/' + disk] %}
+          {% if disk is string and disk|trim != "" %}
+            {% set devices = devices + ['/dev/' + disk] %}
+          {% endif %}
         {% endfor %}
       {% endif %}
-      {% if is_root_lvm and root_vg_name is defined and vg_to_pv_mapping is defined %}
-        {% set pvs_for_root_vg = vg_to_pv_mapping.get(root_vg_name, []) %}
-        {% set devices = devices + pvs_for_root_vg %}
+      
+      {% if is_root_lvm and root_vg_name is defined and vg_to_pv_mapping is defined and root_vg_name in vg_to_pv_mapping %}
+        {% set pvs_for_root_vg = vg_to_pv_mapping[root_vg_name] %}
+        {% if pvs_for_root_vg is iterable and pvs_for_root_vg is not string %}
+          {% set devices = devices + pvs_for_root_vg %}
+        {% endif %}
       {% endif %}
+      
       {% if current_mounted_devices is defined %}
-        {% set devices = devices + current_mounted_devices %}
+        {% if current_mounted_devices is iterable and current_mounted_devices is not string %}
+          {% set devices = devices + current_mounted_devices %}
+        {% elif current_mounted_devices is string %}
+          {% set devices = devices + [current_mounted_devices] %}
+        {% endif %}
       {% endif %}
+      
       {% if bind_mount_sources is defined %}
-        {% set devices = devices + bind_mount_sources %}
+        {% if bind_mount_sources is iterable and bind_mount_sources is not string %}
+          {% set devices = devices + bind_mount_sources %}
+        {% elif bind_mount_sources is string %}
+          {% set devices = devices + [bind_mount_sources] %}
+        {% endif %}
       {% endif %}
-      {% if raid_components.stdout_lines is defined and raid_components.stdout_lines | length > 0 %}
+      
+      {% if raid_components is defined and raid_components.stdout_lines is defined %}
         {% for component in raid_components.stdout_lines %}
-          {% if component != '' %}
+          {% if component is string and component|trim != "" %}
             {% set devices = devices + [component] %}
           {% endif %}
         {% endfor %}
       {% endif %}
+      
       {% if excluded_devices is defined %}
-        {% set devices = devices + excluded_devices %}
+        {% if excluded_devices is iterable and excluded_devices is not string %}
+          {% set devices = devices + excluded_devices %}
+        {% elif excluded_devices is string %}
+          {% set devices = devices + [excluded_devices] %}
+        {% endif %}
       {% endif %}
+      
       {{ devices | unique | list }}
 
 - name: Debug system devices
@@ -406,11 +435,11 @@
         {% if device.type == 'disk' and device.children is defined %}
           {% for part in device.children %}
             {% if part.type == 'part' and 
-                  part.mountpoint not in system_mount_paths and
+                  (part.mountpoint is none or part.mountpoint not in system_mount_paths) and
                   '/dev/' + part.name not in system_devices and
                   '/dev/' + device.name not in system_devices and
                   part.fstype is defined and part.fstype != 'swap' and part.fstype != '' and
-                  part.mountpoint != '[SWAP]' %}
+                  (part.mountpoint is none or part.mountpoint != '[SWAP]') %}
               {% set ns_partitions = ns_partitions + ['/dev/' + part.name] %}
             {% endif %}
           {% endfor %}
@@ -469,111 +498,139 @@
     msg: "WARNING: No non-system partitions were identified. Nothing will be mounted."
   when: non_system_partitions | length == 0
 
-- name: Perform additional safety checks
-  block:
-    - name: Check partitions are not already mounted
-      shell: findmnt -n -o SOURCE "{{ item }}" || echo "not_mounted"
-      register: mount_check_results
-      changed_when: false
-      loop: "{{ non_system_partitions }}"
+- name: Set empty values when no partitions found
+  set_fact:
+    safe_partitions: []
+    verified_safe_partitions: []
+    partitions_to_check: []
+  when: non_system_partitions is not defined or non_system_partitions | length == 0
+
+- name: Set partition list for checks when partitions are available
+  set_fact:
+    partitions_to_check: "{{ non_system_partitions }}"
+  when: non_system_partitions is defined and non_system_partitions | length > 0
+
+- name: Check partitions are not already mounted
+  shell: findmnt -n -o SOURCE "{{ item }}" || echo "not_mounted"
+  register: mount_check_results
+  changed_when: false
+  loop: "{{ partitions_to_check }}"
+  when: partitions_to_check | length > 0
       
-    - name: Verify no root partitions are in the detected list
-      shell: "findmnt -n -o SOURCE / | grep -q {{ item }} || echo 'safe'"
-      register: root_safety_check
-      with_items: "{{ non_system_partitions }}"
-      changed_when: false
-      ignore_errors: yes
+- name: Verify no root partitions are in the detected list
+  shell: "findmnt -n -o SOURCE / | grep -q {{ item }} || echo 'safe'"
+  register: root_safety_check
+  with_items: "{{ partitions_to_check }}"
+  changed_when: false
+  ignore_errors: yes
+  when: partitions_to_check | length > 0
       
-    - name: Verify disk is not part of any critical mounts
-      shell: |
-        DISK_NAME=$(echo "{{ item }}" | sed 's/\/dev\///' | sed 's/[0-9]*$//')
-        lsblk -no NAME,MOUNTPOINT | grep -q "^$DISK_NAME" | grep -E ' /(boot|home|var|usr|lib|bin|sbin)($|/)' || echo 'safe'
-      register: critical_safety_check
-      with_items: "{{ non_system_partitions }}"
-      changed_when: false
-      ignore_errors: yes
+- name: Verify disk is not part of any critical mounts
+  shell: |
+    DISK_NAME=$(echo "{{ item }}" | sed 's/\/dev\///' | sed 's/[0-9]*$//')
+    lsblk -no NAME,MOUNTPOINT | grep -q "^$DISK_NAME" | grep -E ' /(boot|home|var|usr|lib|bin|sbin)($|/)' || echo 'safe'
+  register: critical_safety_check
+  with_items: "{{ partitions_to_check }}"
+  changed_when: false
+  ignore_errors: yes
+  when: partitions_to_check | length > 0
       
-    - name: Remove any partitions that may be system partitions (root check)
-      set_fact:
-        root_verified_non_system: "{{ non_system_partitions | zip(root_safety_check.results) | selectattr('1.stdout', 'equalto', 'safe') | map(attribute='0') | list }}"
+- name: Remove any partitions that may be system partitions (root check)
+  set_fact:
+    root_verified_non_system: "{{ partitions_to_check | zip(root_safety_check.results) | selectattr('1.stdout', 'equalto', 'safe') | map(attribute='0') | list }}"
+  when: partitions_to_check | length > 0 and root_safety_check is defined and root_safety_check.results is defined
       
-    - name: Remove any partitions that may be system partitions (critical mounts check)
-      set_fact:
-        verified_non_system: "{{ root_verified_non_system | zip(critical_safety_check.results) | selectattr('1.stdout', 'equalto', 'safe') | map(attribute='0') | list }}"
+- name: Remove any partitions that may be system partitions (critical mounts check)
+  set_fact:
+    verified_non_system: "{{ root_verified_non_system | zip(critical_safety_check.results) | selectattr('1.stdout', 'equalto', 'safe') | map(attribute='0') | list }}"
+  when: partitions_to_check | length > 0 and root_verified_non_system is defined and critical_safety_check is defined and critical_safety_check.results is defined
       
-    - name: Filter out already mounted partitions
-      set_fact:
-        safe_partitions: "{{ verified_non_system | zip(mount_check_results.results) | selectattr('1.stdout', 'equalto', 'not_mounted') | map(attribute='0') | list }}"
+- name: Filter out already mounted partitions
+  set_fact:
+    safe_partitions: "{{ verified_non_system | zip(mount_check_results.results) | selectattr('1.stdout', 'equalto', 'not_mounted') | map(attribute='0') | list }}"
+  when: partitions_to_check | length > 0 and verified_non_system is defined and mount_check_results is defined and mount_check_results.results is defined
 
-    - name: Display partitions that will be mounted
-      debug:
-        msg: "Partitions that will be safely mounted: {{ safe_partitions }}"
+- name: Display partitions that will be mounted
+  debug:
+    msg: "Partitions that will be safely mounted: {{ safe_partitions | default([]) }}"
 
-    - name: Get filesystem types for partitions
-      shell: blkid -s TYPE -o value "{{ item }}"
-      register: fs_types
-      changed_when: false
-      with_items: "{{ safe_partitions }}"
-      ignore_errors: yes
+- name: Set empty safe_partitions if none were found in processing
+  set_fact:
+    safe_partitions: []
+  when: safe_partitions is not defined or safe_partitions | length == 0
 
-    # Дополнительная проверка работоспособности разделов перед монтированием с улучшенной надежностью
-    - name: Check filesystem integrity before mounting (safe approach)
-      shell: |
-        FS_TYPE=$(blkid -s TYPE -o value "{{ item }}")
-        if [ "$FS_TYPE" = "ext4" ] || [ "$FS_TYPE" = "ext3" ] || [ "$FS_TYPE" = "ext2" ]; then 
-          # Используем более безопасные параметры для e2fsck
-          timeout 10 e2fsck -n "{{ item }}" 2>/dev/null || echo "fs_check_skipped"
-        else 
-          echo "not_ext"
-        fi
-      register: fs_integrity_checks
-      changed_when: false
-      with_items: "{{ safe_partitions }}"
-      ignore_errors: yes
+- name: Get filesystem types for partitions
+  shell: blkid -s TYPE -o value "{{ item }}"
+  register: fs_types
+  changed_when: false
+  with_items: "{{ safe_partitions }}"
+  ignore_errors: yes
+  when: safe_partitions | length > 0
 
-    - name: Filter out partitions with filesystem errors
-      set_fact:
-        verified_safe_partitions: |
-          {% set result = [] %}
-          {% for i in range(safe_partitions | length) %}
-            {% if not fs_integrity_checks.results[i].stdout is defined or
-                  not fs_integrity_checks.results[i].stdout in ["fs_error", "0", "1", "2", "4", "8", "16", "32", "64", "128"] %}
-              {% set result = result + [safe_partitions[i]] %}
-            {% endif %}
-          {% endfor %}
-          {{ result }}
+- name: Check filesystem integrity before mounting (safe approach)
+  shell: |
+    FS_TYPE=$(blkid -s TYPE -o value "{{ item }}")
+    if [ "$FS_TYPE" = "ext4" ] || [ "$FS_TYPE" = "ext3" ] || [ "$FS_TYPE" = "ext2" ]; then 
+      # Используем более безопасные параметры для e2fsck
+      timeout 10 e2fsck -n "{{ item }}" 2>/dev/null || echo "fs_check_skipped"
+    else 
+      echo "not_ext"
+    fi
+  register: fs_integrity_checks
+  changed_when: false
+  with_items: "{{ safe_partitions }}"
+  ignore_errors: yes
+  when: safe_partitions | length > 0
 
-    - name: Create mount points for non-system partitions
-      file:
-        path: "{{ nfs_mount_base }}/{{ item | basename }}"
-        state: directory
-        mode: '0755'
-      with_items: "{{ verified_safe_partitions }}"
-      when: verified_safe_partitions | length > 0
+- name: Filter out partitions with filesystem errors
+  set_fact:
+    verified_safe_partitions: |
+      {% set result = [] %}
+      {% for i in range(safe_partitions | length) %}
+        {% if not fs_integrity_checks.results[i].stdout is defined or
+              not fs_integrity_checks.results[i].stdout in ["fs_error", "0", "1", "2", "4", "8", "16", "32", "64", "128"] %}
+          {% set result = result + [safe_partitions[i]] %}
+        {% endif %}
+      {% endfor %}
+      {{ result }}
+  when: safe_partitions | length > 0 and fs_integrity_checks is defined and fs_integrity_checks.results is defined
 
-    - name: Get network filesystem types
-      set_fact:
-        network_fs_types: ['nfs', 'nfs4', 'cifs', 'smbfs', 'glusterfs', 'fuse.glusterfs']
+- name: Set empty verified_safe_partitions if none were found or filtering not run
+  set_fact:
+    verified_safe_partitions: []
+  when: safe_partitions | length == 0 or verified_safe_partitions is not defined
 
-    - name: Mount non-system partitions with improved reliability
-      mount:
-        path: "{{ nfs_mount_base }}/{{ item.0 | basename }}"
-        src: "{{ 'UUID=' + device_uuid_map[item.0] if item.0 in device_uuid_map else item.0 }}"
-        fstype: "{{ item.1.stdout if item.1.stdout else 'auto' }}"
-        state: mounted
-        opts: >-
-          {% if item.1.stdout in network_fs_types %}
-          defaults,noatime,soft,timeo=20,retry=3,_netdev,nofail
-          {% else %}
-          defaults,noatime,nofail
-          {% endif %}
-      with_together:
-        - "{{ verified_safe_partitions }}"
-        - "{{ fs_types.results }}"
-      when: verified_safe_partitions | length > 0
-      register: mount_result
+- name: Create mount points for non-system partitions
+  file:
+    path: "{{ nfs_mount_base }}/{{ item | basename }}"
+    state: directory
+    mode: '0755'
+  with_items: "{{ verified_safe_partitions }}"
+  when: verified_safe_partitions | length > 0
+
+- name: Get network filesystem types
+  set_fact:
+    network_fs_types: ['nfs', 'nfs4', 'cifs', 'smbfs', 'glusterfs', 'fuse.glusterfs']
+
+- name: Mount non-system partitions with improved reliability
+  mount:
+    path: "{{ nfs_mount_base }}/{{ item.0 | basename }}"
+    src: "{{ 'UUID=' + device_uuid_map[item.0] if item.0 in device_uuid_map else item.0 }}"
+    fstype: "{{ item.1.stdout if item.1.stdout else 'auto' }}"
+    state: mounted
+    opts: >-
+      {% if item.1.stdout in network_fs_types %}
+      defaults,noatime,soft,timeo=20,retry=3,_netdev,nofail
+      {% else %}
+      defaults,noatime,nofail
+      {% endif %}
+  with_together:
+    - "{{ verified_safe_partitions }}"
+    - "{{ fs_types.results }}"
+  when: verified_safe_partitions | length > 0
+  register: mount_result
       
-    - name: Report mounting results
-      debug:
-        msg: "Successfully mounted {{ mount_result.results | selectattr('changed', 'equalto', true) | map(attribute='item.0') | list }}"
-      when: verified_safe_partitions | length > 0 and mount_result.changed
+- name: Report mounting results
+  debug:
+    msg: "Successfully mounted {{ mount_result.results | selectattr('changed', 'equalto', true) | map(attribute='0') | list }}"
+  when: verified_safe_partitions | length > 0 and mount_result is defined and mount_result.changed is defined and mount_result.changed
