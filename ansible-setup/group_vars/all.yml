@@ -22,7 +22,6 @@ fs_mount_opts:
 # Инструменты для работы с файловыми системами
 required_packages:
   - ntfs-3g
-  - ntfsprogs
   - nfs-common
   - nfs-kernel-server
 
@@ -57,5 +56,5 @@ nfs_mount_retries: 5
 nfs_mount_delay: 10
 
 # Настройки для обнаружения NFS клиентом экспортированных разделов
-nfs_server_ip: "{{ hostvars[groups['nfs_server'][0]]['ansible_host'] }}"
-nfs_client_ip: "{{ hostvars[groups['nfs_client'][0]]['ansible_host'] }}"
+nfs_server_ip: "{{ groups['nfs_server'][0] }}"
+nfs_client_ip: "{{ groups['nfs_client'][0] }}"

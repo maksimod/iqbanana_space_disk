@@ -34,11 +34,11 @@
   tasks:
     - name: Set server IP address
       set_fact:
-        nfs_server_ip: "{{ ansible_host | default(inventory_hostname) }}"
+        nfs_server_ip: "{{ inventory_hostname }}"
 
     - name: Set client IP address
       set_fact:
-        nfs_client_ip: "{{ hostvars[groups['nfs_client'][0]]['ansible_host'] | default(groups['nfs_client'][0]) }}"
+        nfs_client_ip: "{{ groups['nfs_client'][0] }}"
 
     - name: Create NFS mount base directory
       file:
@@ -82,7 +82,7 @@
   tasks:
     - name: Set server IP address
       set_fact:
-        nfs_server_ip: "{{ hostvars[groups['nfs_server'][0]]['ansible_host'] | default(groups['nfs_server'][0]) }}"
+        nfs_server_ip: "{{ groups['nfs_server'][0] }}"
 
     - name: Include NFS client role
       include_role:
