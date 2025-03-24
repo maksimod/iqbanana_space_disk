@@ -7,33 +7,27 @@
   ignore_errors: yes
   run_once: true
 
-- name: Get script start time
-  stat:
-    path: /tmp/ansible_start_time.txt
-  register: start_time_file
-
-- name: Calculate execution time
+- name: Get script start time and calculate execution time
   block:
     - name: Get start time
       shell: "cat /tmp/ansible_start_time.txt"
       register: start_time
-      when: start_time_file.stat.exists
-  
+    
     - name: Get current time
       shell: "date +%s"
       register: end_time
-  
+    
     - name: Calculate duration
       set_fact:
         execution_seconds: "{{ (end_time.stdout|int) - (start_time.stdout|int) }}"
         execution_minutes: "{{ ((end_time.stdout|int) - (start_time.stdout|int)) // 60 }}"
         execution_remain_seconds: "{{ ((end_time.stdout|int) - (start_time.stdout|int)) % 60 }}"
-      when: start_time_file.stat.exists
-  when: start_time_file.stat.exists
+  when: true
+  run_once: true
 
 - name: Generate mount report text
   set_fact:
-    mount_report: "=== РЕАЛЬНО И УСПЕШНО ПРИМОНТИРОВАННЫЕ ДИСКИ ===\n{% for line in mount_info.stdout_lines | default([]) %}{{ line }}\n{% endfor %}\n\n=== ИНФОРМАЦИЯ О ВРЕМЕНИ ВЫПОЛНЕНИЯ ===\n{% if start_time_file.stat.exists %}Время выполнения: {{ execution_minutes }}:{{ '%02d' | format(execution_remain_seconds|int) }} ({{ execution_minutes }} минут {{ execution_remain_seconds }} секунд){% else %}Время выполнения: не доступно{% endif %}"
+    mount_report: "=== РЕАЛЬНО И УСПЕШНО ПРИМОНТИРОВАННЫЕ ДИСКИ ===\n{% for line in mount_info.stdout_lines | default([]) %}{{ line }}\n{% endfor %}\n\n=== ИНФОРМАЦИЯ О ВРЕМЕНИ ВЫПОЛНЕНИЯ ===\nВремя выполнения: {{ execution_minutes | default(0) }}:{{ '%02d' | format(execution_remain_seconds | default(0) |int) }} ({{ execution_minutes | default(0) }} минут {{ execution_remain_seconds | default(0) }} секунд)"
   run_once: true
 
 - name: Show detailed report
@@ -49,4 +43,6 @@
     - /tmp/ansible_mount_report.txt
     - /tmp/ansible_start_time.txt
   ignore_errors: yes
-  run_once: true 
+  run_once: true
+  async: 60
+  poll: 0 

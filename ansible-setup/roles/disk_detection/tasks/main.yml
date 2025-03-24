@@ -17,6 +17,8 @@
   with_items: "{{ current_storage_mounts.stdout_lines }}"
   when: current_storage_mounts.stdout_lines is defined and current_storage_mounts.stdout_lines | length > 0
   ignore_errors: yes
+  async: 60
+  poll: 0
 
 # Проверяем, что все точно размонтировано
 - name: Verify unmounting
@@ -25,11 +27,19 @@
   changed_when: false
   ignore_errors: yes
 
+- name: Wait for unmount operations to complete
+  wait_for:
+    timeout: 2
+  when: current_storage_mounts.stdout_lines is defined and current_storage_mounts.stdout_lines | length > 0
+  delegate_to: localhost
+
 - name: Force unmount if needed
   shell: umount -f "{{ item.split()[1] }}"
   with_items: "{{ verify_unmount.stdout_lines }}"
   when: verify_unmount.stdout_lines is defined and verify_unmount.stdout_lines | length > 0
   ignore_errors: yes
+  async: 60
+  poll: 0
 
 - name: Initialize mounted disks tracking
   set_fact:
@@ -79,11 +89,22 @@
   register: disk_info_json
   changed_when: false
   ignore_errors: yes
+  async: 60
+  poll: 0
 
-- name: Parse disk information to JSON
+- name: Wait for disk info
+  async_status:
+    jid: "{{ disk_info_json.ansible_job_id }}"
+  register: disk_info_result
+  until: disk_info_result.finished
+  retries: 30
+  delay: 2
+  when: disk_info_json.ansible_job_id is defined
+
+- name: Set disk info
   set_fact:
-    disk_data: "{{ disk_info_json.stdout | from_json }}"
-  when: disk_info_json.rc is not defined or disk_info_json.rc == 0
+    disk_info_json: "{{ disk_info_result }}"
+  when: disk_info_result is defined
 
 # Получаем информацию о размерах дисков для определения системных
 - name: Get detailed disk sizes
@@ -111,19 +132,19 @@
 # Очищаем и нормализуем имена устройств
 - name: Process disk data to normalize device names
   set_fact:
-    normalized_disk_data: "{{ disk_data }}"
-  when: disk_data is defined
+    normalized_disk_data: "{{ disk_info_json.stdout | from_json }}"
+  when: disk_info_json.rc is not defined or disk_info_json.rc == 0
 
 # Добавляем отладку для просмотра исходных данных
 - name: Debug original disk data structure
   debug:
-    msg: "Original disk data: {{ disk_data }}"
-  when: disk_data is defined and ansible_verbosity > 2
+    msg: "Original disk data: {{ disk_info_json.stdout }}"
+  when: disk_info_json.stdout is defined and ansible_verbosity > 2
 
 - name: Debug blockdevices structure
   debug:
-    var: disk_data.blockdevices
-  when: disk_data is defined and disk_data.blockdevices is defined and ansible_verbosity > 2
+    var: disk_info_json.blockdevices
+  when: disk_info_json.blockdevices is defined and ansible_verbosity > 2
 
 - name: Normalize device names in blockdevices
   set_fact:
@@ -133,14 +154,14 @@
 
 - name: Update disk data with normalized names
   set_fact:
-    disk_data: "{{ normalized_disk_data }}"
+    disk_info_json: "{{ normalized_disk_data }}"
   when: normalized_disk_data is defined
 
 # Добавляем отладку для проверки нормализованных данных
 - name: Debug normalized disk data
   debug:
-    var: disk_data.blockdevices
-  when: disk_data is defined and disk_data.blockdevices is defined
+    var: disk_info_json.blockdevices
+  when: disk_info_json.blockdevices is defined
 
 # Проверка наличия RAID-массивов
 - name: Check for software RAID arrays
@@ -499,7 +520,7 @@
   set_fact:
     non_system_partitions: "{{ non_system_partitions + (['/dev/' + item.1.name] if item.1.type == 'part' and (item.1.mountpoint is none or item.1.mountpoint not in system_mount_paths) and '/dev/' + item.1.name not in system_devices and '/dev/' + item.0.name not in system_devices and item.1.fstype is defined and item.1.fstype != 'swap' and item.1.fstype != '' and (item.1.mountpoint is none or item.1.mountpoint != '[SWAP]') else []) }}"
   with_nested:
-    - "{{ disk_data.blockdevices }}"
+    - "{{ disk_info_json.blockdevices }}"
     - "{{ item.children | default([]) }}"
   when: item.type == 'disk' and item.children is defined
   loop_control:
@@ -511,10 +532,10 @@
   block:
     - name: Iterate through all blockdevices
       include_tasks: process_disk.yml
-      loop: "{{ disk_data.blockdevices }}"
+      loop: "{{ disk_info_json.blockdevices }}"
       loop_control:
         loop_var: current_disk
-      when: disk_data.blockdevices is defined
+      when: disk_info_json.blockdevices is defined
   when: non_system_partitions | length == 0
 
 # Добавляем альтернативный метод обработки разделов в случае проблем с условиями
@@ -855,7 +876,7 @@
   package:
     name: ntfs-3g
     state: present
-  when: disk_data.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list | length > 0
+  when: disk_info_json.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list | length > 0
 
 # Проверка и размонтирование занятых точек монтирования
 - name: Check and unmount busy mount points
@@ -863,7 +884,7 @@
     - name: Check if mount point is busy
       shell: lsof "{{ nfs_mount_base }}/{{ item.name }}" 2>/dev/null || true
       register: lsof_result
-      with_items: "{{ disk_data.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
+      with_items: "{{ disk_info_json.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
       ignore_errors: yes
 
     - name: Gracefully unmount if busy
@@ -874,7 +895,7 @@
           umount -l "{{ nfs_mount_base }}/{{ item.name }}" 2>/dev/null || true
           sleep 1
         fi
-      with_items: "{{ disk_data.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
+      with_items: "{{ disk_info_json.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
       ignore_errors: yes
 
 # Монтируем NTFS разделы с поддержкой записи и обработкой ошибок
@@ -882,7 +903,7 @@
   block:
     - name: Attempt to mount NTFS partition
       shell: "umount {{ item.mountpoint }} 2>/dev/null; mkdir -p {{ nfs_mount_base }}/{{ item.name }} && mount -t ntfs-3g -o rw,uid=0,gid=0,umask=000 /dev/{{ item.name }} {{ nfs_mount_base }}/{{ item.name }}"
-      with_items: "{{ disk_data.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
+      with_items: "{{ disk_info_json.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
       ignore_errors: yes
   rescue:
     - name: Force mount if regular mount fails
@@ -890,14 +911,14 @@
         umount -f "{{ nfs_mount_base }}/{{ item.name }}" 2>/dev/null || true
         sleep 2
         ntfs-3g -o remove_hiberfile,force "/dev/{{ item.name }}" "{{ nfs_mount_base }}/{{ item.name }}"
-      with_items: "{{ disk_data.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
+      with_items: "{{ disk_info_json.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
       ignore_errors: yes
 
 # Проверка успешности монтирования
 - name: Verify NTFS mounts
   shell: findmnt -n -o SOURCE,TARGET,FSTYPE | grep "{{ nfs_mount_base }}/{{ item.name }}" || echo "not_mounted"
   register: mount_verification
-  with_items: "{{ disk_data.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
+  with_items: "{{ disk_info_json.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
   changed_when: false
   ignore_errors: yes
 

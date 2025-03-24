@@ -15,9 +15,9 @@ storage_disks:
 
 # Настройки монтирования для различных файловых систем
 fs_mount_opts:
-  ntfs: "remove_hiberfile,force,rw,uid=0,gid=0,umask=000"
-  ext4: "defaults,noatime"
-  xfs: "defaults,noatime"
+  ntfs: "remove_hiberfile,force,rw,uid=0,gid=0,umask=000,noatime,big_writes"
+  ext4: "defaults,noatime,data=writeback,commit=60,barrier=0"
+  xfs: "defaults,noatime,logbufs=8,logbsize=256k"
   
 # Инструменты для работы с файловыми системами
 required_packages:
@@ -48,7 +48,7 @@ excluded_devices:
 lvm_exclude_vgs: []
 
 # Параметры монтирования для улучшения надежности
-nfs_client_mount_opts: "rw,soft,timeo=30,retry=5,noatime,_netdev"
+nfs_client_mount_opts: "rw,soft,timeo=10,retrans=2,noatime,_netdev,rsize=262144,wsize=262144,nconnect=16,lookupcache=positive,nolock"
 
 # Дополнительные параметры для повышения надежности монтирования
 nfs_mount_timeout: 60

@@ -7,10 +7,22 @@
       - ntfs-3g-dev
     state: present
   register: nfs_install
+  async: 300
+  poll: 0
+
+- name: Wait for NFS package installation
+  async_status:
+    jid: "{{ nfs_install.ansible_job_id }}"
+  register: nfs_install_result
+  until: nfs_install_result.finished
+  retries: 30
+  delay: 5
+  when: nfs_install.ansible_job_id is defined
 
 - name: Display NFS installation status
   debug:
-    msg: "{{ 'SUCCESS: NFS server installed' if nfs_install is succeeded else 'ERROR: Failed to install NFS server' }}"
+    msg: "{{ 'SUCCESS: NFS server installed' if nfs_install_result is succeeded else 'ERROR: Failed to install NFS server' }}"
+  when: nfs_install_result is defined
 
 - name: Create base storage directory
   file:
@@ -26,6 +38,13 @@
     state: unmounted
   with_items: "{{ storage_disks }}"
   ignore_errors: yes
+  async: 60
+  poll: 0
+
+- name: Wait for unmount operations
+  wait_for:
+    timeout: 2
+  delegate_to: localhost
   
 - name: Create mount points for disks
   file:
@@ -35,26 +54,41 @@
     owner: root
     group: root
   with_items: "{{ storage_disks }}"
+  async: 60
+  poll: 0
 
-- name: Run ntfsfix on NTFS partitions
+- name: Wait for directory creation
+  wait_for:
+    timeout: 1
+  delegate_to: localhost
+
+- name: Run ntfsfix on NTFS partitions in parallel
   shell: "ntfsfix {{ item.device }}"
   with_items: "{{ storage_disks }}"
   when: item.fstype == 'ntfs'
   ignore_errors: yes
   register: ntfsfix_result
+  async: 120
+  poll: 0
 
-- name: Display ntfsfix status
-  debug:
-    msg: "Ran ntfsfix on {{ item.item.device }} - {{ 'Success' if item.rc == 0 else 'Failed but continuing' }}"
+- name: Wait for ntfsfix completion
+  async_status:
+    jid: "{{ item.ansible_job_id }}"
+  register: ntfsfix_status
   with_items: "{{ ntfsfix_result.results | default([]) }}"
-  when: ntfsfix_result is defined
-  
+  when: ntfsfix_result is defined and item.ansible_job_id is defined
+  until: ntfsfix_status.finished
+  retries: 30
+  delay: 2
+
 - name: Mount NTFS disks with ntfs-3g for write support
   shell: "mount -t ntfs-3g -o remove_hiberfile,force,rw,uid=0,gid=0,umask=000 {{ item.device }} {{ nfs_mount_base }}/{{ item.mountpoint }}"
   with_items: "{{ storage_disks }}"
   when: item.fstype == 'ntfs'
   register: ntfs_mount_result
   ignore_errors: yes
+  async: 120
+  poll: 0
 
 - name: Mount non-NTFS disks
   mount:
@@ -67,17 +101,19 @@
   when: item.fstype != 'ntfs'
   register: other_mount_result
   ignore_errors: yes
+  async: 120
+  poll: 0
+
+- name: Wait for mount operations to complete
+  wait_for:
+    timeout: 3
+  delegate_to: localhost
 
 - name: Check mount status
   shell: "mount | grep {{ item.device }} || echo 'Not mounted'"
   with_items: "{{ storage_disks }}"
   register: mount_status
   changed_when: false
-
-- name: Display mount status
-  debug:
-    msg: "{{ item.stdout }}"
-  with_items: "{{ mount_status.results }}"
 
 - name: Ensure exports file exists
   file:
@@ -88,17 +124,15 @@
     group: root
 
 - name: Configure NFS exports
-  lineinfile:
+  blockinfile:
     path: "{{ nfs_exports_file }}"
-    line: "{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_client_ip }}({{ nfs_opts }})"
-    regexp: "^{{ nfs_mount_base }}/{{ item.mountpoint }} "
+    marker: "# {mark} ANSIBLE MANAGED BLOCK FOR {{ nfs_client_ip }}"
+    block: |
+      {% for disk in storage_disks %}
+      {{ nfs_mount_base }}/{{ disk.mountpoint }} {{ nfs_client_ip }}({{ nfs_opts }})
+      {% endfor %}
     state: present
-  with_items: "{{ storage_disks }}"
   register: nfs_config
-
-- name: Display NFS configuration status
-  debug:
-    msg: "{{ 'SUCCESS: NFS exports configured' if (nfs_config.changed | default(false)) else 'ERROR or NO CHANGES: NFS exports configuration' }}"
 
 - name: Start and enable NFS server
   systemd:
@@ -107,25 +141,11 @@
     enabled: yes
   register: nfs_service
 
-- name: Display NFS service status
-  debug:
-    msg: "{{ 'SUCCESS: NFS service started' if nfs_service is succeeded else 'ERROR: NFS service failed' }}"
-
-- name: Wait for NFS server to be ready
-  wait_for:
-    port: 2049
-    timeout: "{{ nfs_mount_timeout }}"
-  register: nfs_ready
-
-- name: Display NFS readiness status
-  debug:
-    msg: "{{ 'SUCCESS: NFS server is ready' if nfs_ready is succeeded else 'ERROR: NFS server is not ready' }}"
-
 - name: Export NFS shares
   command: exportfs -ra
   register: export_result
-  retries: "{{ nfs_mount_retries }}"
-  delay: "{{ nfs_mount_delay }}"
+  retries: "{{ nfs_mount_retries | default(3) }}"
+  delay: "{{ nfs_mount_delay | default(2) }}"
   until: export_result is success
 
 - name: Verify exported shares

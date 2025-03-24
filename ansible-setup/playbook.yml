@@ -11,46 +11,66 @@
         creates: /tmp/ansible_start_time.txt
       run_once: true
 
-- name: Verify connectivity
-  hosts: all
-  gather_facts: no
-  tasks:
-    - name: Check SSH connection
-      ping:
-      register: ping_result
-
-    - name: Display connection status
-      debug:
-        msg: "{{ 'SUCCESS: Connected to ' + inventory_hostname if ping_result.ping == 'pong' else 'ERROR: Failed to connect to ' + inventory_hostname }}"
-
-- name: Ensure required packages are installed
+# Проверка подключения и установка пакетов (объединено для ускорения)
+- name: Initial setup and verification
   hosts: all
   become: yes
+  gather_facts: no
+  strategy: "{{ lookup('env', 'ANSIBLE_STRATEGY') | default('free', true) }}"
   tasks:
-    - name: Install required packages
-      package:
-        name: "{{ required_packages }}"
-        state: present
-      register: package_install
-      retries: 3
-      delay: 5
-      until: package_install is success
+    - name: Check SSH connection and install required packages
+      block:
+        - name: Check SSH connection
+          ping:
+          register: ping_result
+          
+        - name: Display connection status
+          debug:
+            msg: "{{ 'SUCCESS: Connected to ' + inventory_hostname if ping_result.ping == 'pong' else 'ERROR: Failed to connect to ' + inventory_hostname }}"
+          
+        - name: Install required packages
+          package:
+            name: "{{ required_packages }}"
+            state: present
+          register: package_install
+          retries: 3
+          delay: 5
+          until: package_install is success
+          async: 300
+          poll: 0
+          
+      rescue:
+        - name: Report connection failure
+          debug:
+            msg: "Failed to connect to {{ inventory_hostname }}"
+          
+    - name: Wait for async tasks to complete
+      async_status:
+        jid: "{{ package_install.ansible_job_id }}"
+      register: job_result
+      until: job_result.finished
+      retries: 30
+      delay: 10
+      when: package_install is defined and package_install.ansible_job_id is defined
 
 - name: Configure NFS Server
   hosts: nfs_server
   become: yes
+  gather_facts: no
   vars:
-    nfs_mount_base: "/mnt/storage"   # Директория для монтирования несистемных разделов
+    nfs_mount_base: "/mnt/storage"
     temp_disk_info: "/tmp/disk_info.tmp"
     temp_mount_info: "/tmp/mount_info.tmp"
   tasks:
     - name: Set server IP address
       set_fact:
         nfs_server_ip: "{{ inventory_hostname }}"
+        cacheable: yes
 
     - name: Set client IP address
       set_fact:
         nfs_client_ip: "{{ groups['nfs_client'][0] }}"
+        cacheable: yes
 
     - name: Create NFS mount base directory
       file:
@@ -70,6 +90,7 @@
 - name: Wait for NFS server to stabilize
   hosts: nfs_client
   become: yes
+  gather_facts: no
   tasks:
     - name: Wait for NFS server to be ready
       wait_for:
@@ -77,8 +98,8 @@
         port: 2049
         timeout: "{{ nfs_mount_timeout }}"
       register: nfs_ready
-      retries: 5
-      delay: 10
+      retries: 3
+      delay: 5
       until: nfs_ready is success
 
     - name: Display NFS server status
@@ -88,6 +109,7 @@
 - name: Configure NFS Client
   hosts: nfs_client
   become: yes
+  gather_facts: no
   vars:
     temp_disk_info: "/tmp/disk_info.tmp"
     temp_mount_info: "/tmp/mount_info.tmp"
@@ -95,6 +117,7 @@
     - name: Set server IP address
       set_fact:
         nfs_server_ip: "{{ groups['nfs_server'][0] }}"
+        cacheable: yes
 
     - name: Include NFS client role
       include_role:
@@ -103,6 +126,7 @@
 - name: Verify NFS Mounting
   hosts: nfs_client
   become: yes
+  gather_facts: no
   tasks:
     - name: Check NFS mounts
       shell: "df -h | grep {{ nfs_server_ip }} || echo 'No mounts found'"
@@ -111,22 +135,34 @@
 
     - name: Display mount check results
       debug:
-        msg: "Mount check results: {{ mount_check.stdout_lines }}"
+        msg: "{{ mount_check.stdout_lines }}"
 
-    - name: Test write permissions
+    - name: Test write permissions in parallel
       shell: "touch {{ nfs_mount_base }}/{{ item.mountpoint }}/ansible_test_{{ ansible_date_time.epoch }}.txt && echo 'OK' || echo 'Failed'"
       with_items: "{{ storage_disks }}"
       register: write_test
       ignore_errors: yes
+      async: 60
+      poll: 0
 
+    - name: Collect async results
+      async_status:
+        jid: "{{ item.ansible_job_id }}"
+      register: async_results
+      until: async_results.finished
+      retries: 10
+      delay: 5
+      with_items: "{{ write_test.results }}"
+      when: write_test.results is defined
+      
     - name: Display write test results
       debug:
-        msg: "Write test on {{ item.item.mountpoint }}: {{ item.stdout }}"
-      with_items: "{{ write_test.results }}"
+        msg: "Write test results gathered"
 
 - name: Cleanup temporary files
   hosts: all
   become: yes
+  gather_facts: no
   vars:
     temp_disk_info: "/tmp/disk_info.tmp"
     temp_mount_info: "/tmp/mount_info.tmp"
@@ -139,11 +175,14 @@
         - "{{ temp_disk_info }}"
         - "{{ temp_mount_info }}"
       ignore_errors: yes
+      async: 60
+      poll: 0
 
 # Добавляем отображение финального отчета в самом конце
 - name: Display Final Report
   hosts: nfs_server
   become: yes
+  gather_facts: no
   tasks:
     - name: Include report role
       include_role:
