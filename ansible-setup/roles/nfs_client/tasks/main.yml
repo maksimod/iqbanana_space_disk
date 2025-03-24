@@ -1,0 +1,22 @@
+---
+- name: Create mount point
+  file:
+    path: "{{ nfs_mount_point | default('/mnt/nfs_client') }}"
+    state: directory
+    mode: '0777'
+  register: mount_point_creation
+
+- name: Mount NFS share
+  mount:
+    path: "{{ nfs_mount_point | default('/mnt/nfs_client') }}"
+    src: "{{ nfs_server_ip }}:{{ nfs_share_path | default('/mnt/nfs_share') }}"
+    fstype: nfs
+    opts: rw,sync
+    state: mounted
+  register: mount_result
+
+- name: Log mounting status
+  debug:
+    msg:
+      - "Mount point creation: {{ mount_point_creation }}"
+      - "NFS mount status: {{ mount_result }}" 

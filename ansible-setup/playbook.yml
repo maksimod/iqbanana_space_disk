@@ -1,10 +1,20 @@
 ---
-- hosts: nfs_server
-  tasks:
-    - name: Ensure SSH access
-      ping:
+- name: Configure NFS Server
+  hosts: nfs_server
+  vars:
+    nfs_share_path: "/mnt/nfs_share"
+    nfs_client_ip: "{{ groups['nfs_client'][0] }}"
+  roles:
+    - common
+    - nfs_server
 
-- hosts: nfs_client
-  tasks:
-    - name: Ensure SSH access
-      ping: 
+- name: Configure NFS Client
+  hosts: nfs_client
+  vars:
+    nfs_mount_point: "/mnt/nfs_client"
+    nfs_server_ip: "{{ groups['nfs_server'][0] }}"
+    nfs_share_path: "/mnt/nfs_share"
+  roles:
+    - common
+    - nfs_client
+    - verification 

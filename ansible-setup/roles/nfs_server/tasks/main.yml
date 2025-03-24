@@ -1,0 +1,30 @@
+---
+- name: Create export directory
+  file:
+    path: "{{ nfs_share_path | default('/mnt/nfs_share') }}"
+    state: directory
+    mode: '0777'
+  register: create_dir
+
+- name: Configure exports file
+  template:
+    src: exports.j2
+    dest: /etc/exports
+    mode: '0644'
+  register: exports_config
+
+- name: Restart NFS server
+  service:
+    name: nfs-kernel-server
+    state: restarted
+  when: exports_config.changed
+
+- name: Export NFS shares
+  command: exportfs -ra
+  when: exports_config.changed
+
+- name: Log NFS server configuration
+  debug:
+    msg: 
+      - "NFS share directory created: {{ create_dir }}"
+      - "Exports configuration updated: {{ exports_config }}" 
