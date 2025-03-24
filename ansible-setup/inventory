@@ -1,0 +1,5 @@
+[nfs_server]
+192.168.0.106 ansible_user=root ansible_ssh_pass=rootpassword
+
+[nfs_client]
+192.168.0.105 ansible_user=root ansible_ssh_pass=2864 

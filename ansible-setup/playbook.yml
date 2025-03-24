@@ -1,0 +1,10 @@
+---
+- hosts: nfs_server
+  tasks:
+    - name: Ensure SSH access
+      ping:
+
+- hosts: nfs_client
+  tasks:
+    - name: Ensure SSH access
+      ping: 
