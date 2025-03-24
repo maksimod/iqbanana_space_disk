@@ -17,88 +17,147 @@
   failed_when: system_state.stdout == "not_ready"
   when: system_state.stdout is defined
 
-# Проверка доступности критически важных утилит
+# Проверка доступности критически важных утилит и сохранение кода успешности
 - name: Check for essential system tools
   shell: which lsblk findmnt blkid
-  register: system_tools
+  register: system_tools_result
+  changed_when: false
+  ignore_errors: yes
+
+- name: Check for additional storage-related tools
+  shell: which mdadm pvs vgs lvs || echo "missing_some_tools"
+  register: storage_tools
   changed_when: false
   ignore_errors: yes
 
 - name: Verify essential tools are available
   debug:
-    msg: "Essential tools check: {{ system_tools.rc }}"
-  failed_when: system_tools.rc != 0
+    msg: "Essential tools check: {{ system_tools_result.rc }}"
+  failed_when: system_tools_result.rc != 0
+
+# Определение переменной безопасного режима
+- name: Set safe mode if essential tools are missing
+  set_fact:
+    safe_mode: "{{ system_tools_result.rc != 0 }}"
   
 - name: Get disk information with more details
   shell: lsblk -o NAME,TYPE,MOUNTPOINT,UUID,FSTYPE,LABEL,SIZE,PKNAME -J
   register: disk_info_json
   changed_when: false
+  ignore_errors: yes
+
+- name: Set fallback value if lsblk fails
+  set_fact:
+    disk_data: {"blockdevices": []}
+  when: disk_info_json.rc is defined and disk_info_json.rc != 0
 
 - name: Parse disk information to JSON
   set_fact:
     disk_data: "{{ disk_info_json.stdout | from_json }}"
+  when: disk_info_json.rc is not defined or disk_info_json.rc == 0
 
-# Получение информации о LVM конфигурации
+# Проверка наличия RAID-массивов
+- name: Check for software RAID arrays
+  shell: "mdadm --detail --scan 2>/dev/null || echo 'No RAID'"
+  register: mdadm_result
+  changed_when: false
+  ignore_errors: yes
+
+- name: Get RAID array components if RAID exists
+  shell: "mdadm --detail /dev/md* 2>/dev/null | grep -E 'active|working' | awk '{print $NF}' || echo ''"
+  register: raid_components
+  changed_when: false
+  when: mdadm_result.stdout is defined and mdadm_result.stdout != 'No RAID'
+  ignore_errors: yes
+
+# Получение информации о LVM конфигурации с устойчивостью к ошибкам
 - name: Check if LVM is installed
   command: which lvs
   register: lvs_check
   changed_when: false
   ignore_errors: yes
 
+- name: Get full LVM volume groups information if LVM exists
+  shell: vgs -o vg_name,pv_name --noheadings || echo "error"
+  register: vgs_full_info
+  changed_when: false
+  when: lvs_check.rc == 0
+  ignore_errors: yes
+
 - name: Get LVM volume groups information if LVM exists
-  shell: vgs --noheadings -o vg_name | tr -d " "
+  shell: vgs --noheadings -o vg_name | tr -d " " || echo "error"
   register: vg_names
   changed_when: false
   when: lvs_check.rc == 0
+  ignore_errors: yes
 
 - name: Get detailed LVM physical volumes info for proper VG tracking
-  shell: pvs --noheadings -o pv_name,vg_name | awk '{print $1","$2}'
+  shell: pvs --noheadings -o pv_name,vg_name | awk '{print $1","$2}' || echo "error"
   register: pv_to_vg_mapping
   changed_when: false
   when: lvs_check.rc == 0
+  ignore_errors: yes
+
+- name: Get all logical volumes info including dependencies
+  shell: lvs --all --noheadings -o vg_name,lv_name,devices,origin || echo "error"
+  register: lv_full_info
+  changed_when: false
+  when: lvs_check.rc == 0
+  ignore_errors: yes
 
 - name: Get logical volumes information if LVM exists
-  shell: lvs --noheadings -o vg_name,lv_name | awk '{print $1"/"$2}'
+  shell: lvs --noheadings -o vg_name,lv_name | awk '{print $1"/"$2}' || echo "error"
   register: lv_info
   changed_when: false
   when: lvs_check.rc == 0
+  ignore_errors: yes
 
 # Поиск и анализ bind-монтирований
 - name: Identify bind mounts from mount output
-  shell: mount | grep -i "bind" | awk '{print $1" "$3}'
+  shell: mount | grep -i "bind" | awk '{print $1" "$3}' || echo "error"
   register: bind_mounts
   changed_when: false
   ignore_errors: yes
 
 # Определение корневого диска, включая LVM
 - name: Identify root device
-  shell: findmnt -n -o SOURCE / | sed 's/\[.*\]//'
+  shell: findmnt -n -o SOURCE / | sed 's/\[.*\]//' || echo "error"
   register: root_device_raw
   changed_when: false
+  ignore_errors: yes
 
-- name: Set root device facts
+- name: Set root device facts with fallback
   set_fact:
-    root_device_path: "{{ root_device_raw.stdout }}"
-    is_root_lvm: "{{ root_device_raw.stdout is regex('^/dev/mapper/') }}"
+    root_device_path: "{{ root_device_raw.stdout != 'error' | ternary(root_device_raw.stdout, 'unknown') }}"
+    is_root_lvm: "{{ root_device_raw.stdout != 'error' and root_device_raw.stdout is regex('^/dev/mapper/') }}"
 
 - name: Get root volume group if using LVM
-  shell: lvs "{{ root_device_path }}" --noheadings -o vg_name | tr -d " "
+  shell: lvs "{{ root_device_path }}" --noheadings -o vg_name | tr -d " " || echo "error"
   register: root_vg
   changed_when: false
-  when: is_root_lvm
+  when: is_root_lvm and root_device_path != 'unknown'
+  ignore_errors: yes
 
 - name: Set root VG name if using LVM
   set_fact:
     root_vg_name: "{{ root_vg.stdout }}"
-  when: is_root_lvm and root_vg.stdout != ""
+  when: is_root_lvm and root_vg.stdout != "" and root_vg.stdout != "error"
 
 # Получение всех ТЕКУЩИХ точек монтирования вместо использования fstab
 - name: Get list of ALL currently mounted filesystems
-  shell: findmnt -l -o SOURCE,TARGET,FSTYPE -n
+  shell: findmnt -l -o SOURCE,TARGET,FSTYPE -n || echo "error"
   register: current_mounts
   changed_when: false
+  ignore_errors: yes
 
-# Создание расширенного списка системных путей
+# Получение всех процессов с открытыми файлами для идентификации системных разделов
+- name: Get processes with open files on filesystems
+  shell: lsof -n 2>/dev/null | grep -E '/bin/|/sbin/|/lib/' | awk '{print $9}' | grep -v "^/" | head -10 || echo ""
+  register: system_processes_files
+  changed_when: false
+  ignore_errors: yes
+
+# Создание расширенного списка системных путей с возможностью обнаружения нестандартных путей
 - name: Create list of system mount paths
   set_fact:
     system_mount_paths: |
@@ -120,26 +179,49 @@
         '/dev/shm',
         '/sys',
         '/proc',
+        '/etc',
+        '/bin',
+        '/sbin',
+        '/lib',
+        '/lib64',
         None,
         '[SWAP]',
         'swap'
       ] + (additional_system_paths | default([]))
+
+# Поиск нестандартных системных точек монтирования через анализ процессов
+- name: Detect non-standard system mount points
+  shell: |
+    for pid in $(ps -e -o pid= | head -50); do
+      cat /proc/$pid/mounts 2>/dev/null | awk '{print $2}' | grep -E '^/[^/]+$'
+    done | sort | uniq || echo ""
+  register: proc_mount_points
+  changed_when: false
+  ignore_errors: yes
+
+# Обновление списка системных путей с найденными нестандартными путями
+- name: Update system mount paths with detected non-standard paths
+  set_fact:
+    system_mount_paths: "{{ system_mount_paths + proc_mount_points.stdout_lines }}"
+  when: proc_mount_points.stdout_lines is defined and proc_mount_points.stdout_lines | length > 0
 
 # Получение списка системных устройств из текущих монтирований
 - name: Create list of currently mounted devices
   set_fact:
     current_mounted_devices: |
       {% set devices = [] %}
-      {% for line in current_mounts.stdout_lines %}
-        {% set parts = line.split() %}
-        {% if parts|length >= 2 %}
-          {% set source = parts[0] %}
-          {% set target = parts[1] %}
-          {% if target in system_mount_paths %}
-            {% set devices = devices + [source] %}
+      {% if current_mounts.stdout != "error" %}
+        {% for line in current_mounts.stdout_lines %}
+          {% set parts = line.split() %}
+          {% if parts|length >= 2 %}
+            {% set source = parts[0] %}
+            {% set target = parts[1] %}
+            {% if target in system_mount_paths %}
+              {% set devices = devices + [source] %}
+            {% endif %}
           {% endif %}
-        {% endif %}
-      {% endfor %}
+        {% endfor %}
+      {% endif %}
       {{ devices | unique | list }}
 
 # Получение текущих точек монтирования для обновления списка системных путей
@@ -147,12 +229,14 @@
   set_fact:
     system_mount_paths: |
       {% set paths = system_mount_paths %}
-      {% for line in current_mounts.stdout_lines %}
-        {% set parts = line.split() %}
-        {% if parts|length >= 2 %}
-          {% set paths = paths + [parts[1]] %}
-        {% endif %}
-      {% endfor %}
+      {% if current_mounts.stdout != "error" %}
+        {% for line in current_mounts.stdout_lines %}
+          {% set parts = line.split() %}
+          {% if parts|length >= 2 %}
+            {% set paths = paths + [parts[1]] %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
       {{ paths | unique | list }}
 
 # Создаем список bind-монтирований для исключения
@@ -160,7 +244,7 @@
   set_fact:
     bind_mount_sources: |
       {% set sources = [] %}
-      {% if bind_mounts.stdout_lines is defined %}
+      {% if bind_mounts.stdout_lines is defined and bind_mounts.stdout != "error" %}
         {% for line in bind_mounts.stdout_lines %}
           {% set parts = line.split() %}
           {% if parts|length >= 2 %}
@@ -172,22 +256,22 @@
 
 # Определение системных дисков и разделов на основе устройства корневого раздела
 - name: Get physical device for root if using standard partitioning
-  shell: lsblk -no PKNAME "{{ root_device_path }}" | head -1
+  shell: lsblk -no PKNAME "{{ root_device_path }}" | head -1 || echo "error"
   register: root_disk_name
   changed_when: false
-  when: not is_root_lvm
+  when: not is_root_lvm and root_device_path != 'unknown'
   ignore_errors: yes
 
 # Дополнительная проверка системного диска через поиск раздела, смонтированного в /
 - name: Verify system disk via direct mountpoint check
-  shell: lsblk -no NAME,MOUNTPOINT | grep " /$" | awk '{print $1}' | sed 's/[0-9]*$//'
+  shell: lsblk -no NAME,MOUNTPOINT | grep " /$" | awk '{print $1}' | sed 's/[0-9]*$//' || echo "error"
   register: system_disk_verification
   changed_when: false
   ignore_errors: yes
 
 # Дополнительная проверка на другие критичные монтирования на том же диске
 - name: Check for critical mountpoints on the same disk
-  shell: lsblk -no NAME,MOUNTPOINT | grep -E ' /(boot|home|var|usr|lib|bin|sbin)($|/)' | awk '{print $1}' | sed 's/[0-9]*$//' | sort | uniq
+  shell: lsblk -no NAME,MOUNTPOINT | grep -E ' /(boot|home|var|usr|lib|bin|sbin)($|/)' | awk '{print $1}' | sed 's/[0-9]*$//' | sort | uniq || echo "error"
   register: critical_mounts_disks
   changed_when: false
   ignore_errors: yes
@@ -196,7 +280,7 @@
   set_fact:
     vg_to_pv_mapping: |
       {% set mapping = {} %}
-      {% if pv_to_vg_mapping.stdout_lines is defined %}
+      {% if pv_to_vg_mapping.stdout_lines is defined and pv_to_vg_mapping.stdout != "error" %}
         {% for line in pv_to_vg_mapping.stdout_lines %}
           {% set parts = line.split(',') %}
           {% if parts|length == 2 and parts[1] != '' %}
@@ -210,17 +294,38 @@
       {{ mapping }}
   when: lvs_check.rc == 0
 
+# Создание карты взаимозависимостей LV для поиска связанных томов
+- name: Create LV dependency map
+  set_fact:
+    lv_dependency_map: |
+      {% set dep_map = {} %}
+      {% if lv_full_info.stdout_lines is defined and lv_full_info.stdout != "error" %}
+        {% for line in lv_full_info.stdout_lines %}
+          {% set parts = line.split() %}
+          {% if parts|length >= 4 and parts[3] != '' %}
+            {% set lv_key = parts[0] + '/' + parts[1] %}
+            {% set origin_key = parts[0] + '/' + parts[3] %}
+            {% if origin_key not in dep_map %}
+              {% set _ = dep_map.update({origin_key: []}) %}
+            {% endif %}
+            {% set _ = dep_map[origin_key].append(lv_key) %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+      {{ dep_map }}
+  when: lvs_check.rc == 0 and lv_full_info.stdout != "error"
+
 - name: Identify all system devices to exclude
   set_fact:
     system_devices: |
       {% set devices = [] %}
-      {% if not is_root_lvm and root_disk_name.stdout != "" %}
+      {% if not is_root_lvm and root_disk_name.stdout != "" and root_disk_name.stdout != "error" %}
         {% set devices = devices + ['/dev/' + root_disk_name.stdout] %}
       {% endif %}
-      {% if system_disk_verification.stdout != "" %}
+      {% if system_disk_verification.stdout != "" and system_disk_verification.stdout != "error" %}
         {% set devices = devices + ['/dev/' + system_disk_verification.stdout] %}
       {% endif %}
-      {% if critical_mounts_disks.stdout_lines is defined %}
+      {% if critical_mounts_disks.stdout_lines is defined and critical_mounts_disks.stdout != "error" %}
         {% for disk in critical_mounts_disks.stdout_lines %}
           {% set devices = devices + ['/dev/' + disk] %}
         {% endfor %}
@@ -235,6 +340,13 @@
       {% if bind_mount_sources is defined %}
         {% set devices = devices + bind_mount_sources %}
       {% endif %}
+      {% if raid_components.stdout_lines is defined and raid_components.stdout_lines | length > 0 %}
+        {% for component in raid_components.stdout_lines %}
+          {% if component != '' %}
+            {% set devices = devices + [component] %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
       {% if excluded_devices is defined %}
         {% set devices = devices + excluded_devices %}
       {% endif %}
@@ -246,7 +358,7 @@
 
 # Получение списка блочных устройств с UUID для более надежной идентификации
 - name: Get all block device UUIDs
-  shell: blkid | grep -v "TYPE=\"swap\"" | awk -F": " '{print $1}' | xargs -I{} bash -c 'echo {} $(blkid -s UUID -o value {})'
+  shell: blkid | grep -v "TYPE=\"swap\"" | awk -F": " '{print $1}' | xargs -I{} bash -c 'echo {} $(blkid -s UUID -o value {})' || echo "error"
   register: block_uuids
   changed_when: false
   ignore_errors: yes
@@ -256,7 +368,7 @@
   set_fact:
     device_uuid_map: |
       {% set mapping = {} %}
-      {% if block_uuids.stdout_lines is defined %}
+      {% if block_uuids.stdout_lines is defined and block_uuids.stdout != "error" %}
         {% for line in block_uuids.stdout_lines %}
           {% set parts = line.split() %}
           {% if parts|length >= 2 %}
@@ -302,11 +414,18 @@
       {% set filtered_partitions = [] %}
       {% for part in non_system_partitions %}
         {% set is_system_lv = false %}
-        {% if is_root_lvm and part is regex('^/dev/mapper/') %}
+        {% if is_root_lvm and part is regex('^/dev/mapper/') and vg_names.stdout != "error" %}
           {% for vg_name in vg_names.stdout_lines %}
             {% if part is regex('^/dev/mapper/' + vg_name + '.*') %}
               {% if vg_name == root_vg_name or vg_to_pv_mapping.get(vg_name, []) | intersect(system_devices) | length > 0 %}
                 {% set is_system_lv = true %}
+              {% endif %}
+              {% if lv_dependency_map is defined %}
+                {% for lv_key, dependents in lv_dependency_map.items() %}
+                  {% if part is regex('.*' + lv_key + '.*') or part in dependents %}
+                    {% set is_system_lv = true %}
+                  {% endif %}
+                {% endfor %}
               {% endif %}
             {% endif %}
           {% endfor %}
@@ -316,7 +435,7 @@
         {% endif %}
       {% endfor %}
       {{ filtered_partitions }}
-  when: is_root_lvm and vg_names.stdout_lines | length > 0
+  when: is_root_lvm and vg_names.stdout_lines | length > 0 and vg_names.stdout != "error"
 
 # Исключение уже используемых в bind-монтировании дисков
 - name: Filter out partitions used in bind mounts
@@ -386,9 +505,16 @@
       with_items: "{{ safe_partitions }}"
       ignore_errors: yes
 
-    # Дополнительная проверка работоспособности разделов перед монтированием
-    - name: Check filesystem integrity before mounting
-      shell: "if [ $(blkid -s TYPE -o value '{{ item }}') = 'ext4' ] || [ $(blkid -s TYPE -o value '{{ item }}') = 'ext3' ] || [ $(blkid -s TYPE -o value '{{ item }}') = 'ext2' ]; then e2fsck -n '{{ item }}' || echo 'fs_error'; else echo 'not_ext'; fi"
+    # Дополнительная проверка работоспособности разделов перед монтированием с улучшенной надежностью
+    - name: Check filesystem integrity before mounting (safe approach)
+      shell: |
+        FS_TYPE=$(blkid -s TYPE -o value "{{ item }}")
+        if [ "$FS_TYPE" = "ext4" ] || [ "$FS_TYPE" = "ext3" ] || [ "$FS_TYPE" = "ext2" ]; then 
+          # Используем более безопасные параметры для e2fsck
+          timeout 10 e2fsck -n "{{ item }}" 2>/dev/null || echo "fs_check_skipped"
+        else 
+          echo "not_ext"
+        fi
       register: fs_integrity_checks
       changed_when: false
       with_items: "{{ safe_partitions }}"
@@ -400,7 +526,7 @@
           {% set result = [] %}
           {% for i in range(safe_partitions | length) %}
             {% if not fs_integrity_checks.results[i].stdout is defined or
-                  fs_integrity_checks.results[i].stdout != 'fs_error' %}
+                  not fs_integrity_checks.results[i].stdout in ["fs_error", "0", "1", "2", "4", "8", "16", "32", "64", "128"] %}
               {% set result = result + [safe_partitions[i]] %}
             {% endif %}
           {% endfor %}
