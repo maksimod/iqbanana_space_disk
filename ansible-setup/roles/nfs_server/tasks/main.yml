@@ -8,7 +8,7 @@
 
 - name: Display NFS installation status
   debug:
-    msg: "{{ 'SUCCESS: NFS server installed' if nfs_install.rc == 0 else 'ERROR: Failed to install NFS server' }}"
+    msg: "{{ 'SUCCESS: NFS server installed' if nfs_install is succeeded else 'ERROR: Failed to install NFS server' }}"
 
 - name: Get list of mounted non-system partitions
   shell: "findmnt -t auto -o SOURCE,TARGET | grep '{{ nfs_mount_base }}'"
@@ -20,16 +20,24 @@
   debug:
     msg: "Mounted partitions: {{ mounted_partitions.stdout_lines | default([]) }}"
 
+- name: Ensure exports file exists
+  file:
+    path: "{{ nfs_exports_file | default('/etc/exports') }}"
+    state: touch
+    mode: '0644'
+  when: mounted_partitions is defined and mounted_partitions.rc is defined and mounted_partitions.rc == 0 and mounted_partitions.stdout_lines | length > 0
+
 - name: Configure NFS exports
   template:
     src: exports.j2
-    dest: "{{ nfs_exports_file }}"
+    dest: "{{ nfs_exports_file | default('/etc/exports') }}"
   register: nfs_config
-  when: mounted_partitions.rc == 0 and mounted_partitions.stdout_lines | length > 0
+  when: mounted_partitions is defined and mounted_partitions.rc is defined and mounted_partitions.rc == 0 and mounted_partitions.stdout_lines | length > 0
 
 - name: Display NFS configuration status
   debug:
     msg: "{{ 'SUCCESS: NFS exports configured' if (nfs_config.changed | default(false)) else 'ERROR or NO CHANGES: NFS exports configuration' }}"
+  when: nfs_config is defined
 
 - name: Start NFS server (manual, no enable)
   service:
@@ -40,23 +48,26 @@
 
 - name: Display NFS service status
   debug:
-    msg: "{{ 'SUCCESS: NFS service started' if (nfs_service.changed | default(false)) else 'ERROR or NO CHANGES: NFS service' }}"
+    msg: "{{ 'SUCCESS: NFS service started' if nfs_service is succeeded else 'ERROR or NO CHANGES: NFS service' }}"
 
 - name: Export NFS shares
   command: exportfs -ra
   register: nfs_export
   ignore_errors: true
-  when: nfs_config.changed | default(false)
+  when: nfs_config is defined and nfs_config.changed | default(false)
 
 - name: Display NFS export status
   debug:
-    msg: "{{ 'SUCCESS: NFS shares exported' if nfs_export.rc == 0 else 'ERROR: Failed to export NFS shares' }}"
+    msg: "{{ 'SUCCESS: NFS shares exported' if nfs_export is defined and nfs_export is succeeded else 'ERROR: Failed to export NFS shares' }}"
+  when: nfs_export is defined
 
 - name: Verify exported NFS shares
   command: exportfs -v
   register: export_verification
   changed_when: false
+  ignore_errors: true
 
 - name: Display exported shares
   debug:
-    msg: "Exported NFS shares: {{ export_verification.stdout_lines }}"
+    msg: "Exported NFS shares: {{ export_verification.stdout_lines | default([]) }}"
+  when: export_verification is defined

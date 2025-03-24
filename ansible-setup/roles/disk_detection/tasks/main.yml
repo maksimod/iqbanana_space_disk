@@ -211,25 +211,18 @@
 # Получение списка системных устройств из текущих монтирований
 - name: Create list of currently mounted devices
   set_fact:
-    current_mounts_list: >-
-      {% set devices = [] %}
-      {% if current_mounts.stdout is defined and current_mounts.stdout != "error" %}
-        {% for line in current_mounts.stdout_lines %}
-          {% set parts = line.split() %}
-          {% if parts|length >= 2 %}
-            {% set source = parts[0] %}
-            {% set target = parts[1] %}
-            {% if target in system_mount_paths %}
-              {% set devices = devices + [source] %}
-            {% endif %}
-          {% endif %}
-        {% endfor %}
-      {% endif %}
-      {{ devices | unique | list }}
+    current_mounts_list: "{{ [] }}"
+
+- name: Process current mounts to get device list
+  set_fact:
+    current_mounts_list: "{{ current_mounts_list + [item.split()[0]] }}"
+  with_items: "{{ current_mounts.stdout_lines }}"
+  when: current_mounts.stdout is defined and current_mounts.stdout != "error" and item.split() | length >= 2 and item.split()[1] in system_mount_paths
+  ignore_errors: yes
     
 - name: Set current_mounted_devices based on conditions
   set_fact:
-    current_mounted_devices: "{{ current_mounts_list }}"
+    current_mounted_devices: "{{ current_mounts_list | unique }}"
   when: current_mounts.stdout is defined and current_mounts.stdout != "error"
 
 - name: Set empty current_mounted_devices if no data
@@ -240,11 +233,7 @@
 # Получение текущих точек монтирования для обновления списка системных путей
 - name: Get current mount paths
   set_fact:
-    current_mount_paths: "{{ current_mounts.stdout_lines 
-                           | select('regex', '\\S+\\s+\\S+') 
-                           | map('regex_replace', '^\\S+\\s+(\\S+).*$', '\\1') 
-                           | list 
-                           | default([]) }}"
+    current_mount_paths: "{{ current_mounts.stdout_lines | select('regex', '\\S+\\s+\\S+') | map('regex_replace', '^\\S+\\s+(\\S+).*$', '\\1') | list | default([]) }}"
   when: current_mounts.stdout is defined and current_mounts.stdout != "error"
 
 - name: Set empty current_mount_paths if no data
@@ -259,21 +248,18 @@
 # Создаем список bind-монтирований для исключения
 - name: Create bind mount sources list
   set_fact:
-    bind_mount_list: >-
-      {% set sources = [] %}
-      {% if bind_mounts.stdout_lines is defined and bind_mounts.stdout != "error" %}
-        {% for line in bind_mounts.stdout_lines %}
-          {% set parts = line.split() %}
-          {% if parts|length >= 2 %}
-            {% set sources = sources + [parts[0]] %}
-          {% endif %}
-        {% endfor %}
-      {% endif %}
-      {{ sources | unique | list }}
+    bind_mount_list: "{{ [] }}"
+
+- name: Process bind mounts
+  set_fact:
+    bind_mount_list: "{{ bind_mount_list + [item.split()[0]] }}"
+  with_items: "{{ bind_mounts.stdout_lines }}"
+  when: bind_mounts.stdout is defined and bind_mounts.stdout != "error" and item.split() | length >= 2
+  ignore_errors: yes
 
 - name: Set bind_mount_sources based on conditions
   set_fact:
-    bind_mount_sources: "{{ bind_mount_list }}"
+    bind_mount_sources: "{{ bind_mount_list | unique }}"
   when: bind_mounts.stdout is defined and bind_mounts.stdout != "error"
 
 - name: Set empty bind_mount_sources if no data
@@ -305,108 +291,93 @@
 
 - name: Get all physical devices for all volume groups if using LVM
   set_fact:
-    vg_to_pv_mapping: >-
-      {% set mapping = {} %}
-      {% if pv_to_vg_mapping.stdout_lines is defined and pv_to_vg_mapping.stdout != "error" %}
-        {% for line in pv_to_vg_mapping.stdout_lines %}
-          {% set parts = line.split(',') %}
-          {% if parts|length == 2 and parts[1] != '' %}
-            {% if parts[1] not in mapping %}
-              {% set _ = mapping.update({parts[1]: []}) %}
-            {% endif %}
-            {% set _ = mapping[parts[1]].append(parts[0]) %}
-          {% endif %}
-        {% endfor %}
-      {% endif %}
-      {{ mapping }}
+    vg_to_pv_mapping: "{{ {} }}"
   when: lvs_check.rc == 0
 
-# Создание карты взаимозависимостей LV для поиска связанных томов
-- name: Create LV dependency map
+- name: Process LVM volume groups
   set_fact:
-    lv_dependency_map: >-
-      {% set dep_map = {} %}
-      {% if lv_full_info.stdout_lines is defined and lv_full_info.stdout != "error" %}
-        {% for line in lv_full_info.stdout_lines %}
-          {% set parts = line.split() %}
-          {% if parts|length >= 4 and parts[3] != '' %}
-            {% set lv_key = parts[0] + '/' + parts[1] %}
-            {% set origin_key = parts[0] + '/' + parts[3] %}
-            {% if origin_key not in dep_map %}
-              {% set _ = dep_map.update({origin_key: []}) %}
-            {% endif %}
-            {% set _ = dep_map[origin_key].append(lv_key) %}
-          {% endif %}
-        {% endfor %}
-      {% endif %}
-      {{ dep_map }}
+    vg_to_pv_mapping: "{{ vg_to_pv_mapping | combine({item.split(',')[1]: vg_to_pv_mapping.get(item.split(',')[1], []) + [item.split(',')[0]]}) }}"
+  with_items: "{{ pv_to_vg_mapping.stdout_lines }}"
+  when: lvs_check.rc == 0 and pv_to_vg_mapping.stdout != "error" and item.split(',') | length == 2 and item.split(',')[1] != ''
+  ignore_errors: yes
+
+# Создание карты взаимозависимостей LV для поиска связанных томов
+- name: Initialize LV dependency map
+  set_fact:
+    lv_dependency_map: "{{ {} }}"
   when: lvs_check.rc == 0 and lv_full_info.stdout != "error"
 
-- name: Identify all system devices to exclude
+- name: Process LV dependencies
   set_fact:
-    system_devices: >-
-      {% set devices = [] %}
-      
-      {% if not is_root_lvm and root_disk_name is defined and root_disk_name.stdout is defined %}
-        {% if root_disk_name.stdout != "" and root_disk_name.stdout != "error" %}
-          {% set devices = devices + ['/dev/' + root_disk_name.stdout] %}
-        {% endif %}
-      {% endif %}
-      
-      {% if system_disk_verification is defined and system_disk_verification.stdout is defined %}
-        {% if system_disk_verification.stdout != "" and system_disk_verification.stdout != "error" %}
-          {% set devices = devices + ['/dev/' + system_disk_verification.stdout] %}
-        {% endif %}
-      {% endif %}
-      
-      {% if critical_mounts_disks is defined and critical_mounts_disks.stdout_lines is defined and critical_mounts_disks.stdout != "error" %}
-        {% for disk in critical_mounts_disks.stdout_lines %}
-          {% if disk is string and disk|trim != "" %}
-            {% set devices = devices + ['/dev/' + disk] %}
-          {% endif %}
-        {% endfor %}
-      {% endif %}
-      
-      {% if is_root_lvm and root_vg_name is defined and vg_to_pv_mapping is defined and root_vg_name in vg_to_pv_mapping %}
-        {% set pvs_for_root_vg = vg_to_pv_mapping[root_vg_name] %}
-        {% if pvs_for_root_vg is iterable and pvs_for_root_vg is not string %}
-          {% set devices = devices + pvs_for_root_vg %}
-        {% endif %}
-      {% endif %}
-      
-      {% if current_mounted_devices is defined %}
-        {% if current_mounted_devices is iterable and current_mounted_devices is not string %}
-          {% set devices = devices + current_mounted_devices %}
-        {% elif current_mounted_devices is string %}
-          {% set devices = devices + [current_mounted_devices] %}
-        {% endif %}
-      {% endif %}
-      
-      {% if bind_mount_sources is defined %}
-        {% if bind_mount_sources is iterable and bind_mount_sources is not string %}
-          {% set devices = devices + bind_mount_sources %}
-        {% elif bind_mount_sources is string %}
-          {% set devices = devices + [bind_mount_sources] %}
-        {% endif %}
-      {% endif %}
-      
-      {% if raid_components is defined and raid_components.stdout_lines is defined %}
-        {% for component in raid_components.stdout_lines %}
-          {% if component is string and component|trim != "" %}
-            {% set devices = devices + [component] %}
-          {% endif %}
-        {% endfor %}
-      {% endif %}
-      
-      {% if excluded_devices is defined %}
-        {% if excluded_devices is iterable and excluded_devices is not string %}
-          {% set devices = devices + excluded_devices %}
-        {% elif excluded_devices is string %}
-          {% set devices = devices + [excluded_devices] %}
-        {% endif %}
-      {% endif %}
-      
-      {{ devices | unique | list }}
+    lv_dependency_map: "{{ lv_dependency_map | combine({(item.split()[0] + '/' + item.split()[3]): lv_dependency_map.get(item.split()[0] + '/' + item.split()[3], []) + [item.split()[0] + '/' + item.split()[1]]}) }}"
+  with_items: "{{ lv_full_info.stdout_lines }}"
+  when: lvs_check.rc == 0 and lv_full_info.stdout != "error" and item.split() | length >= 4 and item.split()[3] != ''
+  ignore_errors: yes
+
+# Инициализируем список системных устройств
+- name: Initialize system devices list
+  set_fact:
+    system_devices: "{{ [] }}"
+
+# Добавляем корневое устройство в список системных устройств
+- name: Add root device to system devices
+  set_fact:
+    system_devices: "{{ system_devices + ['/dev/' + root_disk_name.stdout] }}"
+  when: not is_root_lvm and root_disk_name is defined and root_disk_name.stdout is defined and root_disk_name.stdout != "" and root_disk_name.stdout != "error"
+
+# Добавляем устройство из direct mountpoint check
+- name: Add device from direct mountpoint check
+  set_fact:
+    system_devices: "{{ system_devices + ['/dev/' + system_disk_verification.stdout] }}"
+  when: system_disk_verification is defined and system_disk_verification.stdout is defined and system_disk_verification.stdout != "" and system_disk_verification.stdout != "error"
+
+# Добавляем устройства с критическими точками монтирования
+- name: Add devices with critical mountpoints
+  set_fact:
+    system_devices: "{{ system_devices + ['/dev/' + item] }}"
+  with_items: "{{ critical_mounts_disks.stdout_lines }}"
+  when: critical_mounts_disks is defined and critical_mounts_disks.stdout_lines is defined and critical_mounts_disks.stdout != "error" and item is string and item | trim != ""
+
+# Добавляем физические устройства для root VG
+- name: Add physical devices for root VG
+  set_fact:
+    system_devices: "{{ system_devices + vg_to_pv_mapping[root_vg_name] }}"
+  when: is_root_lvm and root_vg_name is defined and vg_to_pv_mapping is defined and root_vg_name in vg_to_pv_mapping
+
+# Добавляем текущие смонтированные устройства
+- name: Add current mounted devices
+  set_fact:
+    system_devices: "{{ system_devices + current_mounted_devices }}"
+  when: current_mounted_devices is defined and current_mounted_devices | length > 0
+
+# Добавляем источники bind mount
+- name: Add bind mount sources
+  set_fact:
+    system_devices: "{{ system_devices + bind_mount_sources }}"
+  when: bind_mount_sources is defined and bind_mount_sources | length > 0
+
+# Добавляем компоненты RAID
+- name: Add RAID components
+  set_fact:
+    system_devices: "{{ system_devices + [item] }}"
+  with_items: "{{ raid_components.stdout_lines }}"
+  when: raid_components is defined and raid_components.stdout_lines is defined and item is string and item | trim != ""
+
+# Добавляем исключённые устройства
+- name: Add excluded devices
+  set_fact:
+    system_devices: "{{ system_devices + excluded_devices }}"
+  when: excluded_devices is defined
+
+# Удаляем дубликаты из списка системных устройств
+- name: Remove duplicates from system devices
+  set_fact:
+    system_devices: "{{ system_devices | unique }}"
+
+# Добавляем известные системные устройства, которые нельзя монтировать
+- name: Add known system devices that should not be mounted
+  set_fact:
+    system_devices: "{{ system_devices + ['/dev/loop', '/dev/ram', '/dev/zram'] }}"
 
 - name: Debug system devices
   debug:
@@ -420,90 +391,70 @@
   ignore_errors: yes
 
 # Создание сопоставления устройств и их UUID
-- name: Create device to UUID mapping
+- name: Initialize device to UUID mapping
   set_fact:
-    device_uuid_map: >-
-      {% set mapping = {} %}
-      {% if block_uuids.stdout_lines is defined and block_uuids.stdout != "error" %}
-        {% for line in block_uuids.stdout_lines %}
-          {% set parts = line.split() %}
-          {% if parts|length >= 2 %}
-            {% set device = parts[0] %}
-            {% set uuid = parts[1] %}
-            {% if uuid != "" %}
-              {% set _ = mapping.update({device: uuid}) %}
-            {% endif %}
-          {% endif %}
-        {% endfor %}
-      {% endif %}
-      {{ mapping }}
+    device_uuid_map: "{{ {} }}"
+
+- name: Process block UUIDs
+  set_fact: 
+    device_uuid_map: "{{ device_uuid_map | combine({item.split()[0]: item.split()[1]}) }}"
+  with_items: "{{ block_uuids.stdout_lines }}"
+  when: block_uuids.stdout is defined and block_uuids.stdout != "error" and item.split() | length >= 2 and item.split()[1] != ""
+  ignore_errors: yes
 
 # Идентификация несистемных разделов с учетом полученной информации
 - name: Identify non-system partitions
   set_fact:
-    non_system_partitions: []
+    non_system_partitions: "{{ [] }}"
 
+# Обработка блочных устройств для идентификации несистемных разделов
 - name: Process each block device to identify non-system partitions
   set_fact:
-    non_system_partitions: >-
-      {% set ns_partitions = [] %}
-      {% for device in disk_data.blockdevices %}
-        {% if device.type == 'disk' and device.children is defined %}
-          {% for part in device.children %}
-            {% if part.type == 'part' and 
-                  (part.mountpoint is none or part.mountpoint not in system_mount_paths) and
-                  '/dev/' + part.name not in system_devices and
-                  '/dev/' + device.name not in system_devices and
-                  part.fstype is defined and part.fstype != 'swap' and part.fstype != '' and
-                  (part.mountpoint is none or part.mountpoint != '[SWAP]') %}
-              {% set ns_partitions = ns_partitions + ['/dev/' + part.name] %}
-            {% endif %}
-          {% endfor %}
-        {% endif %}
-      {% endfor %}
-      {{ ns_partitions }}
+    non_system_partitions: "{{ non_system_partitions + (['/dev/' + item.1.name] if item.1.type == 'part' and (item.1.mountpoint is none or item.1.mountpoint not in system_mount_paths) and '/dev/' + item.1.name not in system_devices and '/dev/' + item.0.name not in system_devices and item.1.fstype is defined and item.1.fstype != 'swap' and item.1.fstype != '' and (item.1.mountpoint is none or item.1.mountpoint != '[SWAP]') else []) }}"
+  with_nested:
+    - "{{ disk_data.blockdevices }}"
+    - "{{ item.children | default([]) }}"
+  when: item.type == 'disk' and item.children is defined
+  loop_control:
+    loop_var: item
+  ignore_errors: yes
 
 # Исключение всех LVM-разделов из VG, связанных с системными разделами
-- name: Remove LVM logical volumes from system volume groups
+- name: Initialize filtered LVM partitions
   set_fact:
-    non_system_partitions: >-
-      {% set filtered_partitions = [] %}
-      {% for part in non_system_partitions %}
-        {% set is_system_lv = false %}
-        {% if is_root_lvm and part is regex('^/dev/mapper/') and vg_names.stdout != "error" %}
-          {% for vg_name in vg_names.stdout_lines %}
-            {% if part is regex('^/dev/mapper/' + vg_name + '.*') %}
-              {% if vg_name == root_vg_name or vg_to_pv_mapping.get(vg_name, []) | intersect(system_devices) | length > 0 %}
-                {% set is_system_lv = true %}
-              {% endif %}
-              {% if lv_dependency_map is defined %}
-                {% for lv_key, dependents in lv_dependency_map.items() %}
-                  {% if part is regex('.*' + lv_key + '.*') or part in dependents %}
-                    {% set is_system_lv = true %}
-                  {% endif %}
-                {% endfor %}
-              {% endif %}
-            {% endif %}
-          {% endfor %}
-        {% endif %}
-        {% if not is_system_lv %}
-          {% set filtered_partitions = filtered_partitions + [part] %}
-        {% endif %}
-      {% endfor %}
-      {{ filtered_partitions }}
+    lvm_filtered_partitions: "{{ [] }}"
   when: is_root_lvm and vg_names.stdout_lines | length > 0 and vg_names.stdout != "error"
 
+- name: Process each non-system partition to filter LVM
+  set_fact:
+    is_system_lv: "{{ item[0] is regex('^/dev/mapper/') and (item[0] is regex('^/dev/mapper/' + item[1] + '.*') and (item[1] == root_vg_name or vg_to_pv_mapping.get(item[1], []) | intersect(system_devices) | length > 0)) | ternary(true, false) }}"
+    lvm_filtered_partitions: "{{ lvm_filtered_partitions + ([item[0]] if not (item[0] is regex('^/dev/mapper/') and (item[0] is regex('^/dev/mapper/' + item[1] + '.*') and (item[1] == root_vg_name or vg_to_pv_mapping.get(item[1], []) | intersect(system_devices) | length > 0))) else []) }}"
+  with_nested:
+    - "{{ non_system_partitions }}"
+    - "{{ vg_names.stdout_lines }}"
+  when: is_root_lvm and vg_names.stdout_lines | length > 0 and vg_names.stdout != "error"
+  ignore_errors: yes
+
+- name: Update non-system partitions with LVM filtered
+  set_fact:
+    non_system_partitions: "{{ lvm_filtered_partitions | unique }}"
+  when: is_root_lvm and vg_names.stdout_lines | length > 0 and vg_names.stdout != "error" and lvm_filtered_partitions is defined
+
 # Исключение уже используемых в bind-монтировании дисков
+- name: Initialize bind mount filtered partitions
+  set_fact:
+    bind_filtered_partitions: "{{ [] }}"
+
 - name: Filter out partitions used in bind mounts
   set_fact:
-    non_system_partitions: >-
-      {% set filtered_partitions = [] %}
-      {% for part in non_system_partitions %}
-        {% if part not in bind_mount_sources %}
-          {% set filtered_partitions = filtered_partitions + [part] %}
-        {% endif %}
-      {% endfor %}
-      {{ filtered_partitions }}
+    bind_filtered_partitions: "{{ bind_filtered_partitions + ([item] if item not in bind_mount_sources else []) }}"
+  with_items: "{{ non_system_partitions }}"
+  ignore_errors: yes
+
+- name: Update non-system partitions with bind filtered
+  set_fact:
+    non_system_partitions: "{{ bind_filtered_partitions | unique }}"
+  when: bind_filtered_partitions is defined
 
 - name: Display identified non-system partitions
   debug:
@@ -525,15 +476,14 @@
 # Проверяем, что все элементы в списке - валидные пути к устройствам
 - name: Verify non-system partitions are valid device paths
   set_fact:
-    valid_partitions: >-
-      {% set valid = [] %}
-      {% for part in non_system_partitions %}
-        {% if part is string and part | trim != '' and part is regex('^/dev/.*') %}
-          {% set valid = valid + [part | trim] %}
-        {% endif %}
-      {% endfor %}
-      {{ valid }}
+    valid_partitions: "{{ [] }}"
+
+- name: Process each partition to validate device path
+  set_fact:
+    valid_partitions: "{{ valid_partitions + ([item | trim] if item is string and item | trim != '' and item is regex('^/dev/.*') else []) }}"
+  with_items: "{{ non_system_partitions }}"
   when: non_system_partitions | length > 0
+  ignore_errors: yes
 
 - name: Display valid partitions
   debug:
@@ -633,21 +583,21 @@
 
 - name: Filter out partitions with filesystem errors
   set_fact:
-    verified_safe_partitions: >-
-      {% set result = [] %}
-      {% for i in range(safe_partitions | default([]) | length) %}
-        {% if not fs_integrity_checks.results[i].stdout is defined or
-              not fs_integrity_checks.results[i].stdout in ["fs_error", "0", "1", "2", "4", "8", "16", "32", "64", "128"] %}
-          {% set result = result + [safe_partitions[i]] %}
-        {% endif %}
-      {% endfor %}
-      {{ result }}
+    verified_safe_partitions: "{{ [] }}"
+  when: safe_partitions is defined and safe_partitions | length > 0
+
+- name: Process filesystem integrity results
+  set_fact:
+    verified_safe_partitions: "{{ verified_safe_partitions + ([safe_partitions[idx]] if not fs_integrity_checks.results[idx].stdout is defined or not fs_integrity_checks.results[idx].stdout in ['fs_error', '0', '1', '2', '4', '8', '16', '32', '64', '128'] else []) }}"
+  loop: "{{ range(0, safe_partitions | length) | list }}"
+  loop_control:
+    loop_var: idx
   when: safe_partitions is defined and safe_partitions | length > 0 and fs_integrity_checks is defined and fs_integrity_checks.results is defined
 
 - name: Set empty verified_safe_partitions if none were found or filtering not run
   set_fact:
     verified_safe_partitions: []
-  when: safe_partitions is not defined or safe_partitions | length == 0 or verified_safe_partitions is not defined
+  when: safe_partitions is not defined or safe_partitions | length == 0 or verified_safe_partitions is not defined or verified_safe_partitions | length == 0
 
 - name: Create mount points for non-system partitions
   file:
@@ -655,31 +605,27 @@
     state: directory
     mode: '0755'
   with_items: "{{ verified_safe_partitions | default([]) }}"
-  when: verified_safe_partitions is defined and verified_safe_partitions | length > 0
+  when: verified_safe_partitions is defined and verified_safe_partitions | length > 0 and nfs_mount_base is defined
 
 - name: Get network filesystem types
   set_fact:
     network_fs_types: ['nfs', 'nfs4', 'cifs', 'smbfs', 'glusterfs', 'fuse.glusterfs']
+  when: verified_safe_partitions is defined and verified_safe_partitions | length > 0
 
 - name: Mount non-system partitions with improved reliability
   mount:
     path: "{{ nfs_mount_base }}/{{ item.0 | basename }}"
-    src: "{{ 'UUID=' + device_uuid_map[item.0] if item.0 in device_uuid_map else item.0 }}"
-    fstype: "{{ item.1.stdout if item.1.stdout else 'auto' }}"
+    src: "{{ 'UUID=' + device_uuid_map[item.0] if item.0 in device_uuid_map and device_uuid_map[item.0] else item.0 }}"
+    fstype: "{{ item.1.stdout if item.1 is defined and item.1.stdout is defined and item.1.stdout else 'auto' }}"
     state: mounted
-    opts: >-
-      {% if item.1.stdout in network_fs_types %}
-      defaults,noatime,soft,timeo=20,retry=3,_netdev,nofail
-      {% else %}
-      defaults,noatime,nofail
-      {% endif %}
+    opts: "{{ 'defaults,noatime,soft,timeo=20,retry=3,_netdev,nofail' if item.1 is defined and item.1.stdout is defined and item.1.stdout in network_fs_types else 'defaults,noatime,nofail' }}"
   with_together:
     - "{{ verified_safe_partitions | default([]) }}"
     - "{{ fs_types.results | default([]) }}"
-  when: verified_safe_partitions is defined and verified_safe_partitions | length > 0
+  when: verified_safe_partitions is defined and verified_safe_partitions | length > 0 and nfs_mount_base is defined
   register: mount_result
-      
+
 - name: Report mounting results
   debug:
     msg: "Successfully mounted {{ mount_result.results | selectattr('changed', 'equalto', true) | map(attribute='item.0') | list }}"
-  when: verified_safe_partitions is defined and verified_safe_partitions | length > 0 and mount_result is defined and mount_result.changed is defined and mount_result.changed
+  when: verified_safe_partitions is defined and verified_safe_partitions | length > 0 and mount_result is defined and mount_result.results is defined

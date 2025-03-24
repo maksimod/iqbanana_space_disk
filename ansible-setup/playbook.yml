@@ -14,6 +14,10 @@
 - name: Configure NFS Server
   hosts: nfs_server
   become: yes
+  vars:
+    nfs_mount_base: "/mnt/storage"   # Директория для монтирования несистемных разделов
+    temp_disk_info: "/tmp/disk_info.tmp"
+    temp_mount_info: "/tmp/mount_info.tmp"
   tasks:
     - name: Set server IP address
       set_fact:
@@ -22,6 +26,13 @@
     - name: Set client IP address
       set_fact:
         nfs_client_ip: "{{ hostvars[groups['nfs_client'][0]]['ansible_host'] | default(groups['nfs_client'][0]) }}"
+
+    - name: Create NFS mount base directory
+      file:
+        path: "{{ nfs_mount_base }}"
+        state: directory
+        mode: '0755'
+      when: nfs_mount_base is defined
 
     - name: Include disk detection role
       include_role:
@@ -34,6 +45,9 @@
 - name: Configure NFS Client
   hosts: nfs_client
   become: yes
+  vars:
+    temp_disk_info: "/tmp/disk_info.tmp"
+    temp_mount_info: "/tmp/mount_info.tmp"
   tasks:
     - name: Set server IP address
       set_fact:
@@ -46,6 +60,9 @@
 - name: Cleanup temporary files
   hosts: all
   become: yes
+  vars:
+    temp_disk_info: "/tmp/disk_info.tmp"
+    temp_mount_info: "/tmp/mount_info.tmp"
   tasks:
     - name: Remove temporary files
       file:
