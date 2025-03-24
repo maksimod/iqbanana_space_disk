@@ -1,0 +1,34 @@
+---
+# Основные настройки NFS (перенесено из inventory)
+nfs_mount_base: /mnt/nfs
+nfs_exports_file: /etc/exports
+nfs_opts: "rw,sync,no_root_squash,no_subtree_check"
+
+# Временные файлы (перенесено из inventory)
+temp_disk_info: /tmp/disk_info.txt
+temp_mount_info: /tmp/mount_info.txt
+
+# Настройки для определения дисков
+# Список дополнительных системных путей, которые не следует монтировать
+additional_system_paths:
+  - /mnt
+  - /media
+  - /data
+  - /storage
+
+# Исключаемые устройства (можно дополнить список устройствами, которые не должны монтироваться)
+excluded_devices:
+  - /dev/loop
+  - /dev/ram
+  - /dev/zram
+
+# LVM настройки
+# Список volume groups, которые следует исключить целиком (помимо той, что содержит корневой раздел)
+lvm_exclude_vgs: []
+
+# Параметры монтирования для улучшения надежности
+nfs_client_mount_opts: "rw,soft,timeo=20,retry=3,noatime"
+
+# Настройки для обнаружения NFS клиентом экспортированных разделов
+nfs_server_ip: "{{ hostvars[groups['nfs_server'][0]]['ansible_host'] }}"
+nfs_client_ip: "{{ hostvars[groups['nfs_client'][0]]['ansible_host'] }}"
