@@ -1,4 +1,16 @@
 ---
+# Записываем время начала выполнения
+- name: Record start time
+  hosts: nfs_server
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Record script start time
+      shell: "date +%s > /tmp/ansible_start_time.txt"
+      args:
+        creates: /tmp/ansible_start_time.txt
+      run_once: true
+
 - name: Verify connectivity
   hosts: all
   gather_facts: no

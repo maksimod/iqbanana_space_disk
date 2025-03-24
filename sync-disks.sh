@@ -1,1 +1,0 @@
-/home/apper/sync-disks.sh
