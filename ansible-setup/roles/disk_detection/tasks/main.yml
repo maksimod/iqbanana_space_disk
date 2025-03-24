@@ -849,3 +849,21 @@
       - "Current mounts: {{ current_mounts.stdout_lines }}"
       - "System devices: {{ system_devices }}"
   when: ansible_verbosity > 1
+
+# Проверяем и устанавливаем поддержку NTFS
+- name: Install NTFS support
+  package:
+    name: ntfs-3g
+    state: present
+  when: disk_data.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list | length > 0
+
+# Монтируем NTFS разделы с поддержкой записи
+- name: Mount NTFS partitions with write support
+  mount:
+    path: "{{ nfs_mount_base }}/{{ item.name }}"
+    src: "/dev/{{ item.name }}"
+    fstype: ntfs-3g
+    opts: "rw,uid=1000,gid=1000,umask=0022"
+    state: mounted
+  with_items: "{{ disk_data.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
+  when: disk_data.blockdevices is defined
