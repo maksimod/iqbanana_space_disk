@@ -1,7 +1,10 @@
 ---
 - name: Install NFS server packages
   package:
-    name: nfs-kernel-server
+    name:
+      - nfs-kernel-server
+      - ntfs-3g
+      - ntfs-3g-dev
     state: present
   register: nfs_install
 
@@ -13,7 +16,7 @@
   file:
     path: "{{ nfs_mount_base }}"
     state: directory
-    mode: '0755'
+    mode: '0777'
     owner: root
     group: root
 
@@ -33,17 +36,48 @@
     group: root
   with_items: "{{ storage_disks }}"
 
-- name: Mount disks with ntfs-3g for write support
-  shell: "mount -t ntfs-3g -o rw,uid=0,gid=0,umask=000,force {{ item.device }} {{ nfs_mount_base }}/{{ item.mountpoint }}"
+- name: Run ntfsfix on NTFS partitions
+  shell: "ntfsfix {{ item.device }}"
   with_items: "{{ storage_disks }}"
-  register: mount_result
+  when: item.fstype == 'ntfs'
   ignore_errors: yes
+  register: ntfsfix_result
+
+- name: Display ntfsfix status
+  debug:
+    msg: "Ran ntfsfix on {{ item.item.device }} - {{ 'Success' if item.rc == 0 else 'Failed but continuing' }}"
+  with_items: "{{ ntfsfix_result.results | default([]) }}"
+  when: ntfsfix_result is defined
+  
+- name: Mount NTFS disks with ntfs-3g for write support
+  shell: "mount -t ntfs-3g -o remove_hiberfile,force,rw,uid=0,gid=0,umask=000 {{ item.device }} {{ nfs_mount_base }}/{{ item.mountpoint }}"
+  with_items: "{{ storage_disks }}"
+  when: item.fstype == 'ntfs'
+  register: ntfs_mount_result
+  ignore_errors: yes
+
+- name: Mount non-NTFS disks
+  mount:
+    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
+    src: "{{ item.device }}"
+    fstype: "{{ item.fstype | default('auto') }}"
+    opts: "defaults,noatime"
+    state: mounted
+  with_items: "{{ storage_disks }}"
+  when: item.fstype != 'ntfs'
+  register: other_mount_result
+  ignore_errors: yes
+
+- name: Check mount status
+  shell: "mount | grep {{ item.device }} || echo 'Not mounted'"
+  with_items: "{{ storage_disks }}"
+  register: mount_status
+  changed_when: false
 
 - name: Display mount status
   debug:
-    msg: "Mounted {{ item.device }} to {{ nfs_mount_base }}/{{ item.mountpoint }}"
-  with_items: "{{ storage_disks }}"
-  when: mount_result is success or mount_result is skipped
+    msg: "{{ item.stdout }}"
+  with_items: "{{ mount_status.results }}"
 
 - name: Ensure exports file exists
   file:

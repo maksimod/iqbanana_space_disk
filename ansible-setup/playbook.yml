@@ -11,6 +11,19 @@
       debug:
         msg: "{{ 'SUCCESS: Connected to ' + inventory_hostname if ping_result.ping == 'pong' else 'ERROR: Failed to connect to ' + inventory_hostname }}"
 
+- name: Ensure required packages are installed
+  hosts: all
+  become: yes
+  tasks:
+    - name: Install required packages
+      package:
+        name: "{{ required_packages }}"
+        state: present
+      register: package_install
+      retries: 3
+      delay: 5
+      until: package_install is success
+
 - name: Configure NFS Server
   hosts: nfs_server
   become: yes
@@ -42,6 +55,24 @@
       include_role:
         name: nfs_server
 
+- name: Wait for NFS server to stabilize
+  hosts: nfs_client
+  become: yes
+  tasks:
+    - name: Wait for NFS server to be ready
+      wait_for:
+        host: "{{ nfs_server_ip }}"
+        port: 2049
+        timeout: "{{ nfs_mount_timeout }}"
+      register: nfs_ready
+      retries: 5
+      delay: 10
+      until: nfs_ready is success
+
+    - name: Display NFS server status
+      debug:
+        msg: "NFS server is {{ 'ready' if nfs_ready is success else 'not ready' }}"
+
 - name: Configure NFS Client
   hosts: nfs_client
   become: yes
@@ -56,6 +87,30 @@
     - name: Include NFS client role
       include_role:
         name: nfs_client
+
+- name: Verify NFS Mounting
+  hosts: nfs_client
+  become: yes
+  tasks:
+    - name: Check NFS mounts
+      shell: "df -h | grep {{ nfs_server_ip }} || echo 'No mounts found'"
+      register: mount_check
+      changed_when: false
+
+    - name: Display mount check results
+      debug:
+        msg: "Mount check results: {{ mount_check.stdout_lines }}"
+
+    - name: Test write permissions
+      shell: "touch {{ nfs_mount_base }}/{{ item.mountpoint }}/ansible_test_{{ ansible_date_time.epoch }}.txt && echo 'OK' || echo 'Failed'"
+      with_items: "{{ storage_disks }}"
+      register: write_test
+      ignore_errors: yes
+
+    - name: Display write test results
+      debug:
+        msg: "Write test on {{ item.item.mountpoint }}: {{ item.stdout }}"
+      with_items: "{{ write_test.results }}"
 
 - name: Cleanup temporary files
   hosts: all

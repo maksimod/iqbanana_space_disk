@@ -15,10 +15,17 @@ storage_disks:
 
 # Настройки монтирования для различных файловых систем
 fs_mount_opts:
-  ntfs: "rw,uid=0,gid=0,umask=000,force"
+  ntfs: "remove_hiberfile,force,rw,uid=0,gid=0,umask=000"
   ext4: "defaults,noatime"
   xfs: "defaults,noatime"
   
+# Инструменты для работы с файловыми системами
+required_packages:
+  - ntfs-3g
+  - ntfsprogs
+  - nfs-common
+  - nfs-kernel-server
+
 # Временные файлы
 temp_disk_info: /tmp/disk_info.txt
 temp_mount_info: /tmp/mount_info.txt
@@ -42,12 +49,12 @@ excluded_devices:
 lvm_exclude_vgs: []
 
 # Параметры монтирования для улучшения надежности
-nfs_client_mount_opts: "rw,soft,timeo=20,retry=3,noatime,_netdev"
+nfs_client_mount_opts: "rw,soft,timeo=30,retry=5,noatime,_netdev"
 
 # Дополнительные параметры для повышения надежности монтирования
-nfs_mount_timeout: 30
-nfs_mount_retries: 3
-nfs_mount_delay: 5
+nfs_mount_timeout: 60
+nfs_mount_retries: 5
+nfs_mount_delay: 10
 
 # Настройки для обнаружения NFS клиентом экспортированных разделов
 nfs_server_ip: "{{ hostvars[groups['nfs_server'][0]]['ansible_host'] }}"

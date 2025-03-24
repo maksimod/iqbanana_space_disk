@@ -55,6 +55,9 @@
   register: nfs_exports
   changed_when: false
   ignore_errors: yes
+  retries: 3
+  delay: 5
+  until: "'No exports found' not in nfs_exports.stdout"
 
 - name: Display available exports
   debug:
@@ -82,6 +85,13 @@
   when: nfs_mount_result is failed
   ignore_errors: yes
 
+# Try alternate mount options if still fails
+- name: Try alternate mount options if still fails
+  shell: "mount -t nfs4 -o rw,soft,intr {{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }}"
+  with_items: "{{ storage_disks }}"
+  when: nfs_mount_result is failed
+  ignore_errors: yes
+
 - name: Display mount status
   debug:
     msg: "{{ 'SUCCESS: NFS shares mounted' if nfs_mount_result is succeeded else 'WARNING: Some mounts might have failed, verify manually' }}"
@@ -95,3 +105,15 @@
 - name: Display verification status
   debug:
     msg: "Mounts found: {{ mount_verification.stdout_lines }}"
+
+# Check write permissions by creating test file
+- name: Test write permissions
+  shell: "touch {{ nfs_mount_base }}/{{ item.mountpoint }}/test_write_permissions.txt && echo 'OK' || echo 'Failed'"
+  with_items: "{{ storage_disks }}"
+  register: write_test
+  ignore_errors: yes
+  
+- name: Display write permissions test results
+  debug:
+    msg: "Write test on {{ item.item.mountpoint }}: {{ item.stdout }}"
+  with_items: "{{ write_test.results }}"
