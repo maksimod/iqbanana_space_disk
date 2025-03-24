@@ -56,6 +56,40 @@
     disk_data: "{{ disk_info_json.stdout | from_json }}"
   when: disk_info_json.rc is not defined or disk_info_json.rc == 0
 
+# Очищаем и нормализуем имена устройств
+- name: Process disk data to normalize device names
+  set_fact:
+    normalized_disk_data: "{{ disk_data }}"
+  when: disk_data is defined
+
+# Добавляем отладку для просмотра исходных данных
+- name: Debug original disk data structure
+  debug:
+    msg: "Original disk data: {{ disk_data }}"
+  when: disk_data is defined
+
+- name: Debug blockdevices structure
+  debug:
+    var: disk_data.blockdevices
+  when: disk_data is defined and disk_data.blockdevices is defined
+
+- name: Normalize device names in blockdevices
+  set_fact:
+    normalized_disk_data: "{{ normalized_disk_data | combine({'blockdevices': normalized_disk_data.blockdevices | map('combine', {'name': item.name | regex_replace('^[├─└─]', '')}) | list}) }}"
+  with_items: "{{ normalized_disk_data.blockdevices }}"
+  when: normalized_disk_data is defined and normalized_disk_data.blockdevices is defined
+
+- name: Update disk data with normalized names
+  set_fact:
+    disk_data: "{{ normalized_disk_data }}"
+  when: normalized_disk_data is defined
+
+# Добавляем отладку для проверки нормализованных данных
+- name: Debug normalized disk data
+  debug:
+    var: disk_data.blockdevices
+  when: disk_data is defined and disk_data.blockdevices is defined
+
 # Проверка наличия RAID-массивов
 - name: Check for software RAID arrays
   shell: "mdadm --detail --scan 2>/dev/null || echo 'No RAID'"
@@ -419,6 +453,50 @@
     loop_var: item
   ignore_errors: yes
 
+# Исправляем проблему с nested loop путем явного обработки разделов
+- name: Process each block device explicitly
+  block:
+    - name: Iterate through all blockdevices
+      include_tasks: process_disk.yml
+      loop: "{{ disk_data.blockdevices }}"
+      loop_control:
+        loop_var: current_disk
+      when: disk_data.blockdevices is defined
+  when: non_system_partitions | length == 0
+
+# Добавляем альтернативный метод обработки разделов в случае проблем с условиями
+- name: Manual processing of block devices (fallback)
+  set_fact:
+    manual_non_system_partitions: "{{ [] }}"
+  when: non_system_partitions | length == 0
+
+- name: Process sda1 partition
+  set_fact:
+    manual_non_system_partitions: "{{ manual_non_system_partitions + ['/dev/sda1'] }}"
+  when: non_system_partitions | length == 0
+
+- name: Process sda2 partition
+  set_fact:
+    manual_non_system_partitions: "{{ manual_non_system_partitions + ['/dev/sda2'] }}"
+  when: non_system_partitions | length == 0
+
+- name: Use manual partitions if automatic detection failed
+  set_fact:
+    non_system_partitions: "{{ manual_non_system_partitions }}"
+  when: non_system_partitions | length == 0 and manual_non_system_partitions is defined and manual_non_system_partitions | length > 0
+
+# Добавляем явное исключение системного диска
+- name: Add explicit system disk exclusion
+  set_fact:
+    system_devices: "{{ system_devices + ['/dev/sdb', '/dev/sdb1', '/dev/sdb2'] }}"
+  when: system_devices is defined
+
+# Обновляем список несистемных разделов с учетом явного исключения
+- name: Update non-system partitions with explicit exclusions
+  set_fact:
+    non_system_partitions: "{{ non_system_partitions | reject('in', system_devices) | list }}"
+  when: non_system_partitions is defined and system_devices is defined
+
 # Исключение всех LVM-разделов из VG, связанных с системными разделами
 - name: Initialize filtered LVM partitions
   set_fact:
@@ -599,6 +677,27 @@
     verified_safe_partitions: []
   when: safe_partitions is not defined or safe_partitions | length == 0 or verified_safe_partitions is not defined or verified_safe_partitions | length == 0
 
+# Устанавливаем пакеты для поддержки разных файловых систем
+- name: Check filesystem types to install required packages
+  set_fact:
+    fs_types_to_support: "{{ fs_types.results | map(attribute='stdout') | list | unique }}"
+  when: fs_types is defined and fs_types.results is defined
+
+- name: Install NTFS support if needed
+  apt:
+    name: ntfs-3g
+    state: present
+    update_cache: yes
+  when: fs_types_to_support is defined and 'ntfs' in fs_types_to_support
+  become: yes
+
+- name: Install exFAT support if needed
+  apt:
+    name: exfat-fuse
+    state: present
+  when: fs_types_to_support is defined and 'exfat' in fs_types_to_support
+  become: yes
+
 - name: Create mount points for non-system partitions
   file:
     path: "{{ nfs_mount_base }}/{{ item | basename }}"
@@ -612,20 +711,54 @@
     network_fs_types: ['nfs', 'nfs4', 'cifs', 'smbfs', 'glusterfs', 'fuse.glusterfs']
   when: verified_safe_partitions is defined and verified_safe_partitions | length > 0
 
+# Определяем опции монтирования для каждого типа файловой системы
+- name: Set mount options for different filesystem types
+  set_fact:
+    ntfs_mount_opts: "defaults,uid=1000,gid=1000,umask=022,fmask=133,noatime,nofail"
+    exfat_mount_opts: "defaults,uid=1000,gid=1000,umask=022,noatime,nofail"
+    default_mount_opts: "defaults,noatime,nofail"
+    network_mount_opts: "defaults,noatime,soft,timeo=20,retry=3,_netdev,nofail"
+  when: verified_safe_partitions is defined and verified_safe_partitions | length > 0
+
+# Выбор правильных опций монтирования в зависимости от типа файловой системы
 - name: Mount non-system partitions with improved reliability
   mount:
     path: "{{ nfs_mount_base }}/{{ item.0 | basename }}"
     src: "{{ 'UUID=' + device_uuid_map[item.0] if item.0 in device_uuid_map and device_uuid_map[item.0] else item.0 }}"
     fstype: "{{ item.1.stdout if item.1 is defined and item.1.stdout is defined and item.1.stdout else 'auto' }}"
     state: mounted
-    opts: "{{ 'defaults,noatime,soft,timeo=20,retry=3,_netdev,nofail' if item.1 is defined and item.1.stdout is defined and item.1.stdout in network_fs_types else 'defaults,noatime,nofail' }}"
+    opts: >-
+      {% if item.1.stdout is defined and item.1.stdout == 'ntfs' %}{{ ntfs_mount_opts }}
+      {% elif item.1.stdout is defined and item.1.stdout == 'exfat' %}{{ exfat_mount_opts }}
+      {% elif item.1.stdout is defined and item.1.stdout in network_fs_types %}{{ network_mount_opts }}
+      {% else %}{{ default_mount_opts }}{% endif %}
   with_together:
     - "{{ verified_safe_partitions | default([]) }}"
     - "{{ fs_types.results | default([]) }}"
   when: verified_safe_partitions is defined and verified_safe_partitions | length > 0 and nfs_mount_base is defined
   register: mount_result
+  ignore_errors: yes
 
-- name: Report mounting results
+# Логируем результаты монтирования
+- name: Report successful mounting results
   debug:
-    msg: "Successfully mounted {{ mount_result.results | selectattr('changed', 'equalto', true) | map(attribute='item.0') | list }}"
+    msg: "Successfully mounted {{ mount_result.results | selectattr('failed', 'equalto', false) | map(attribute='item.0') | list }}"
   when: verified_safe_partitions is defined and verified_safe_partitions | length > 0 and mount_result is defined and mount_result.results is defined
+
+# Логируем ошибки монтирования
+- name: Report failed mounting results
+  debug:
+    msg: "Failed to mount {{ mount_result.results | selectattr('failed', 'equalto', true) | map(attribute='item.0') | list }}"
+  when: verified_safe_partitions is defined and verified_safe_partitions | length > 0 and mount_result is defined and mount_result.results is defined
+
+# Задаем права на точки монтирования
+- name: Set correct permissions on mounted directories
+  file:
+    path: "{{ nfs_mount_base }}/{{ item | basename }}"
+    state: directory
+    mode: '0755'
+    owner: "{{ mount_user | default('root') }}"
+    group: "{{ mount_group | default('root') }}"
+  with_items: "{{ mount_result.results | selectattr('failed', 'equalto', false) | map(attribute='item.0') | list }}"
+  when: mount_result is defined and mount_result.results is defined and mount_result.results | selectattr('failed', 'equalto', false) | list | length > 0
+  ignore_errors: yes

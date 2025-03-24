@@ -1,0 +1,23 @@
+---
+# Обработка отдельного диска и его разделов
+
+- name: Debug current disk
+  debug:
+    var: current_disk
+  
+- name: Process partitions of current disk
+  set_fact:
+    temp_partitions: "{{ [] }}"
+  
+- name: Iterate through disk partitions
+  set_fact:
+    temp_partitions: "{{ temp_partitions + (['/dev/' + partition.name] if partition.type == 'part' and (partition.mountpoint is none or partition.mountpoint not in system_mount_paths) and '/dev/' + partition.name not in system_devices and '/dev/' + current_disk.name not in system_devices and partition.fstype is defined and partition.fstype != 'swap' and partition.fstype != '' and (partition.mountpoint is none or partition.mountpoint != '[SWAP]') else []) }}"
+  loop: "{{ current_disk.children | default([]) }}"
+  loop_control:
+    loop_var: partition
+  when: current_disk.children is defined
+
+- name: Update non-system partitions list
+  set_fact:
+    non_system_partitions: "{{ non_system_partitions + temp_partitions }}"
+  when: temp_partitions is defined and temp_partitions | length > 0 
