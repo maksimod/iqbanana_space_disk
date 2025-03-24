@@ -1,0 +1,132 @@
+---
+# Улучшенный скрипт для надежного определения и монтирования несистемных разделов
+# Использует несколько уровней проверки для исключения системных разделов
+
+- name: Get disk information with more details
+  shell: lsblk -o NAME,TYPE,MOUNTPOINT,UUID,FSTYPE,LABEL,SIZE -J
+  register: disk_info_json
+  changed_when: false
+
+- name: Parse disk information to JSON
+  set_fact:
+    disk_data: "{{ disk_info_json.stdout | from_json }}"
+
+- name: Get list of system mounts from /etc/fstab
+  shell: grep -v "^#" /etc/fstab | awk '{if ($2 != "none" && $2 != "swap") print $2}'
+  register: system_mounts
+  changed_when: false
+
+- name: Create list of system mount paths
+  set_fact:
+    system_mount_paths: |
+      {{ system_mounts.stdout_lines +
+         [
+           '/',
+           '/boot',
+           '/boot/efi',
+           '/home',
+           '/var',
+           '/var/log',
+           '/var/lib',
+           '/usr',
+           '/usr/local',
+           '/tmp',
+           '/opt',
+           '/srv',
+           None,
+           '[SWAP]',
+           'swap'
+         ]
+      }}
+
+- name: Get currently mounted filesystems
+  shell: findmnt -l -o TARGET -n
+  register: current_mounts
+  changed_when: false
+
+- name: Update list of system mount paths with currently mounted paths
+  set_fact:
+    system_mount_paths: "{{ system_mount_paths + current_mounts.stdout_lines }}"
+
+- name: Get list of root disk partitions
+  shell: lsblk -no PKNAME,NAME | grep $(findmnt -n -o SOURCE / | sed -E 's/.*\/([a-z]+)[0-9]+$/\1/') | awk '{print "/dev/"$2}'
+  register: root_disk_partitions
+  changed_when: false
+  ignore_errors: yes
+
+- name: Identify non-system partitions
+  set_fact:
+    non_system_partitions: []
+
+- name: Process each block device to identify non-system partitions
+  set_fact:
+    non_system_partitions: >-
+      {% set ns_partitions = non_system_partitions %}
+      {% for device in disk_data.blockdevices %}
+        {% if device.type == 'disk' and device.children is defined %}
+          {% for part in device.children %}
+            {% if part.type == 'part' and 
+                  part.mountpoint not in system_mount_paths and 
+                  '/dev/' + part.name not in root_disk_partitions.stdout_lines and
+                  part.fstype is defined and part.fstype != 'swap' and part.fstype != '' and
+                  part.mountpoint != '[SWAP]' %}
+              {% set ns_partitions = ns_partitions + ['/dev/' + part.name] %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+      {% endfor %}
+      {{ ns_partitions }}
+
+- name: Display identified non-system partitions
+  debug:
+    msg: "Identified non-system partitions: {{ non_system_partitions }}"
+
+- name: Display warning if no non-system partitions found
+  debug:
+    msg: "WARNING: No non-system partitions were identified. Nothing will be mounted."
+  when: non_system_partitions | length == 0
+
+- name: Perform additional safety checks
+  block:
+    - name: Check partitions are not already mounted
+      shell: findmnt -n -o SOURCE "{{ item }}" || echo "not_mounted"
+      register: mount_check_results
+      changed_when: false
+      loop: "{{ non_system_partitions }}"
+      
+    - name: Filter out already mounted partitions
+      set_fact:
+        safe_partitions: "{{ non_system_partitions | zip(mount_check_results.results) | selectattr('1.stdout', 'equalto', 'not_mounted') | map(attribute='0') | list }}"
+
+    - name: Display partitions that will be mounted
+      debug:
+        msg: "Partitions that will be safely mounted: {{ safe_partitions }}"
+
+    - name: Create mount points for non-system partitions
+      file:
+        path: "{{ nfs_mount_base }}/{{ item | basename }}"
+        state: directory
+        mode: '0755'
+      with_items: "{{ safe_partitions }}"
+      when: safe_partitions | length > 0
+
+    - name: Mount non-system partitions
+      mount:
+        path: "{{ nfs_mount_base }}/{{ item | basename }}"
+        src: "{{ item }}"
+        fstype: auto
+        state: mounted
+        opts: "defaults,noatime"
+      with_items: "{{ safe_partitions }}"
+      when: safe_partitions | length > 0
+      register: mount_result
+      
+    - name: Report mounting results
+      debug:
+        msg: "Successfully mounted {{ mount_result.results | selectattr('changed', 'equalto', true) | map(attribute='item') | list }}"
+      when: safe_partitions | length > 0 and mount_result.changed
+
+  rescue:
+    - name: Report failure
+      debug:
+        msg: "Failed to mount some partitions. No changes were made to the system."

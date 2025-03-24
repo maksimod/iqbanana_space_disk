@@ -1,20 +1,45 @@
 ---
+- name: Verify connectivity
+  hosts: all
+  gather_facts: no
+  tasks:
+    - name: Check SSH connection
+      ping:
+      register: ping_result
+
+    - name: Display connection status
+      debug:
+        msg: "{{ 'SUCCESS: Connected to ' + inventory_hostname if ping_result.ping == 'pong' else 'ERROR: Failed to connect to ' + inventory_hostname }}"
+
 - name: Configure NFS Server
   hosts: nfs_server
-  vars:
-    nfs_share_path: "/mnt/nfs_share"
-    nfs_client_ip: "{{ groups['nfs_client'][0] }}"
-  roles:
-    - common
-    - nfs_server
+  become: yes
+  tasks:
+    - name: Include disk detection role
+      include_role:
+        name: disk_detection
+
+    - name: Include NFS server role
+      include_role:
+        name: nfs_server
 
 - name: Configure NFS Client
   hosts: nfs_client
-  vars:
-    nfs_mount_point: "/mnt/nfs_client"
-    nfs_server_ip: "{{ groups['nfs_server'][0] }}"
-    nfs_share_path: "/mnt/nfs_share"
-  roles:
-    - common
-    - nfs_client
-    - verification 
+  become: yes
+  tasks:
+    - name: Include NFS client role
+      include_role:
+        name: nfs_client
+
+- name: Cleanup temporary files
+  hosts: all
+  become: yes
+  tasks:
+    - name: Remove temporary files
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - "{{ temp_disk_info }}"
+        - "{{ temp_mount_info }}"
+      ignore_errors: yes 

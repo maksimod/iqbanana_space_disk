@@ -1,1 +1,4 @@
-{{ nfs_share_path | default('/mnt/nfs_share') }} {{ nfs_client_ip }}(rw,sync,no_root_squash,no_subtree_check) 
+# NFS exports configuration
+{% for share in nfs_shares %}
+{{ nfs_mount_base }}/{{ share | basename }} {{ nfs_client_ip }}({{ nfs_opts }})
+{% endfor %} 

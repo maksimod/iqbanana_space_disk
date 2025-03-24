@@ -2,4 +2,11 @@
 192.168.0.106 ansible_user=root ansible_ssh_pass=rootpassword
 
 [nfs_client]
-192.168.0.105 ansible_user=root ansible_ssh_pass=2864 
+192.168.0.105 ansible_user=root ansible_ssh_pass=2864
+
+[all:vars]
+nfs_mount_base=/mnt/nfs
+nfs_exports_file=/etc/exports
+nfs_opts="rw,sync,no_root_squash,no_subtree_check"
+temp_disk_info=/tmp/disk_info.txt
+temp_mount_info=/tmp/mount_info.txt 

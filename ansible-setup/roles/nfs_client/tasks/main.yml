@@ -1,22 +1,49 @@
 ---
-- name: Create mount point
-  file:
-    path: "{{ nfs_mount_point | default('/mnt/nfs_client') }}"
-    state: directory
-    mode: '0777'
-  register: mount_point_creation
+- name: Install NFS client packages
+  package:
+    name: nfs-common
+    state: present
+  register: nfs_client_install
+  ignore_errors: true
 
-- name: Mount NFS share
-  mount:
-    path: "{{ nfs_mount_point | default('/mnt/nfs_client') }}"
-    src: "{{ nfs_server_ip }}:{{ nfs_share_path | default('/mnt/nfs_share') }}"
-    fstype: nfs
-    opts: rw,sync
-    state: mounted
-  register: mount_result
-
-- name: Log mounting status
+- name: Display NFS client installation status
   debug:
-    msg:
-      - "Mount point creation: {{ mount_point_creation }}"
-      - "NFS mount status: {{ mount_result }}" 
+    msg: "{{ 'SUCCESS: NFS client installed' if nfs_client_install.rc == 0 else 'ERROR: Failed to install NFS client' }}"
+
+- name: Get server's shared partitions
+  shell: "showmount -e {{ nfs_server_ip }}"
+  register: nfs_shares_available
+  changed_when: false
+
+- name: Create mount points for NFS shares
+  file:
+    path: "{{ nfs_mount_base }}/{{ item.split()[-1] | basename }}"
+    state: directory
+    mode: '0755'
+  with_items: "{{ nfs_shares_available.stdout_lines[1:] }}"
+  when: nfs_shares_available.stdout_lines | length > 0
+
+- name: Mount NFS shares
+  mount:
+    path: "{{ nfs_mount_base }}/{{ item.split()[-1] | basename }}"
+    src: "{{ nfs_server_ip }}:{{ item.split()[-1] }}"
+    fstype: nfs
+    opts: "{{ nfs_opts }}"
+    state: mounted
+  with_items: "{{ nfs_shares_available.stdout_lines[1:] }}"
+  when: nfs_shares_available.stdout_lines | length > 0
+  register: nfs_mount_result
+
+- name: Display mount status
+  debug:
+    msg: "{{ 'SUCCESS: NFS shares mounted' if nfs_mount_result.changed else 'ERROR: Failed to mount NFS shares' }}"
+
+- name: Verify NFS mounts
+  shell: "df -h | grep {{ nfs_server_ip }}"
+  register: mount_verification
+  changed_when: false
+  ignore_errors: true
+
+- name: Display verification status
+  debug:
+    msg: "{{ 'SUCCESS: NFS mounts verified' if mount_verification.rc == 0 else 'ERROR: NFS mounts not found' }}" 
