@@ -1,10 +1,25 @@
 ---
-# Основные настройки NFS (перенесено из inventory)
-nfs_mount_base: /mnt/nfs
+# Основные настройки NFS
+nfs_mount_base: /mnt/storage
 nfs_exports_file: /etc/exports
-nfs_opts: "rw,sync,no_root_squash,no_subtree_check"
+nfs_opts: "rw,sync,no_root_squash,no_subtree_check,insecure"
 
-# Временные файлы (перенесено из inventory)
+# Настройки дисков для монтирования
+storage_disks:
+  - device: /dev/sda1
+    mountpoint: sda1
+    fstype: ntfs
+  - device: /dev/sda2
+    mountpoint: sda2
+    fstype: ntfs
+
+# Настройки монтирования для различных файловых систем
+fs_mount_opts:
+  ntfs: "rw,uid=0,gid=0,umask=000,force"
+  ext4: "defaults,noatime"
+  xfs: "defaults,noatime"
+  
+# Временные файлы
 temp_disk_info: /tmp/disk_info.txt
 temp_mount_info: /tmp/mount_info.txt
 
@@ -16,7 +31,7 @@ additional_system_paths:
   - /data
   - /storage
 
-# Исключаемые устройства (можно дополнить список устройствами, которые не должны монтироваться)
+# Исключаемые устройства
 excluded_devices:
   - /dev/loop
   - /dev/ram
@@ -27,7 +42,12 @@ excluded_devices:
 lvm_exclude_vgs: []
 
 # Параметры монтирования для улучшения надежности
-nfs_client_mount_opts: "rw,soft,timeo=20,retry=3,noatime"
+nfs_client_mount_opts: "rw,soft,timeo=20,retry=3,noatime,_netdev"
+
+# Дополнительные параметры для повышения надежности монтирования
+nfs_mount_timeout: 30
+nfs_mount_retries: 3
+nfs_mount_delay: 5
 
 # Настройки для обнаружения NFS клиентом экспортированных разделов
 nfs_server_ip: "{{ hostvars[groups['nfs_server'][0]]['ansible_host'] }}"

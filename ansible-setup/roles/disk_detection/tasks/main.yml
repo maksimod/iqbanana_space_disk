@@ -857,13 +857,207 @@
     state: present
   when: disk_data.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list | length > 0
 
-# Монтируем NTFS разделы с поддержкой записи
+# Проверка и размонтирование занятых точек монтирования
+- name: Check and unmount busy mount points
+  block:
+    - name: Check if mount point is busy
+      shell: lsof "{{ nfs_mount_base }}/{{ item.name }}" 2>/dev/null || true
+      register: lsof_result
+      with_items: "{{ disk_data.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
+      ignore_errors: yes
+
+    - name: Gracefully unmount if busy
+      shell: |
+        if mountpoint -q "{{ nfs_mount_base }}/{{ item.name }}"; then
+          fuser -km "{{ nfs_mount_base }}/{{ item.name }}" 2>/dev/null || true
+          sleep 2
+          umount -l "{{ nfs_mount_base }}/{{ item.name }}" 2>/dev/null || true
+          sleep 1
+        fi
+      with_items: "{{ disk_data.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
+      ignore_errors: yes
+
+# Монтируем NTFS разделы с поддержкой записи и обработкой ошибок
 - name: Mount NTFS partitions with write support
-  mount:
-    path: "{{ nfs_mount_base }}/{{ item.name }}"
-    src: "/dev/{{ item.name }}"
-    fstype: ntfs-3g
-    opts: "rw,uid=1000,gid=1000,umask=0022"
-    state: mounted
+  block:
+    - name: Attempt to mount NTFS partition
+      shell: "umount {{ item.mountpoint }} 2>/dev/null; mkdir -p {{ nfs_mount_base }}/{{ item.name }} && mount -t ntfs-3g -o rw,uid=0,gid=0,umask=000 /dev/{{ item.name }} {{ nfs_mount_base }}/{{ item.name }}"
+      with_items: "{{ disk_data.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
+      ignore_errors: yes
+  rescue:
+    - name: Force mount if regular mount fails
+      shell: |
+        umount -f "{{ nfs_mount_base }}/{{ item.name }}" 2>/dev/null || true
+        sleep 2
+        ntfs-3g -o remove_hiberfile,force "/dev/{{ item.name }}" "{{ nfs_mount_base }}/{{ item.name }}"
+      with_items: "{{ disk_data.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
+      ignore_errors: yes
+
+# Проверка успешности монтирования
+- name: Verify NTFS mounts
+  shell: findmnt -n -o SOURCE,TARGET,FSTYPE | grep "{{ nfs_mount_base }}/{{ item.name }}" || echo "not_mounted"
+  register: mount_verification
   with_items: "{{ disk_data.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
-  when: disk_data.blockdevices is defined
+  changed_when: false
+  ignore_errors: yes
+
+- name: Display mount verification results
+  debug:
+    msg: "Mount status for {{ item.item.name }}: {{ 'Successfully mounted' if 'not_mounted' not in item.stdout else 'Failed to mount' }}"
+  with_items: "{{ mount_verification.results }}"
+  when: mount_verification is defined
+
+# Настройка NFS сервера
+- name: Ensure NFS utilities are installed
+  package:
+    name: 
+      - nfs-common
+      - nfs-kernel-server
+    state: present
+  become: yes
+
+- name: Get NFS server IP
+  set_fact:
+    nfs_server_ip: "{{ hostvars[inventory_hostname]['ansible_default_ipv4']['address'] }}"
+  when: hostvars[inventory_hostname]['ansible_default_ipv4'] is defined
+
+# Создаем базовую директорию для NFS
+- name: Ensure NFS base directory exists
+  file:
+    path: "{{ nfs_mount_base }}"
+    state: directory
+    mode: '0755'
+  become: yes
+
+# Отладка переменных
+- name: Debug NFS variables
+  debug:
+    msg:
+      - "NFS mount base: {{ nfs_mount_base }}"
+      - "Verified safe partitions: {{ verified_safe_partitions }}"
+      - "Server IP: {{ nfs_server_ip }}"
+
+# Создаем конфигурацию NFS напрямую
+- name: Configure NFS exports
+  copy:
+    dest: /etc/exports
+    content: |
+      {% if verified_safe_partitions %}
+      {% for disk in verified_safe_partitions %}
+      {{ nfs_mount_base }}/{{ disk | basename }} *(rw,sync,no_subtree_check,no_root_squash,insecure)
+      {% endfor %}
+      {% else %}
+      # No partitions to export
+      {% endif %}
+    mode: '0644'
+  become: yes
+  register: exports_config
+  when: "'nfs_server' in group_names"
+
+# Перезапускаем NFS сервер и проверяем экспорты
+- name: Reload NFS configuration
+  block:
+    - name: Update exports
+      shell: exportfs -ra
+      become: yes
+
+    - name: Restart NFS server
+      service:
+        name: nfs-kernel-server
+        state: restarted
+      become: yes
+
+    - name: Verify exports
+      shell: exportfs -v
+      register: export_list
+      changed_when: false
+
+    - name: Display exports
+      debug:
+        var: export_list.stdout_lines
+  when: "'nfs_server' in group_names"
+  ignore_errors: yes
+
+# Настройка клиента NFS
+- name: Configure NFS client
+  block:
+    - name: Ensure NFS client packages are installed
+      package:
+        name: nfs-common
+        state: present
+      become: yes
+
+    - name: Create NFS mount directories
+      file:
+        path: "{{ nfs_mount_base }}/{{ item | basename }}"
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+      with_items: "{{ verified_safe_partitions }}"
+      become: yes
+
+    - name: Wait for NFS server to be ready
+      wait_for:
+        host: "{{ nfs_server_ip }}"
+        port: 2049
+        timeout: 30
+      ignore_errors: yes
+
+    - name: Show available NFS exports
+      shell: showmount -e {{ nfs_server_ip }} || echo "No exports available"
+      register: nfs_exports
+      ignore_errors: yes
+
+    - name: Debug NFS exports
+      debug:
+        msg: "Available exports: {{ nfs_exports.stdout_lines }}"
+
+    - name: Ensure rpcbind is running
+      service:
+        name: rpcbind
+        state: started
+        enabled: yes
+      become: yes
+
+    - name: Mount NFS shares with retry
+      mount:
+        path: "{{ nfs_mount_base }}/{{ item | basename }}"
+        src: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item | basename }}"
+        fstype: nfs4
+        opts: "rw,soft,intr,rsize=32768,wsize=32768,vers=4,_netdev"
+        state: mounted
+      register: nfs_mount_result
+      retries: 3
+      delay: 5
+      until: nfs_mount_result is success
+      with_items: "{{ verified_safe_partitions }}"
+      become: yes
+      ignore_errors: yes
+
+    - name: Force mount if regular mount fails
+      shell: |
+        mkdir -p "{{ nfs_mount_base }}/{{ item | basename }}"
+        umount -f "{{ nfs_mount_base }}/{{ item | basename }}" 2>/dev/null || true
+        sleep 2
+        mount -t nfs4 -o rw,soft,intr,vers=4 "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item | basename }}" "{{ nfs_mount_base }}/{{ item | basename }}"
+      with_items: "{{ verified_safe_partitions }}"
+      when: nfs_mount_result is failed
+      become: yes
+      ignore_errors: yes
+  when: "'nfs_client' in group_names"
+
+# Проверка статуса NFS монтирования
+- name: Verify NFS mounts
+  shell: "df -h | grep {{ nfs_server_ip }} || true"
+  register: nfs_mount_verification
+  changed_when: false
+  ignore_errors: yes
+  when: "'nfs_client' in group_names"
+
+- name: Display NFS mount verification results
+  debug:
+    msg: 
+      - "NFS mount status:"
+      - "{{ nfs_mount_verification.stdout_lines if nfs_mount_verification.stdout_lines else 'No NFS mounts found' }}"
+  when: "'nfs_client' in group_names"

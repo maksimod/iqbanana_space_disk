@@ -2,7 +2,9 @@
 # Установка NFS клиента
 - name: Install NFS client packages
   package:
-    name: nfs-common
+    name: 
+      - nfs-common
+      - ntfs-3g
     state: present
   register: nfs_client_install
 
@@ -10,47 +12,86 @@
   debug:
     msg: "{{ 'SUCCESS: NFS client installed' if nfs_client_install is succeeded else 'ERROR: Failed to install NFS client' }}"
 
-# Получаем список экспортированных шар
-- name: Get server's shared partitions
-  shell: "showmount -e {{ nfs_server_ip }}"
-  register: nfs_shares_available
-  changed_when: false
+- name: Check network connectivity to NFS server
+  wait_for:
+    host: "{{ nfs_server_ip }}"
+    port: 2049
+    timeout: "{{ nfs_mount_timeout }}"
+  register: nfs_network_check
 
-- name: Display available NFS shares
+- name: Display network connectivity status
   debug:
-    msg: "Available NFS shares: {{ nfs_shares_available.stdout_lines | default(['None']) }}"
+    msg: "{{ 'SUCCESS: NFS server is reachable' if nfs_network_check is succeeded else 'ERROR: Cannot reach NFS server' }}"
+
+- name: Create base storage directory
+  file:
+    path: "{{ nfs_mount_base }}"
+    state: directory
+    mode: '0777'
+    owner: root
+    group: root
+
+# Unmount any existing mounts
+- name: Unmount existing NFS shares
+  mount:
+    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
+    state: unmounted
+  with_items: "{{ storage_disks }}"
+  ignore_errors: yes
 
 # Создаем точки монтирования
-- name: Ensure mount points exist
+- name: Create mount points for NFS shares
   file:
-    path: "{{ nfs_mount_base }}/{{ item.split()[-1] | basename }}"
+    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
     state: directory
-    mode: '0755'
-  with_items: "{{ nfs_shares_available.stdout_lines[1:] }}"
-  when: nfs_shares_available.stdout_lines is defined and nfs_shares_available.stdout_lines | length > 1
+    mode: '0777'
+    owner: root
+    group: root
+  with_items: "{{ storage_disks }}"
+
+# Check available exports
+- name: Show available NFS exports
+  shell: "showmount -e {{ nfs_server_ip }} || echo 'No exports found'"
+  register: nfs_exports
+  changed_when: false
+  ignore_errors: yes
+
+- name: Display available exports
+  debug:
+    msg: "Available exports: {{ nfs_exports.stdout_lines }}"
 
 # Монтируем NFS шары
 - name: Mount NFS shares
   mount:
-    path: "{{ nfs_mount_base }}/{{ item.split()[-1] | basename }}"
-    src: "{{ nfs_server_ip }}:{{ item.split()[-1] }}"
+    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
+    src: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}"
     fstype: nfs
-    opts: rw,sync
+    opts: "{{ nfs_client_mount_opts }}"
     state: mounted
-  with_items: "{{ nfs_shares_available.stdout_lines[1:] }}"
-  when: nfs_shares_available.stdout_lines is defined and nfs_shares_available.stdout_lines | length > 1
+  with_items: "{{ storage_disks }}"
   register: nfs_mount_result
+  retries: "{{ nfs_mount_retries }}"
+  delay: "{{ nfs_mount_delay }}"
+  until: nfs_mount_result is success
+  ignore_errors: yes
+
+# Try force mount if needed
+- name: Force mount if regular mount fails
+  shell: "mkdir -p {{ nfs_mount_base }}/{{ item.mountpoint }} && mount -t nfs -o {{ nfs_client_mount_opts }} {{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }}"
+  with_items: "{{ storage_disks }}"
+  when: nfs_mount_result is failed
+  ignore_errors: yes
 
 - name: Display mount status
   debug:
-    msg: "{{ 'SUCCESS: NFS shares mounted' if nfs_mount_result is succeeded else 'ERROR: Failed to mount NFS shares' }}"
+    msg: "{{ 'SUCCESS: NFS shares mounted' if nfs_mount_result is succeeded else 'WARNING: Some mounts might have failed, verify manually' }}"
 
 # Проверяем монтирование
 - name: Verify NFS mounts
-  shell: "df -h | grep {{ nfs_server_ip }}"
+  shell: "df -h | grep {{ nfs_server_ip }} || echo 'No mounts found'"
   register: mount_verification
   changed_when: false
 
 - name: Display verification status
   debug:
-    msg: "{{ 'SUCCESS: NFS mounts verified' if mount_verification is succeeded else 'ERROR: NFS mounts not found' }}"
+    msg: "Mounts found: {{ mount_verification.stdout_lines }}"

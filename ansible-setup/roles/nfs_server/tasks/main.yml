@@ -9,34 +9,62 @@
   debug:
     msg: "{{ 'SUCCESS: NFS server installed' if nfs_install is succeeded else 'ERROR: Failed to install NFS server' }}"
 
-- name: Get list of mounted non-system partitions
-  shell: "findmnt -t auto -o SOURCE,TARGET | grep '{{ nfs_mount_base }}'"
-  register: mounted_partitions
-  changed_when: false
-  ignore_errors: true
+- name: Create base storage directory
+  file:
+    path: "{{ nfs_mount_base }}"
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
 
-- name: Display mounted partitions
+- name: Unmount any existing mounts
+  mount:
+    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
+    state: unmounted
+  with_items: "{{ storage_disks }}"
+  ignore_errors: yes
+  
+- name: Create mount points for disks
+  file:
+    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
+    state: directory
+    mode: '0777'
+    owner: root
+    group: root
+  with_items: "{{ storage_disks }}"
+
+- name: Mount disks with ntfs-3g for write support
+  shell: "mount -t ntfs-3g -o rw,uid=0,gid=0,umask=000,force {{ item.device }} {{ nfs_mount_base }}/{{ item.mountpoint }}"
+  with_items: "{{ storage_disks }}"
+  register: mount_result
+  ignore_errors: yes
+
+- name: Display mount status
   debug:
-    msg: "Mounted partitions: {{ mounted_partitions.stdout_lines | default([]) }}"
+    msg: "Mounted {{ item.device }} to {{ nfs_mount_base }}/{{ item.mountpoint }}"
+  with_items: "{{ storage_disks }}"
+  when: mount_result is success or mount_result is skipped
 
 - name: Ensure exports file exists
   file:
-    path: "{{ nfs_exports_file | default('/etc/exports') }}"
+    path: "{{ nfs_exports_file }}"
     state: touch
     mode: '0644'
-  when: mounted_partitions is defined and mounted_partitions.rc is defined and mounted_partitions.rc == 0 and mounted_partitions.stdout_lines | length > 0
+    owner: root
+    group: root
 
 - name: Configure NFS exports
-  template:
-    src: exports.j2
-    dest: "{{ nfs_exports_file | default('/etc/exports') }}"
+  lineinfile:
+    path: "{{ nfs_exports_file }}"
+    line: "{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_client_ip }}({{ nfs_opts }})"
+    regexp: "^{{ nfs_mount_base }}/{{ item.mountpoint }} "
+    state: present
+  with_items: "{{ storage_disks }}"
   register: nfs_config
-  when: mounted_partitions is defined and mounted_partitions.rc is defined and mounted_partitions.rc == 0 and mounted_partitions.stdout_lines | length > 0
 
 - name: Display NFS configuration status
   debug:
     msg: "{{ 'SUCCESS: NFS exports configured' if (nfs_config.changed | default(false)) else 'ERROR or NO CHANGES: NFS exports configuration' }}"
-  when: nfs_config is defined
 
 - name: Start and enable NFS server
   systemd:
@@ -49,9 +77,22 @@
   debug:
     msg: "{{ 'SUCCESS: NFS service started' if nfs_service is succeeded else 'ERROR: NFS service failed' }}"
 
+- name: Wait for NFS server to be ready
+  wait_for:
+    port: 2049
+    timeout: "{{ nfs_mount_timeout }}"
+  register: nfs_ready
+
+- name: Display NFS readiness status
+  debug:
+    msg: "{{ 'SUCCESS: NFS server is ready' if nfs_ready is succeeded else 'ERROR: NFS server is not ready' }}"
+
 - name: Export NFS shares
   command: exportfs -ra
-  when: nfs_config.changed
+  register: export_result
+  retries: "{{ nfs_mount_retries }}"
+  delay: "{{ nfs_mount_delay }}"
+  until: export_result is success
 
 - name: Verify exported shares
   command: exportfs -v
