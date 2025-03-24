@@ -15,14 +15,8 @@ const config = {
   apiVersion: 'v1',
   
   // Пути к смонтированным дискам на веб-сервере
- disks: {
- 'disk_sda1': '/mnt/disk_sda1',
- 'disk_sda5': '/mnt/disk_sda5',
- 'disk_sdb1': '/mnt/disk_sdb1',
- 'disk_sdb5': '/mnt/disk_sdb5',
- 'disk_sdc1': '/mnt/disk_sdc1',
- 'disk_sdd1': '/mnt/disk_sdd1'
- }
+  disks: {
+    'disk_sda1': '/mnt/storage/sda1',    'disk_sda2': '/mnt/storage/sda2'  }
 };
 
-module.exports = config;
+module.exports = config; 

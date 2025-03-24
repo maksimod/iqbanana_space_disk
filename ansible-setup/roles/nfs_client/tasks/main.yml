@@ -124,7 +124,37 @@
   async: 60
   poll: 0
 
+- name: Wait for write test operations to complete
+  async_status:
+    jid: "{{ item.ansible_job_id }}"
+  register: write_test_results
+  until: write_test_results.finished
+  retries: 10
+  delay: 2
+  with_items: "{{ write_test.results }}"
+  when: write_test.results is defined
+  
 - name: Display write permissions test results
   debug:
-    msg: "Write test on {{ item.item.mountpoint }}: {{ item.stdout }}"
-  with_items: "{{ write_test.results }}"
+    msg: "Write test on {{ item.item.item.mountpoint }}: {{ item.stdout }}"
+  with_items: "{{ write_test_results.results | default([]) }}"
+  when: write_test_results.results is defined
+
+# Обновление конфигурации backend для корректной работы с монтированными дисками
+- name: Create backend config directory if it doesn't exist
+  file:
+    path: "{{ backend_config_path | default('/home/client/iqbanana_space_disk/backend/config') }}"
+    state: directory
+    mode: '0755'
+  ignore_errors: yes
+
+- name: Generate disk config for backend
+  template:
+    src: backend_config.js.j2
+    dest: "{{ backend_config_path | default('/home/client/iqbanana_space_disk/backend/config') }}/config.js"
+    mode: '0644'
+  register: backend_config_update
+
+- name: Display backend configuration update status
+  debug:
+    msg: "{{ 'SUCCESS: Backend configuration updated' if backend_config_update is succeeded else 'ERROR: Failed to update backend configuration' }}"

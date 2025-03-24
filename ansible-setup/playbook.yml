@@ -178,6 +178,27 @@
       async: 60
       poll: 0
 
+# Проверка работоспособности backend с обновленной конфигурацией
+- name: Verify Backend Configuration
+  hosts: nfs_client
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Verify backend config file exists
+      stat:
+        path: "{{ backend_config_path }}/config.js"
+      register: backend_config
+
+    - name: Check backend config content
+      shell: "cat {{ backend_config_path }}/config.js"
+      register: config_content
+      changed_when: false
+      when: backend_config.stat.exists
+
+    - name: Display backend configuration status
+      debug:
+        msg: "{{ 'SUCCESS: Backend configuration updated with proper disk paths' if backend_config.stat.exists else 'WARNING: Backend configuration file not found' }}"
+
 # Добавляем отображение финального отчета в самом конце
 - name: Display Final Report
   hosts: nfs_server

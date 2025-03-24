@@ -58,3 +58,6 @@ nfs_mount_delay: 10
 # Настройки для обнаружения NFS клиентом экспортированных разделов
 nfs_server_ip: "{{ groups['nfs_server'][0] }}"
 nfs_client_ip: "{{ groups['nfs_client'][0] }}"
+
+# Путь к директории конфигурации backend
+backend_config_path: "/home/client/iqbanana_space_disk/backend/config"
