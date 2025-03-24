@@ -7,6 +7,9 @@
   register: system_state
   changed_when: false
   ignore_errors: yes
+  retries: 5
+  delay: 10
+  until: system_state.stdout == "running" or system_state.stdout == "degraded"
 
 - name: Wait for system to be fully initialized
   debug:
@@ -91,7 +94,7 @@
 
 # Получение всех ТЕКУЩИХ точек монтирования вместо использования fstab
 - name: Get list of ALL currently mounted filesystems
-  shell: findmnt -l -o SOURCE,TARGET -n
+  shell: findmnt -l -o SOURCE,TARGET,FSTYPE -n
   register: current_mounts
   changed_when: false
 
@@ -112,6 +115,11 @@
         '/tmp',
         '/opt',
         '/srv',
+        '/run',
+        '/dev',
+        '/dev/shm',
+        '/sys',
+        '/proc',
         None,
         '[SWAP]',
         'swap'
@@ -177,6 +185,13 @@
   changed_when: false
   ignore_errors: yes
 
+# Дополнительная проверка на другие критичные монтирования на том же диске
+- name: Check for critical mountpoints on the same disk
+  shell: lsblk -no NAME,MOUNTPOINT | grep -E ' /(boot|home|var|usr|lib|bin|sbin)($|/)' | awk '{print $1}' | sed 's/[0-9]*$//' | sort | uniq
+  register: critical_mounts_disks
+  changed_when: false
+  ignore_errors: yes
+
 - name: Get all physical devices for all volume groups if using LVM
   set_fact:
     vg_to_pv_mapping: |
@@ -205,6 +220,11 @@
       {% if system_disk_verification.stdout != "" %}
         {% set devices = devices + ['/dev/' + system_disk_verification.stdout] %}
       {% endif %}
+      {% if critical_mounts_disks.stdout_lines is defined %}
+        {% for disk in critical_mounts_disks.stdout_lines %}
+          {% set devices = devices + ['/dev/' + disk] %}
+        {% endfor %}
+      {% endif %}
       {% if is_root_lvm and root_vg_name is defined and vg_to_pv_mapping is defined %}
         {% set pvs_for_root_vg = vg_to_pv_mapping.get(root_vg_name, []) %}
         {% set devices = devices + pvs_for_root_vg %}
@@ -223,6 +243,32 @@
 - name: Debug system devices
   debug:
     msg: "System devices to exclude: {{ system_devices }}"
+
+# Получение списка блочных устройств с UUID для более надежной идентификации
+- name: Get all block device UUIDs
+  shell: blkid | grep -v "TYPE=\"swap\"" | awk -F": " '{print $1}' | xargs -I{} bash -c 'echo {} $(blkid -s UUID -o value {})'
+  register: block_uuids
+  changed_when: false
+  ignore_errors: yes
+
+# Создание сопоставления устройств и их UUID
+- name: Create device to UUID mapping
+  set_fact:
+    device_uuid_map: |
+      {% set mapping = {} %}
+      {% if block_uuids.stdout_lines is defined %}
+        {% for line in block_uuids.stdout_lines %}
+          {% set parts = line.split() %}
+          {% if parts|length >= 2 %}
+            {% set device = parts[0] %}
+            {% set uuid = parts[1] %}
+            {% if uuid != "" %}
+              {% set _ = mapping.update({device: uuid}) %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+      {{ mapping }}
 
 # Идентификация несистемных разделов с учетом полученной информации
 - name: Identify non-system partitions
@@ -308,9 +354,22 @@
       changed_when: false
       ignore_errors: yes
       
-    - name: Remove any partitions that may be system partitions
+    - name: Verify disk is not part of any critical mounts
+      shell: |
+        DISK_NAME=$(echo "{{ item }}" | sed 's/\/dev\///' | sed 's/[0-9]*$//')
+        lsblk -no NAME,MOUNTPOINT | grep -q "^$DISK_NAME" | grep -E ' /(boot|home|var|usr|lib|bin|sbin)($|/)' || echo 'safe'
+      register: critical_safety_check
+      with_items: "{{ non_system_partitions }}"
+      changed_when: false
+      ignore_errors: yes
+      
+    - name: Remove any partitions that may be system partitions (root check)
       set_fact:
-        verified_non_system: "{{ non_system_partitions | zip(root_safety_check.results) | selectattr('1.stdout', 'equalto', 'safe') | map(attribute='0') | list }}"
+        root_verified_non_system: "{{ non_system_partitions | zip(root_safety_check.results) | selectattr('1.stdout', 'equalto', 'safe') | map(attribute='0') | list }}"
+      
+    - name: Remove any partitions that may be system partitions (critical mounts check)
+      set_fact:
+        verified_non_system: "{{ root_verified_non_system | zip(critical_safety_check.results) | selectattr('1.stdout', 'equalto', 'safe') | map(attribute='0') | list }}"
       
     - name: Filter out already mounted partitions
       set_fact:
@@ -355,13 +414,22 @@
       with_items: "{{ verified_safe_partitions }}"
       when: verified_safe_partitions | length > 0
 
+    - name: Get network filesystem types
+      set_fact:
+        network_fs_types: ['nfs', 'nfs4', 'cifs', 'smbfs', 'glusterfs', 'fuse.glusterfs']
+
     - name: Mount non-system partitions with improved reliability
       mount:
         path: "{{ nfs_mount_base }}/{{ item.0 | basename }}"
-        src: "{{ item.0 }}"
+        src: "{{ 'UUID=' + device_uuid_map[item.0] if item.0 in device_uuid_map else item.0 }}"
         fstype: "{{ item.1.stdout if item.1.stdout else 'auto' }}"
         state: mounted
-        opts: "defaults,noatime,nofail"
+        opts: >-
+          {% if item.1.stdout in network_fs_types %}
+          defaults,noatime,soft,timeo=20,retry=3,_netdev,nofail
+          {% else %}
+          defaults,noatime,nofail
+          {% endif %}
       with_together:
         - "{{ verified_safe_partitions }}"
         - "{{ fs_types.results }}"
