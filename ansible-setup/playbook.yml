@@ -36,7 +36,7 @@
 
     - name: Set client IP address
       set_fact:
-        nfs_client_ip: "{{ hostvars[groups['nfs_client'][0]]['ansible_host'] }}"
+        nfs_client_ip: "{{ groups['nfs_client'][0] }}"
         cacheable: yes
 
     - name: Create NFS mount base directory

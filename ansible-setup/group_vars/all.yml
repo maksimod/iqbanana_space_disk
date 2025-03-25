@@ -12,11 +12,11 @@ fs_mount_opts:
   vfat: "defaults,uid=0,gid=0,umask=000,noatime"
   
 # Инструменты для работы с файловыми системами
+# Инструменты для работы с файловыми системами
 required_packages:
   - ntfs-3g
   - nfs-common
   - nfs-kernel-server
-  - lsblk
   - util-linux
 
 # Исключаемые устройства

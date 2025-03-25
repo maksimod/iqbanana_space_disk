@@ -50,7 +50,7 @@
 - name: Set system disk from alternative method
   set_fact:
     system_disk: "{{ alt_system_disk.stdout }}"
-  when: "alt_system_disk is defined and alt_system_disk.stdout != ''"
+  when: "alt_system_disk is defined and alt_system_disk.stdout is defined and alt_system_disk.stdout != ''"
 
 # Для LVM, находим физические тома
 - name: Get Physical Volumes for LVM
