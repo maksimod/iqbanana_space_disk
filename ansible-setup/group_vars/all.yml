@@ -2,62 +2,37 @@
 # Основные настройки NFS
 nfs_mount_base: /mnt/storage
 nfs_exports_file: /etc/exports
-nfs_opts: "rw,sync,no_root_squash,no_subtree_check,insecure"
-
-# Настройки дисков для монтирования
-storage_disks:
-  - device: /dev/sda1
-    mountpoint: sda1
-    fstype: ntfs
-  - device: /dev/sda2
-    mountpoint: sda2
-    fstype: ntfs
+nfs_opts: "rw,sync,no_subtree_check,insecure"
 
 # Настройки монтирования для различных файловых систем
 fs_mount_opts:
-  ntfs: "remove_hiberfile,force,rw,uid=0,gid=0,umask=000,noatime,big_writes"
-  ext4: "defaults,noatime,data=writeback,commit=60,barrier=0"
+  ntfs: "remove_hiberfile,force,rw,uid=0,gid=0,umask=000,noatime"
+  ext4: "defaults,noatime,data=ordered,commit=60"
   xfs: "defaults,noatime,logbufs=8,logbsize=256k"
+  vfat: "defaults,uid=0,gid=0,umask=000,noatime"
   
 # Инструменты для работы с файловыми системами
 required_packages:
   - ntfs-3g
   - nfs-common
   - nfs-kernel-server
-
-# Временные файлы
-temp_disk_info: /tmp/disk_info.txt
-temp_mount_info: /tmp/mount_info.txt
-
-# Настройки для определения дисков
-# Список дополнительных системных путей, которые не следует монтировать
-additional_system_paths:
-  - /mnt
-  - /media
-  - /data
-  - /storage
+  - lsblk
+  - util-linux
 
 # Исключаемые устройства
 excluded_devices:
   - /dev/loop
   - /dev/ram
   - /dev/zram
+  - /dev/sr
 
-# LVM настройки
-# Список volume groups, которые следует исключить целиком (помимо той, что содержит корневой раздел)
-lvm_exclude_vgs: []
-
-# Параметры монтирования для улучшения надежности
-nfs_client_mount_opts: "rw,soft,timeo=10,retrans=2,noatime,_netdev,rsize=262144,wsize=262144,nconnect=16,lookupcache=positive,nolock"
+# Параметры монтирования NFS для оптимизации производительности
+nfs_client_mount_opts: "rw,soft,timeo=10,retrans=2,noatime,_netdev,rsize=262144,wsize=262144,nconnect=8,lookupcache=positive"
 
 # Дополнительные параметры для повышения надежности монтирования
 nfs_mount_timeout: 60
 nfs_mount_retries: 5
 nfs_mount_delay: 10
-
-# Настройки для обнаружения NFS клиентом экспортированных разделов
-nfs_server_ip: "{{ groups['nfs_server'][0] }}"
-nfs_client_ip: "{{ groups['nfs_client'][0] }}"
 
 # Путь к директории конфигурации backend
 backend_config_path: "/home/client/iqbanana_space_disk/backend/config"

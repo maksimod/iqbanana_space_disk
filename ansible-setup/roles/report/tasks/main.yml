@@ -1,22 +1,27 @@
 ---
-# Отчет о выполнении операций монтирования
+# Улучшенный отчет о выполнении операций монтирования
+
+# Получение информации о дисках на сервере
 - name: Get server mounted disk information
-  shell: "df -h | grep '{{ nfs_mount_base }}' || echo 'Нет примонтированных дисков на сервере'"
+  shell: "df -h | grep '{{ nfs_mount_base }}' || echo 'No mounted disks on server'"
   register: mount_info_server
   changed_when: false
   failed_when: false
+  delegate_to: "{{ groups['nfs_server'][0] }}"
 
-- name: Set NFS client IP
-  set_fact:
-    nfs_client_ip: "{{ hostvars[groups['nfs_client'][0]]['ansible_host'] }}"
-  when: groups['nfs_client'] is defined and groups['nfs_client'] | length > 0
-
+# Получение информации о смонтированных NFS на клиенте
 - name: Get client mounted disk information
-  shell: "ssh {{ nfs_client_ip }} 'df -h | grep nfs || echo \"Нет NFS дисков на клиенте\"'"
+  shell: "df -h | grep nfs || echo 'No NFS mounts on client'"
   register: mount_info_client
   changed_when: false
   failed_when: false
-  when: nfs_client_ip is defined
+
+# Проверка доступа к дискам
+- name: Test disk access
+  shell: "ls -la {{ nfs_mount_base }} || echo 'Cannot access mount directory'"
+  register: disk_access
+  changed_when: false
+  failed_when: false
 
 # Вычисляем время выполнения
 - name: Capture current time for report
@@ -40,33 +45,46 @@
   set_fact:
     report_text: |
       =====================================================
-      ОТЧЕТ ОБ ОПЕРАЦИЯХ МОНТИРОВАНИЯ
+      NFS MOUNTING OPERATION REPORT
       =====================================================
       
-      Время выполнения: {{ execution_time_minutes }} мин {{ execution_time_remaining_seconds }} сек
+      Execution time: {{ execution_time_minutes }} min {{ execution_time_remaining_seconds }} sec
       
-      ДИСКИ ПРИМОНТИРОВАННЫЕ НА СЕРВЕРЕ:
+      SERVER MOUNTED DISKS:
       -----------------------------------------------------
       {% if mount_info_server.stdout_lines is defined and mount_info_server.stdout_lines | length > 0 %}
       {% for line in mount_info_server.stdout_lines %}
       {{ line }}
       {% endfor %}
       {% else %}
-      Нет примонтированных дисков на сервере
+      No mounted disks on server
       {% endif %}
       
-      ДИСКИ ПРИМОНТИРОВАННЫЕ НА КЛИЕНТЕ:
+      CLIENT MOUNTED NFS SHARES:
       -----------------------------------------------------
       {% if mount_info_client.stdout_lines is defined and mount_info_client.stdout_lines | length > 0 %}
       {% for line in mount_info_client.stdout_lines %}
       {{ line }}
       {% endfor %}
       {% else %}
-      Нет примонтированных NFS дисков на клиенте
+      No NFS mounts on client
+      {% endif %}
+      
+      MOUNT DIRECTORY ACCESS:
+      -----------------------------------------------------
+      {% if disk_access.stdout_lines is defined and disk_access.stdout_lines | length > 0 %}
+      {% for line in disk_access.stdout_lines | slice(0, 5) %}
+      {{ line }}
+      {% endfor %}
+      {% if disk_access.stdout_lines | length > 5 %}
+      ... and {{ disk_access.stdout_lines | length - 5 }} more items
+      {% endif %}
+      {% else %}
+      Cannot access mount directory
       {% endif %}
       
       =====================================================
-      КОНЕЦ ОТЧЕТА
+      END OF REPORT
       =====================================================
 
 - name: Display the report
@@ -78,4 +96,4 @@
   copy:
     content: "{{ report_text }}"
     dest: "/tmp/ansible_mount_report.txt"
-    mode: '0644' 
+    mode: '0644'

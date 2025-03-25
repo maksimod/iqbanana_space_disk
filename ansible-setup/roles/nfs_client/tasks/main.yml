@@ -1,10 +1,5 @@
 ---
-# Устанавливаем переменную для контроля async операций
-- name: Set default for role_disable_async if not defined
-  set_fact:
-    role_disable_async: "{{ role_disable_async | default(false) }}"
-
-# Установка NFS клиента без асинхронности
+# Установка NFS клиента
 - name: Install NFS client packages
   package:
     name: 
@@ -12,62 +7,46 @@
       - ntfs-3g
     state: present
   register: nfs_client_install
+  retries: 3
+  delay: 5
+  until: nfs_client_install is succeeded
 
 - name: Display NFS client installation status
   debug:
     msg: "{{ 'SUCCESS: NFS client installed' if nfs_client_install is succeeded else 'ERROR: Failed to install NFS client' }}"
 
+# Проверка доступности NFS сервера
 - name: Check network connectivity to NFS server
   wait_for:
     host: "{{ nfs_server_ip }}"
     port: 2049
     timeout: "{{ nfs_mount_timeout | default(30) }}"
   register: nfs_network_check
-  failed_when: nfs_network_check is failed
+  retries: 3
+  delay: 5
+  until: nfs_network_check is succeeded
+  ignore_errors: yes
 
 - name: Display network connectivity status
   debug:
-    msg: "{{ 'SUCCESS: NFS server is reachable' if nfs_network_check is succeeded else 'ERROR: Cannot reach NFS server' }}"
+    msg: "{{ 'SUCCESS: NFS server is reachable' if nfs_network_check is succeeded else 'WARNING: Cannot reach NFS server' }}"
 
+# Создание базовой директории
 - name: Create base storage directory
   file:
     path: "{{ nfs_mount_base }}"
     state: directory
-    mode: '0777'
+    mode: '0755'
     owner: root
     group: root
 
-# Безопасная проверка монтирования
-- name: Check if NFS shares are already mounted
-  shell: "df -h | grep {{ nfs_server_ip }}"
-  register: existing_mounts
-  changed_when: false
-  failed_when: false
+# Проверка, что storage_disks определен и не пуст
+- name: Check if storage_disks is defined
+  debug:
+    msg: "WARNING: No storage_disks defined! Nothing will be mounted."
+  when: storage_disks is not defined or storage_disks | length == 0
 
-# Размонтируем только если диски уже примонтированы
-- name: Unmount existing NFS shares
-  mount:
-    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
-    state: unmounted
-  with_items: "{{ storage_disks }}"
-  when: existing_mounts.rc == 0
-  failed_when: false
-
-- name: Wait for unmount operations
-  pause:
-    seconds: 2
-
-# Создаем точки монтирования
-- name: Create mount points for NFS shares
-  file:
-    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
-    state: directory
-    mode: '0777'
-    owner: root
-    group: root
-  with_items: "{{ storage_disks }}"
-
-# Check available exports перед монтированием
+# Получение доступных экспортов
 - name: Show available NFS exports
   shell: "showmount -e {{ nfs_server_ip }}"
   register: nfs_exports
@@ -76,68 +55,91 @@
   retries: 3
   delay: 2
   until: nfs_exports.rc == 0
+  ignore_errors: yes
 
 - name: Display available exports
   debug:
-    msg: "Available exports: {{ nfs_exports.stdout_lines }}"
-  when: nfs_exports.stdout is defined
+    msg: "Available exports: {{ nfs_exports.stdout_lines | default(['No exports found or NFS server not responding']) }}"
 
-# Монтируем NFS шары последовательно и безопасно
-- name: Mount NFS shares sequentially
+# Создание точек монтирования
+- name: Create mount points for NFS shares
+  file:
+    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+  with_items: "{{ storage_disks | default([]) }}"
+  when: storage_disks is defined and storage_disks | length > 0
+
+# Монтирование NFS
+- name: Mount NFS shares with optimized parameters
   mount:
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
     src: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}"
     fstype: nfs
-    opts: "{{ nfs_client_mount_opts }}"
+    opts: "{{ nfs_client_mount_opts | default('rw,soft,timeo=10,retrans=2,noatime,_netdev,rsize=262144,wsize=262144,nconnect=8') }}"
     state: mounted
-  with_items: "{{ storage_disks }}"
+  with_items: "{{ storage_disks | default([]) }}"
   register: nfs_mount_result
-  failed_when: false
+  retries: "{{ nfs_mount_retries | default(3) }}"
+  delay: "{{ nfs_mount_delay | default(5) }}"
+  until: nfs_mount_result is succeeded
+  ignore_errors: yes
+  when: storage_disks is defined and storage_disks | length > 0
 
-- name: Display mount status
-  debug:
-    msg: "Mount status for {{ item.item.mountpoint }}: {{ 'SUCCESS' if item.changed else 'FAILED or ALREADY MOUNTED' }}"
-  with_items: "{{ nfs_mount_result.results }}"
-
-# Проверяем монтирование
+# Проверка успешности монтирования
 - name: Verify NFS mounts
   shell: "df -h | grep {{ nfs_server_ip }}"
   register: mount_verification
   changed_when: false
   failed_when: false
 
-- name: Display verification status
+- name: Display mount verification results
   debug:
-    msg: "Mounts found: {{ mount_verification.stdout_lines | default(['No mounts found']) }}"
+    msg: "NFS mounts: {{ mount_verification.stdout_lines | default(['No NFS mounts detected']) }}"
 
-# Проверка прав на запись только если монтирование успешно
-- name: Test write permissions sequentially
-  shell: "touch {{ nfs_mount_base }}/{{ item.mountpoint }}/test_write_permissions.txt"
-  with_items: "{{ storage_disks }}"
-  register: write_test
-  failed_when: false
-  when: mount_verification.rc == 0
+# Проверка прав на запись
+- name: Test write permissions
+  shell: "touch {{ nfs_mount_base }}/{{ item.mountpoint }}/ansible_write_test_{{ ansible_date_time.epoch }}.txt && echo OK || echo FAILED"
+  register: write_test_results
+  with_items: "{{ storage_disks | default([]) }}"
+  ignore_errors: yes
+  when: storage_disks is defined and storage_disks | length > 0 and mount_verification.rc == 0
 
-- name: Display write permissions test results
+- name: Display write test results
   debug:
-    msg: "Write test on {{ item.item.mountpoint }}: {{ 'SUCCESS' if item.rc == 0 else 'FAILED' }}"
-  with_items: "{{ write_test.results | default([]) }}"
-  when: write_test.results is defined
+    msg: "Write test for {{ item.item.mountpoint }}: {{ item.stdout }}"
+  with_items: "{{ write_test_results.results | default([]) }}"
+  when: write_test_results is defined
 
-# Обновление конфигурации backend для корректной работы с монтированными дисками
-- name: Create backend config directory if it doesn't exist
+# Очистка временных файлов
+- name: Clean up test files
+  file:
+    path: "{{ nfs_mount_base }}/{{ item.item.mountpoint }}/ansible_write_test_{{ ansible_date_time.epoch }}.txt"
+    state: absent
+  with_items: "{{ write_test_results.results | default([]) }}"
+  ignore_errors: yes
+  when: write_test_results is defined and item.stdout == "OK"
+
+# Обновление конфигурации backend
+- name: Create backend config directory if not exists
   file:
     path: "{{ backend_config_path | default('/home/client/iqbanana_space_disk/backend/config') }}"
     state: directory
     mode: '0755'
+  ignore_errors: yes
 
-- name: Generate disk config for backend
+- name: Generate backend config
   template:
     src: backend_config.js.j2
     dest: "{{ backend_config_path | default('/home/client/iqbanana_space_disk/backend/config') }}/config.js"
     mode: '0644'
   register: backend_config_update
+  ignore_errors: yes
+  when: storage_disks is defined and storage_disks | length > 0
 
-- name: Display backend configuration update status
+- name: Display backend configuration status
   debug:
-    msg: "{{ 'SUCCESS: Backend configuration updated' if backend_config_update is succeeded else 'ERROR: Failed to update backend configuration' }}"
+    msg: "{{ 'SUCCESS: Backend configuration updated' if backend_config_update is succeeded else 'WARNING: Failed to update backend configuration' }}"
+  when: backend_config_update is defined

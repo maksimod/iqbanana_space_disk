@@ -7,7 +7,6 @@
     name: 
       - nfs-kernel-server
       - ntfs-3g
-      - ntfs-3g-dev
       - nfs-common
     state: present
   register: nfs_server_install
@@ -21,11 +20,17 @@
   file:
     path: "{{ nfs_mount_base }}"
     state: directory
-    mode: '0777'
+    mode: '0755'
     owner: nobody
     group: nogroup
 
-# Настройка NFS
+# Проверка, что storage_disks определен и не пуст
+- name: Check if storage_disks is defined
+  debug:
+    msg: "WARNING: No storage_disks defined! Nothing will be exported."
+  when: storage_disks is not defined or storage_disks | length == 0
+
+# Настройка NFS экспортов только если есть диски для экспорта
 - name: Configure NFS exports
   template:
     src: exports.j2
@@ -34,30 +39,31 @@
     group: root
     mode: '0644'
   register: nfs_exports_config
+  when: storage_disks is defined and storage_disks | length > 0
 
 - name: Display NFS exports configuration status
   debug:
-    msg: "{{ 'SUCCESS: NFS exports configured' if nfs_exports_config is succeeded else 'ERROR: Failed to configure NFS exports' }}"
+    msg: "{{ 'SUCCESS: NFS exports configured' if nfs_exports_config is succeeded else 'WARNING: NFS exports not configured' }}"
+  when: nfs_exports_config is defined
+
+# Обновляем таблицу экспортов только при изменениях
+- name: Update NFS exports
+  shell: "exportfs -ra"
+  when: nfs_exports_config is defined and nfs_exports_config is changed
 
 # Перезапускаем NFS только если нужно
 - name: Restart NFS server
   systemd:
     name: nfs-kernel-server
     state: restarted
-  when: 
-    - nfs_exports_config is changed or 
-      nfs_server_install is changed
+  when: nfs_exports_config is defined and (nfs_exports_config is changed or nfs_server_install is changed)
 
 - name: Ensure NFS server is enabled to start at boot
   systemd:
     name: nfs-kernel-server
     enabled: yes
 
-# Обновляем таблицу экспортов
-- name: Update NFS exports
-  shell: "exportfs -ra"
-  when: nfs_exports_config is changed
-
+# Верификация экспортов
 - name: Verify NFS exports
   shell: "exportfs -v"
   register: exports_verification
@@ -65,19 +71,7 @@
 
 - name: Display exports verification
   debug:
-    msg: "Current NFS exports: {{ exports_verification.stdout_lines }}"
-  when: exports_verification.stdout_lines is defined
-
-# Создаем директории для экспорта
-- name: Create export directories for disks
-  file:
-    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
-    state: directory
-    owner: nobody
-    group: nogroup
-    mode: '0777'
-  with_items: "{{ storage_disks }}"
-  when: storage_disks is defined
+    msg: "Current NFS exports: {{ exports_verification.stdout_lines | default(['No exports configured']) }}"
 
 # Проверяем, что NFS сервер правильно слушает порты
 - name: Check NFS server ports
@@ -88,76 +82,4 @@
 
 - name: Display NFS ports
   debug:
-    msg: "NFS ports: {{ nfs_ports.stdout_lines }}"
-  when: nfs_ports.stdout_lines is defined
-
-- name: Unmount any existing mounts
-  mount:
-    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
-    state: unmounted
-  with_items: "{{ storage_disks }}"
-  ignore_errors: yes
-
-- name: Wait for unmount operations
-  pause:
-    seconds: 2
-
-- name: Create mount points for disks
-  file:
-    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
-    state: directory
-    mode: '0777'
-    owner: root
-    group: root
-  with_items: "{{ storage_disks }}"
-
-- name: Wait for directory creation
-  pause:
-    seconds: 1
-
-- name: Run ntfsfix on NTFS partitions in parallel
-  shell: "ntfsfix {{ item.device }}"
-  with_items: "{{ storage_disks }}"
-  when: item.fstype == 'ntfs'
-  ignore_errors: yes
-  register: ntfsfix_result
-
-- name: Wait for ntfsfix completion
-  async_status:
-    jid: "{{ item.ansible_job_id }}"
-  register: ntfsfix_status
-  with_items: "{{ ntfsfix_result.results | default([]) }}"
-  when: 
-    - ntfsfix_result is defined and item.ansible_job_id is defined
-  until: ntfsfix_status.finished
-  retries: 30
-  delay: 2
-
-- name: Mount NTFS disks with ntfs-3g for write support
-  shell: "mount -t ntfs-3g -o remove_hiberfile,force,rw,uid=0,gid=0,umask=000 {{ item.device }} {{ nfs_mount_base }}/{{ item.mountpoint }}"
-  with_items: "{{ storage_disks }}"
-  when: item.fstype == 'ntfs'
-  register: ntfs_mount_result
-  ignore_errors: yes
-
-- name: Mount non-NTFS disks
-  mount:
-    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
-    src: "{{ item.device }}"
-    fstype: "{{ item.fstype | default('auto') }}"
-    opts: "defaults,noatime"
-    state: mounted
-  with_items: "{{ storage_disks }}"
-  when: item.fstype != 'ntfs'
-  register: other_mount_result
-  ignore_errors: yes
-
-- name: Wait for mount operations to complete
-  pause:
-    seconds: 3
-
-- name: Check mount status
-  shell: "mount | grep {{ item.device }} || echo 'Not mounted'"
-  with_items: "{{ storage_disks }}"
-  register: mount_status
-  changed_when: false
+    msg: "NFS ports: {{ nfs_ports.stdout_lines | default(['NFS service might not be running properly']) }}"

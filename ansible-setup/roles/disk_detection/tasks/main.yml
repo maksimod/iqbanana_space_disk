@@ -1,6 +1,5 @@
 ---
-# Усовершенствованный скрипт для надежного определения и монтирования несистемных разделов
-# Улучшенный подход без использования fstab для обнаружения дисков
+# Улучшенный скрипт для надежного определения и монтирования несистемных разделов
 
 # Обеспечиваем сбор фактов в начале
 - name: Ensure facts are gathered
@@ -12,1465 +11,274 @@
   set_fact:
     role_disable_async: "{{ role_disable_async | default(false) }}"
 
-# Находим и используем физические диски, которые не являются системными
-- name: Identify system disk
-  shell: "df -h / | tail -n1 | awk '{print $1}' | sed 's/[0-9]*$//'"
-  register: system_disk_device
-  changed_when: false
-
-- name: Display system disk
-  debug:
-    msg: "System disk is {{ system_disk_device.stdout }}"
-
-- name: Check for critical mountpoints on the same disk
-  shell: lsblk -no NAME,MOUNTPOINT | grep -E ' /(boot|home|var|usr|lib|bin|sbin)($|/)'
-  register: critical_mountpoints
-  changed_when: false
-  failed_when: false
-
-- name: Display critical mountpoints
-  debug:
-    msg: "{{ critical_mountpoints.stdout_lines }}"
-  when: critical_mountpoints.stdout_lines is defined and critical_mountpoints.stdout_lines | length > 0
-
-- name: Get big unused disks
-  shell: "lsblk -o NAME,SIZE,TYPE,MOUNTPOINT | grep disk | grep -v '{{ system_disk_device.stdout }}' | awk '$4==\"\" {print $1, $2}'"
-  register: big_disks
-  changed_when: false
-  failed_when: false
-
-- name: Display found big disks
-  debug:
-    msg: "Found big disks: {{ big_disks.stdout_lines }}"
-  when: big_disks.stdout_lines is defined and big_disks.stdout_lines | length > 0
-
-# Get partitions from these disks
-- name: Get partitions from big disks
-  shell: |
-    lsblk -o NAME,SIZE,TYPE,MOUNTPOINT | grep part | grep -v "{{ system_disk_device.stdout }}" | \
-    awk '$4=="" {print $1, $2}' | \
-    grep -v -E 'sdc[0-9]+'
-  register: partitions
-  changed_when: false
-  failed_when: false
-  when: big_disks.stdout_lines is defined and big_disks.stdout_lines | length > 0
-
-- name: Display found partitions
-  debug:
-    msg: "Found partitions: {{ partitions.stdout_lines }}"
-  when: partitions.stdout_lines is defined and partitions.stdout_lines | length > 0
-
-# Create filesystem on partitions instead of whole disks
-- name: Create filesystem on partitions
-  filesystem:
-    fstype: ext4
-    dev: "/dev/{{ item.split()[0] }}"
-    force: no
-  with_items: "{{ partitions.stdout_lines | default([]) }}"
-  when: partitions.stdout_lines is defined and partitions.stdout_lines | length > 0
-  register: formatted_partitions
-  failed_when: false
-
-- name: Display formatted partitions
-  debug:
-    msg: "Formatted partitions: {{ formatted_partitions.results | map(attribute='item') | list }}"
-  when: formatted_partitions.results is defined
-
-# Create mount directories for partitions
-- name: Create mount directories for partitions
-  file:
-    path: "{{ nfs_mount_base }}/{{ item.split()[0] }}"
-    state: directory
-    mode: '0777'
-  with_items: "{{ partitions.stdout_lines | default([]) }}"
-  when: partitions.stdout_lines is defined and partitions.stdout_lines | length > 0
-
-# Mount partitions instead of whole disks
-- name: Mount partitions
-  mount:
-    path: "{{ nfs_mount_base }}/{{ item.split()[0] }}"
-    src: "/dev/{{ item.split()[0] }}"
-    fstype: ext4
-    opts: "defaults,nofail"
-    state: mounted
-  with_items: "{{ partitions.stdout_lines | default([]) }}"
-  when: partitions.stdout_lines is defined and partitions.stdout_lines | length > 0
-  register: mounted_partitions
-  failed_when: false
-
-- name: Display mounted partitions
-  debug:
-    msg: "Mounted partitions: {{ mounted_partitions.results | selectattr('changed', 'equalto', true) | map(attribute='item') | list }}"
-  when: mounted_partitions.results is defined
-
-# Get mounted partition information
-- name: Get mounted partition information
-  shell: "df -h | grep '{{ nfs_mount_base }}'"
-  register: mounted_partition_info
-  changed_when: false
-  failed_when: false
-
-- name: Display mounted partition information
-  debug:
-    msg: "{{ mounted_partition_info.stdout_lines }}"
-  when: mounted_partition_info.stdout_lines is defined
-
-# Set storage_disks based on partition info
-- name: Initialize storage_disks variable
-  set_fact:
-    storage_disks: "{{ storage_disks | default([]) }}"
-    cacheable: yes
-
-- name: Add partitions to storage_disks
-  set_fact:
-    storage_disks: "{{ storage_disks + [{'device': '/dev/' + item.split()[0], 'mountpoint': item.split()[0], 'fstype': 'ext4'}] }}"
-  with_items: "{{ partitions.stdout_lines | default([]) }}"
-  when: partitions.stdout_lines is defined and partitions.stdout_lines | length > 0
-
-# Ensure storage_disks exists for later roles even if no partitions were found
-- name: Ensure storage_disks exists
-  set_fact:
-    storage_disks: "{{ storage_disks | default([]) }}"
-    cacheable: yes
-
-# Собираем информацию для передачи в другие роли
-# - name: Get mounted disk information
-#   shell: "df -h | grep '{{ nfs_mount_base }}'"
-#   register: mounted_disk_info
-#   changed_when: false
-#   failed_when: false
-
-#   - name: Display mounted disk information
-#     debug:
-#       msg: "{{ mounted_disk_info.stdout_lines }}"
-#     when: mounted_disk_info.stdout_lines is defined
-
-# Формируем структуру storage_disks для использования в других ролях
-- name: Initialize storage_disks variable
-  set_fact:
-    storage_disks: []
-    cacheable: yes
-
-- name: Add big disks to storage_disks
-  set_fact:
-    storage_disks: "{{ storage_disks + [{'device': '/dev/' + item.split()[0], 'mountpoint': item.split()[0], 'fstype': 'ext4'}] }}"
-  with_items: "{{ big_disks.stdout_lines }}"
-  when: big_disks.stdout_lines is defined and big_disks.stdout_lines | length > 0
-
-# Простой поиск больших неразмеченных дисков
-- name: Get big unused disks
-  shell: "lsblk -o NAME,SIZE,TYPE,MOUNTPOINT | grep disk | grep -v '{{ system_disk_device.stdout }}' | grep -e 'G$' | sort"
-  register: big_disks
+# Определяем, является ли система LVM
+- name: Check if system uses LVM
+  shell: "lsblk | grep -q lvm || echo 'no_lvm'"
+  register: lvm_check
   changed_when: false
   ignore_errors: yes
 
-- name: Display found disks
+# Находим системный диск, содержащий корневой раздел
+- name: Identify root partition
+  shell: "df -h / | tail -n1 | awk '{print $1}'"
+  register: root_partition
+  changed_when: false
+
+- name: Display root partition
   debug:
-    msg: "Found large disks: {{ big_disks.stdout_lines }}"
+    msg: "Root partition is {{ root_partition.stdout }}"
 
-# Выбираем диски более 50GB и без монтирований
-- name: Process big disks
-  set_fact:
-    storage_disks_raw: []
-  
-- name: Parse disk info
-  set_fact:
-    storage_disks_raw: "{{ storage_disks_raw + [{'device': '/dev/' + (item.split()[0] | trim), 'size': item.split()[1] | trim}] }}"
-  with_items: "{{ big_disks.stdout_lines }}"
-  when: big_disks.stdout_lines is defined and big_disks.stdout_lines | length > 0
+# Определяем системный диск
+- name: Identify system disk from root partition
+  shell: "lsblk {{ root_partition.stdout }} -no PKNAME 2>/dev/null || echo 'unknown'"
+  register: system_disk_name
+  changed_when: false
+  ignore_errors: yes
+  when: "'/dev/mapper' not in root_partition.stdout"
 
-- name: Show discovered disks
+- name: Set system disk for non-LVM
+  set_fact:
+    system_disk: "/dev/{{ system_disk_name.stdout }}"
+  when: "'/dev/mapper' not in root_partition.stdout and system_disk_name.stdout != 'unknown'"
+
+- name: Alternative system disk identification
+  shell: "df -h / | tail -n1 | awk '{print $1}' | sed 's/[0-9]*$//'"
+  register: alt_system_disk
+  changed_when: false
+  when: "'/dev/mapper' not in root_partition.stdout and (system_disk_name.stdout == 'unknown' or system_disk is not defined)"
+
+- name: Set system disk from alternative method
+  set_fact:
+    system_disk: "{{ alt_system_disk.stdout }}"
+  when: "alt_system_disk is defined and alt_system_disk.stdout != ''"
+
+# Для LVM, находим физические тома
+- name: Get Physical Volumes for LVM
+  shell: "pvs --noheadings -o pv_name 2>/dev/null || echo ''"
+  register: physical_volumes
+  changed_when: false
+  ignore_errors: yes
+  when: "'/dev/mapper' in root_partition.stdout or lvm_check.stdout != 'no_lvm'"
+
+- name: Set system disk list for LVM
+  set_fact:
+    system_disks: "{{ physical_volumes.stdout_lines | map('regex_replace', '\\s+', '') | list }}"
+  when: "physical_volumes is defined and physical_volumes.stdout != ''"
+
+- name: Add system disk to system_disks
+  set_fact:
+    system_disks: "{{ system_disks | default([]) + [system_disk] }}"
+  when: "system_disk is defined"
+
+# Находим все смонтированные разделы
+- name: Find all mounted partitions
+  shell: "df -h | grep '^/dev' | awk '{print $1}'"
+  register: mounted_partitions
+  changed_when: false
+
+- name: Add mounted partitions to system_disks
+  set_fact:
+    system_disks: "{{ system_disks | default([]) + mounted_partitions.stdout_lines }}"
+  when: "mounted_partitions.stdout_lines is defined and mounted_partitions.stdout_lines | length > 0"
+
+# Находим все swap разделы
+- name: Find all swap partitions
+  shell: "swapon --show=NAME --noheadings 2>/dev/null || echo ''"
+  register: swap_partitions
+  changed_when: false
+  ignore_errors: yes
+
+- name: Add swap partitions to system_disks
+  set_fact:
+    system_disks: "{{ system_disks | default([]) + swap_partitions.stdout_lines }}"
+  when: "swap_partitions.stdout_lines is defined and swap_partitions.stdout_lines | length > 0"
+
+# Добавляем также системные диски, содержащие системные разделы
+- name: Find parent disks of all system partitions
+  set_fact:
+    parent_disks: "{{ system_disks | default([]) | map('regex_replace', '([^0-9]+)[0-9]+$', '\\1') | list | unique }}"
+  when: "system_disks is defined and system_disks | length > 0"
+
+- name: Add parent disks to system_disks
+  set_fact:
+    system_disks: "{{ system_disks | default([]) + parent_disks }}"
+  when: "parent_disks is defined and parent_disks | length > 0"
+
+# Удаляем дубликаты
+- name: Remove duplicates from system_disks
+  set_fact:
+    system_disks: "{{ system_disks | unique }}"
+  when: "system_disks is defined and system_disks | length > 0"
+
+- name: Display system disks
   debug:
-    msg: "Discovered large disks: {{ storage_disks_raw }}"
+    msg: "System disks and partitions: {{ system_disks | default([]) }}"
 
-# Прямое создание файловых систем на дисках без разделов (для простоты)
-- name: Create filesystem on each disk
-  shell: "mkfs.ext4 -F {{ item.device }}"
-  with_items: "{{ storage_disks_raw }}"
-  when: storage_disks_raw is defined and storage_disks_raw | length > 0
-  register: mkfs_result
+# Находим все физические диски в системе
+- name: Find all physical disks
+  shell: "lsblk -pno NAME,TYPE | grep disk | grep -vE '/dev/sr|/dev/loop' | awk '{print $1}'"
+  register: all_disks
+  changed_when: false
+
+# Находим все разделы в системе
+- name: Find all partitions
+  shell: "lsblk -pno NAME,TYPE,MOUNTPOINT | grep part | grep -v '[SWAP]' | awk '$3==\"\" {print $1}'"
+  register: all_partitions
+  changed_when: false
+
+# Фильтруем несистемные диски
+- name: Filter non-system disks
+  set_fact:
+    nonsystem_disks: "{{ all_disks.stdout_lines | difference(system_disks | default([])) }}"
+  when: "all_disks.stdout_lines is defined"
+
+# Фильтруем несистемные разделы
+- name: Filter non-system partitions
+  set_fact:
+    nonsystem_partitions: "{{ all_partitions.stdout_lines | difference(system_disks | default([])) }}"
+  when: "all_partitions.stdout_lines is defined"
+
+# Проверяем, какие несистемные диски не имеют разделов
+- name: Check which non-system disks don't have partitions
+  shell: "lsblk {{ item }} | grep -c part || echo '0'"
+  register: disk_partition_counts
+  with_items: "{{ nonsystem_disks | default([]) }}"
+  changed_when: false
+  ignore_errors: yes
+  when: "nonsystem_disks is defined and nonsystem_disks | length > 0"
+
+# Фильтруем диски без разделов
+- name: Filter disks without partitions
+  set_fact:
+    raw_disks: "{{ nonsystem_disks | zip(disk_partition_counts.results) | selectattr('1.stdout', 'equalto', '0') | map(attribute='0') | list }}"
+  when: "nonsystem_disks is defined and disk_partition_counts.results is defined"
+
+# Проверяем, какие несистемные разделы находятся на системных дисках
+- name: Check which non-system partitions are on system disks
+  set_fact:
+    safe_partitions: "{{ [] }}"
+
+- name: Process each non-system partition
+  set_fact:
+    parent_disk: "{{ item | regex_replace('([^0-9]+)[0-9]+$', '\\1') }}"
+    safe_partitions: "{{ safe_partitions + ([item] if (item | regex_replace('([^0-9]+)[0-9]+$', '\\1')) not in (system_disks | default([])) else []) }}"
+  with_items: "{{ nonsystem_partitions | default([]) }}"
+  when: "nonsystem_partitions is defined and nonsystem_partitions | length > 0"
+
+# Выводим найденные устройства
+- name: Display raw disks
+  debug:
+    msg: "Safe raw disks: {{ raw_disks | default([]) }}"
+  when: "raw_disks is defined"
+
+- name: Display safe partitions
+  debug:
+    msg: "Safe partitions: {{ safe_partitions | default([]) }}"
+  when: "safe_partitions is defined"
+
+# Определяем, что монтировать: несистемные разделы или дополнительные диски
+- name: Set storage devices based on availability
+  set_fact:
+    storage_devices: "{{ safe_partitions | default([]) if safe_partitions is defined and safe_partitions | length > 0 else raw_disks | default([]) }}"
+
+- name: Display storage devices
+  debug:
+    msg: "Storage devices to be mounted: {{ storage_devices | default([]) }}"
+
+# Проверяем типы файловых систем у выбранных устройств
+- name: Get filesystem types for storage devices
+  shell: "blkid -s TYPE -o value {{ item }} 2>/dev/null || echo 'unknown'"
+  register: fs_types
+  with_items: "{{ storage_devices | default([]) }}"
+  changed_when: false
+  ignore_errors: yes
+  when: "storage_devices is defined and storage_devices | length > 0"
+
+# Форматируем диски без файловых систем
+- name: Format disks without filesystem
+  filesystem:
+    dev: "{{ item.0 }}"
+    fstype: ext4
+    force: no
+  with_together:
+    - "{{ storage_devices | default([]) }}"
+    - "{{ fs_types.results | default([]) }}"
+  when: 
+    - "storage_devices is defined and storage_devices | length > 0" 
+    - "fs_types.results is defined" 
+    - "item.1.stdout == 'unknown'"
   ignore_errors: yes
 
 # Создаем каталоги для монтирования
-- name: Create mount points
-  file:
-    path: "{{ nfs_mount_base }}/{{ item.device | basename }}"
-    state: directory
-    mode: '0777'
-  with_items: "{{ storage_disks_raw }}"
-  when: storage_disks_raw is defined and storage_disks_raw | length > 0
-
-# Монтируем диски
-- name: Mount disks
-  mount:
-    path: "{{ nfs_mount_base }}/{{ item.device | basename }}"
-    src: "{{ item.device }}"
-    fstype: ext4
-    state: mounted
-  with_items: "{{ storage_disks_raw }}"
-  when: storage_disks_raw is defined and storage_disks_raw | length > 0
-  register: mount_result
-  ignore_errors: yes
-
-# Сохраняем информацию о примонтированных дисках
-- name: Store mounted disks info
-  set_fact:
-    storage_disks: "{{ [] }}"
-    
-- name: Build storage_disks list for export
-  set_fact:
-    storage_disks: "{{ storage_disks + [{'device': item.device, 'mountpoint': item.device | basename, 'fstype': 'ext4'}] }}"
-  with_items: "{{ storage_disks_raw }}"
-  when: storage_disks_raw is defined and storage_disks_raw | length > 0
-
-# Сначала отмонтируем все несистемные диски для безопасности 
-# (этот код теперь выполняется после монтирования наших дисков)
-- name: Get all mounts under storage directory
-  shell: findmnt -n -o SOURCE,TARGET | grep "{{ nfs_mount_base }}" || true
-  register: current_storage_mounts
-  changed_when: false
-  ignore_errors: yes
-
-- name: Unmount all non-system disks for safety
-  mount:
-    path: "{{ item.split()[1] }}"
-    src: "{{ item.split()[0] }}"
-    state: unmounted
-  with_items: "{{ current_storage_mounts.stdout_lines }}"
-  when: current_storage_mounts.stdout_lines is defined and current_storage_mounts.stdout_lines | length > 0
-  # Используем async только если не выставлен флаг role_disable_async
-  async: "{{ 0 if role_disable_async else 60 }}"
-  poll: "{{ 10 if role_disable_async else 0 }}"
-
-# Проверяем, что все точно размонтировано
-- name: Verify unmounting
-  shell: findmnt -n -o SOURCE,TARGET | grep "{{ nfs_mount_base }}" || true
-  register: verify_unmount
-  changed_when: false
-  ignore_errors: yes
-
-- name: Wait for unmount operations to complete
-  pause:
-    seconds: 2
-  when: current_storage_mounts.stdout_lines is defined and current_storage_mounts.stdout_lines | length > 0
-
-- name: Force unmount if needed
-  shell: umount -f "{{ item.split()[1] }}"
-  with_items: "{{ verify_unmount.stdout_lines }}"
-  when: verify_unmount.stdout_lines is defined and verify_unmount.stdout_lines | length > 0
-  # Используем async только если не выставлен флаг role_disable_async
-  async: "{{ 0 if role_disable_async else 60 }}"
-  poll: "{{ 10 if role_disable_async else 0 }}"
-
-- name: Initialize mounted disks tracking
-  set_fact:
-    ansible_mounted_disks: []
-  run_once: true
-
-- name: Ensure system is fully booted before proceeding
-  shell: systemctl is-system-running | grep -E 'running|degraded' || echo "not_ready"
-  register: system_state
-  changed_when: false
-  ignore_errors: yes
-  retries: 5
-  delay: 10
-  until: system_state.stdout == "running" or system_state.stdout == "degraded"
-
-- name: Wait for system to be fully initialized
-  debug:
-    msg: "System state: {{ system_state.stdout }}"
-  failed_when: system_state.stdout == "not_ready"
-  when: system_state.stdout is defined
-
-# Проверка доступности критически важных утилит
-- name: Check for essential system tools
-  shell: which lsblk findmnt blkid
-  register: system_tools_result
-  changed_when: false
-  ignore_errors: yes
-
-- name: Check for additional storage-related tools
-  shell: which mdadm pvs vgs lvs || echo "missing_some_tools"
-  register: storage_tools
-  changed_when: false
-  ignore_errors: yes
-
-- name: Verify essential tools are available
-  debug:
-    msg: "Essential tools check: {{ system_tools_result.rc }}"
-  failed_when: system_tools_result.rc != 0
-
-# Определение переменной безопасного режима
-- name: Set safe mode if essential tools are missing
-  set_fact:
-    safe_mode: "{{ system_tools_result.rc != 0 }}"
-  
-# Получение информации о дисках
-- name: Get disk information with more details
-  shell: lsblk -o NAME,TYPE,MOUNTPOINT,UUID,FSTYPE,LABEL,SIZE,PKNAME -J
-  register: disk_info_json
-  changed_when: false
-  ignore_errors: yes
-  # Используем async только если не выставлен флаг role_disable_async
-  async: "{{ 0 if role_disable_async else 60 }}"
-  poll: "{{ 10 if role_disable_async else 0 }}"
-
-- name: Wait for disk info
-  async_status:
-    jid: "{{ disk_info_json.ansible_job_id }}"
-  register: async_disk_info_result
-  until: async_disk_info_result.finished
-  retries: 30
-  delay: 2
-  when: 
-    - disk_info_json.ansible_job_id is defined
-    - not role_disable_async
-
-# Устанавливаем правильный источник данных в зависимости от режима выполнения
-- name: Use async result if available
-  set_fact:
-    disk_info_output: "{{ async_disk_info_result.stdout | from_json }}"
-  when: 
-    - not role_disable_async 
-    - async_disk_info_result is defined
-    - async_disk_info_result.stdout is defined
-
-- name: Use direct result in linear mode
-  set_fact:
-    disk_info_output: "{{ disk_info_json.stdout | from_json }}"
-  when: 
-    - role_disable_async 
-    - disk_info_json.stdout is defined
-
-# Получаем информацию о размерах дисков для определения системных
-- name: Get detailed disk sizes
-  shell: lsblk -b -n -o NAME,SIZE | awk '$2 < 4294967296 {print $1}'  # 4GB in bytes
-  register: small_disks
-  changed_when: false
-  ignore_errors: yes
-
-# Определяем системные диски (включая маленькие)
-- name: Set system disks list
-  set_fact:
-    system_devices: []
-
-- name: Add small disks to system devices
-  set_fact:
-    system_devices: "{{ system_devices + ['/dev/' + item] }}"
-  with_items: "{{ small_disks.stdout_lines }}"
-  when: small_disks.stdout_lines is defined
-
-# Добавляем известные системные устройства
-- name: Add known system devices that should not be mounted
-  set_fact:
-    system_devices: "{{ system_devices + ['/dev/loop', '/dev/ram', '/dev/zram'] }}"
-
-# Очищаем и нормализуем имена устройств
-- name: Process disk data to normalize device names
-  set_fact:
-    normalized_disk_data: "{{ disk_info_output }}"
-  when: disk_info_output is defined
-
-# Добавляем отладку для просмотра исходных данных
-- name: Debug original disk data structure
-  debug:
-    msg: "Original disk data: {{ disk_info_output }}"
-  when: disk_info_output is defined and ansible_verbosity > 2
-
-- name: Debug blockdevices structure
-  debug:
-    var: normalized_disk_data.blockdevices
-  when: normalized_disk_data is defined and normalized_disk_data.blockdevices is defined and ansible_verbosity > 2
-
-- name: Normalize device names in blockdevices
-  set_fact:
-    normalized_disk_data: "{{ normalized_disk_data | combine({'blockdevices': normalized_disk_data.blockdevices | map('combine', {'name': item.name | regex_replace('^[├─└─]', '')}) | list}) }}"
-  with_items: "{{ normalized_disk_data.blockdevices }}"
-  when: normalized_disk_data is defined and normalized_disk_data.blockdevices is defined
-
-- name: Update disk data with normalized names for further processing
-  set_fact:
-    disk_info_processed: "{{ normalized_disk_data }}"
-  when: normalized_disk_data is defined
-
-# Добавляем отладку для проверки нормализованных данных
-- name: Debug normalized disk data
-  debug:
-    var: disk_info_processed.blockdevices
-  when: disk_info_processed.blockdevices is defined
-
-# Проверка наличия RAID-массивов
-- name: Check for software RAID arrays
-  shell: "mdadm --detail --scan 2>/dev/null || echo 'No RAID'"
-  register: mdadm_result
-  changed_when: false
-  ignore_errors: yes
-
-- name: Get RAID array components if RAID exists
-  shell: "mdadm --detail /dev/md* 2>/dev/null | grep -E 'active|working' | awk '{print $NF}' || echo ''"
-  register: raid_components
-  changed_when: false
-  when: mdadm_result.stdout is defined and mdadm_result.stdout != 'No RAID'
-  ignore_errors: yes
-
-# Получение информации о LVM конфигурации с устойчивостью к ошибкам
-- name: Check if LVM is installed
-  command: which lvs
-  register: lvs_check
-  changed_when: false
-  ignore_errors: yes
-
-- name: Get full LVM volume groups information if LVM exists
-  shell: vgs -o vg_name,pv_name --noheadings || echo "error"
-  register: vgs_full_info
-  changed_when: false
-  when: lvs_check.rc == 0
-  ignore_errors: yes
-
-- name: Get LVM volume groups information if LVM exists
-  shell: vgs --noheadings -o vg_name | tr -d " " || echo "error"
-  register: vg_names
-  changed_when: false
-  when: lvs_check.rc == 0
-  ignore_errors: yes
-
-- name: Get detailed LVM physical volumes info for proper VG tracking
-  shell: pvs --noheadings -o pv_name,vg_name | awk '{print $1","$2}' || echo "error"
-  register: pv_to_vg_mapping
-  changed_when: false
-  when: lvs_check.rc == 0
-  ignore_errors: yes
-
-- name: Get all logical volumes info including dependencies
-  shell: lvs --all --noheadings -o vg_name,lv_name,devices,origin || echo "error"
-  register: lv_full_info
-  changed_when: false
-  when: lvs_check.rc == 0
-  ignore_errors: yes
-
-- name: Get logical volumes information if LVM exists
-  shell: lvs --noheadings -o vg_name,lv_name | awk '{print $1"/"$2}' || echo "error"
-  register: lv_info
-  changed_when: false
-  when: lvs_check.rc == 0
-  ignore_errors: yes
-
-# Поиск и анализ bind-монтирований
-- name: Identify bind mounts from mount output
-  shell: mount | grep -i "bind" | awk '{print $1" "$3}' || echo "error"
-  register: bind_mounts
-  changed_when: false
-  ignore_errors: yes
-
-# Определение корневого диска, включая LVM
-- name: Identify root device
-  shell: findmnt -n -o SOURCE / | sed 's/\[.*\]//' || echo "error"
-  register: root_device_raw
-  changed_when: false
-  ignore_errors: yes
-
-- name: Set root device facts with fallback
-  set_fact:
-    root_device_path: "{{ root_device_raw.stdout != 'error' | ternary(root_device_raw.stdout, 'unknown') }}"
-    is_root_lvm: "{{ root_device_raw.stdout != 'error' and root_device_raw.stdout is regex('^/dev/mapper/') }}"
-
-- name: Get root volume group if using LVM
-  shell: lvs "{{ root_device_path }}" --noheadings -o vg_name | tr -d " " || echo "error"
-  register: root_vg
-  changed_when: false
-  when: is_root_lvm and root_device_path != 'unknown'
-  ignore_errors: yes
-
-- name: Set root VG name if using LVM
-  set_fact:
-    root_vg_name: "{{ root_vg.stdout }}"
-  when: is_root_lvm and root_vg.stdout != "" and root_vg.stdout != "error"
-
-# Получение всех ТЕКУЩИХ точек монтирования вместо использования fstab
-- name: Get list of ALL currently mounted filesystems
-  shell: findmnt -l -o SOURCE,TARGET,FSTYPE -n || echo "error"
-  register: current_mounts
-  changed_when: false
-  ignore_errors: yes
-
-# Получение всех процессов с открытыми файлами для идентификации системных разделов
-- name: Get processes with open files on filesystems
-  shell: lsof -n 2>/dev/null | grep -E '/bin/|/sbin/|/lib/' | awk '{print $9}' | grep -v "^/" | head -10 || echo ""
-  register: system_processes_files
-  changed_when: false
-  ignore_errors: yes
-
-# Создание расширенного списка системных путей с возможностью обнаружения нестандартных путей
-- name: Create list of system mount paths
-  set_fact:
-    system_mount_paths: 
-      - '/'
-      - '/boot'
-      - '/boot/efi'
-      - '/home'
-      - '/var'
-      - '/var/log'
-      - '/var/lib'
-      - '/usr'
-      - '/usr/local'
-      - '/tmp'
-      - '/opt'
-      - '/srv'
-      - '/run'
-      - '/dev'
-      - '/dev/shm'
-      - '/sys'
-      - '/proc'
-      - '/etc'
-      - '/bin'
-      - '/sbin'
-      - '/lib'
-      - '/lib64'
-      - null
-      - '[SWAP]'
-      - 'swap'
-
-- name: Add additional system paths if defined
-  set_fact:
-    system_mount_paths: "{{ system_mount_paths + additional_system_paths }}"
-  when: additional_system_paths is defined
-
-# Поиск нестандартных системных точек монтирования через анализ процессов
-- name: Detect non-standard system mount points
-  shell: |
-    for pid in $(ps -e -o pid= | head -50); do
-      cat /proc/$pid/mounts 2>/dev/null | awk '{print $2}' | grep -E '^/[^/]+$'
-    done | sort | uniq || echo ""
-  register: proc_mount_points
-  changed_when: false
-  ignore_errors: yes
-
-# Обновление списка системных путей с найденными нестандартными путями
-- name: Update system mount paths with detected non-standard paths
-  set_fact:
-    system_mount_paths: "{{ (system_mount_paths + proc_mount_points.stdout_lines) | unique | list }}"
-  when: proc_mount_points.stdout_lines is defined and proc_mount_points.stdout_lines | length > 0
-
-# Получение списка системных устройств из текущих монтирований
-- name: Create list of currently mounted devices
-  set_fact:
-    current_mounts_list: "{{ [] }}"
-
-- name: Process current mounts to get device list
-  set_fact:
-    current_mounts_list: "{{ current_mounts_list + [item.split()[0]] }}"
-  with_items: "{{ current_mounts.stdout_lines }}"
-  when: current_mounts.stdout is defined and current_mounts.stdout != "error" and item.split() | length >= 2 and item.split()[1] in system_mount_paths
-  ignore_errors: yes
-    
-- name: Set current_mounted_devices based on conditions
-  set_fact:
-    current_mounted_devices: "{{ current_mounts_list | unique }}"
-  when: current_mounts.stdout is defined and current_mounts.stdout != "error"
-
-- name: Set empty current_mounted_devices if no data
-  set_fact:
-    current_mounted_devices: []
-  when: current_mounts.stdout is not defined or current_mounts.stdout == "error"
-
-# Получение текущих точек монтирования для обновления списка системных путей
-- name: Get current mount paths
-  set_fact:
-    current_mount_paths: "{{ current_mounts.stdout_lines | select('regex', '\\S+\\s+\\S+') | map('regex_replace', '^\\S+\\s+(\\S+).*$', '\\1') | list | default([]) }}"
-  when: current_mounts.stdout is defined and current_mounts.stdout != "error"
-
-- name: Set empty current_mount_paths if no data
-  set_fact:
-    current_mount_paths: []
-  when: current_mounts.stdout is not defined or current_mounts.stdout == "error"
-
-- name: Update list of system mount paths with currently mounted paths
-  set_fact:
-    system_mount_paths: "{{ (system_mount_paths + current_mount_paths) | unique | list }}"
-
-# Создаем список bind-монтирований для исключения
-- name: Create bind mount sources list
-  set_fact:
-    bind_mount_list: "{{ [] }}"
-
-- name: Process bind mounts
-  set_fact:
-    bind_mount_list: "{{ bind_mount_list + [item.split()[0]] }}"
-  with_items: "{{ bind_mounts.stdout_lines }}"
-  when: bind_mounts.stdout is defined and bind_mounts.stdout != "error" and item.split() | length >= 2
-  ignore_errors: yes
-
-- name: Set bind_mount_sources based on conditions
-  set_fact:
-    bind_mount_sources: "{{ bind_mount_list | unique }}"
-  when: bind_mounts.stdout is defined and bind_mounts.stdout != "error"
-
-- name: Set empty bind_mount_sources if no data
-  set_fact:
-    bind_mount_sources: []
-  when: bind_mounts.stdout is not defined or bind_mounts.stdout == "error"
-
-# Определение системных дисков и разделов на основе устройства корневого раздела
-- name: Get physical device for root if using standard partitioning
-  shell: lsblk -no PKNAME "{{ root_device_path }}" | head -1 || echo "error"
-  register: root_disk_name
-  changed_when: false
-  when: not is_root_lvm and root_device_path != 'unknown'
-  ignore_errors: yes
-
-# Дополнительная проверка системного диска через поиск раздела, смонтированного в /
-- name: Verify system disk via direct mountpoint check
-  shell: lsblk -no NAME,MOUNTPOINT | grep " /$" | awk '{print $1}' | sed 's/[0-9]*$//' || echo "error"
-  register: system_disk_verification
-  changed_when: false
-  ignore_errors: yes
-
-# Дополнительная проверка на другие критичные монтирования на том же диске
-- name: Check for critical mountpoints on the same disk
-  shell: lsblk -no NAME,MOUNTPOINT | grep -E ' /(boot|home|var|usr|lib|bin|sbin)($|/)' | awk '{print $1}' | sed 's/[0-9]*$//' | sort | uniq || echo "error"
-  register: critical_mounts_disks
-  changed_when: false
-  ignore_errors: yes
-
-- name: Get all physical devices for all volume groups if using LVM
-  set_fact:
-    vg_to_pv_mapping: "{{ {} }}"
-  when: lvs_check.rc == 0
-
-- name: Process LVM volume groups
-  set_fact:
-    vg_to_pv_mapping: "{{ vg_to_pv_mapping | combine({item.split(',')[1]: vg_to_pv_mapping.get(item.split(',')[1], []) + [item.split(',')[0]]}) }}"
-  with_items: "{{ pv_to_vg_mapping.stdout_lines }}"
-  when: lvs_check.rc == 0 and pv_to_vg_mapping.stdout != "error" and item.split(',') | length == 2 and item.split(',')[1] != ''
-  ignore_errors: yes
-
-# Создание карты взаимозависимостей LV для поиска связанных томов
-- name: Initialize LV dependency map
-  set_fact:
-    lv_dependency_map: "{{ {} }}"
-  when: lvs_check.rc == 0 and lv_full_info.stdout != "error"
-
-- name: Process LV dependencies
-  set_fact:
-    lv_dependency_map: "{{ lv_dependency_map | combine({(item.split()[0] + '/' + item.split()[3]): lv_dependency_map.get(item.split()[0] + '/' + item.split()[3], []) + [item.split()[0] + '/' + item.split()[1]]}) }}"
-  with_items: "{{ lv_full_info.stdout_lines }}"
-  when: lvs_check.rc == 0 and lv_full_info.stdout != "error" and item.split() | length >= 4 and item.split()[3] != ''
-  ignore_errors: yes
-
-# Инициализируем список системных устройств
-- name: Initialize system devices list
-  set_fact:
-    system_devices: "{{ [] }}"
-
-# Добавляем корневое устройство в список системных устройств
-- name: Add root device to system devices
-  set_fact:
-    system_devices: "{{ system_devices + ['/dev/' + root_disk_name.stdout] }}"
-  when: not is_root_lvm and root_disk_name is defined and root_disk_name.stdout is defined and root_disk_name.stdout != "" and root_disk_name.stdout != "error"
-
-# Добавляем устройство из direct mountpoint check
-- name: Add device from direct mountpoint check
-  set_fact:
-    system_devices: "{{ system_devices + ['/dev/' + system_disk_verification.stdout] }}"
-  when: system_disk_verification is defined and system_disk_verification.stdout is defined and system_disk_verification.stdout != "" and system_disk_verification.stdout != "error"
-
-# Добавляем устройства с критическими точками монтирования
-- name: Add devices with critical mountpoints
-  set_fact:
-    system_devices: "{{ system_devices + ['/dev/' + item] }}"
-  with_items: "{{ critical_mounts_disks.stdout_lines }}"
-  when: critical_mounts_disks is defined and critical_mounts_disks.stdout_lines is defined and critical_mounts_disks.stdout != "error" and item is string and item | trim != ""
-
-# Добавляем физические устройства для root VG
-- name: Add physical devices for root VG
-  set_fact:
-    system_devices: "{{ system_devices + vg_to_pv_mapping[root_vg_name] }}"
-  when: is_root_lvm and root_vg_name is defined and vg_to_pv_mapping is defined and root_vg_name in vg_to_pv_mapping
-
-# Добавляем текущие смонтированные устройства
-- name: Add current mounted devices
-  set_fact:
-    system_devices: "{{ system_devices + current_mounted_devices }}"
-  when: current_mounted_devices is defined and current_mounted_devices | length > 0
-
-# Добавляем источники bind mount
-- name: Add bind mount sources
-  set_fact:
-    system_devices: "{{ system_devices + bind_mount_sources }}"
-  when: bind_mount_sources is defined and bind_mount_sources | length > 0
-
-# Добавляем компоненты RAID
-- name: Add RAID components
-  set_fact:
-    system_devices: "{{ system_devices + [item] }}"
-  with_items: "{{ raid_components.stdout_lines }}"
-  when: raid_components is defined and raid_components.stdout_lines is defined and item is string and item | trim != ""
-
-# Добавляем исключённые устройства
-- name: Add excluded devices
-  set_fact:
-    system_devices: "{{ system_devices + excluded_devices }}"
-  when: excluded_devices is defined
-
-# Удаляем дубликаты из списка системных устройств
-- name: Remove duplicates from system devices
-  set_fact:
-    system_devices: "{{ system_devices | unique }}"
-
-# Добавляем известные системные устройства, которые нельзя монтировать
-- name: Add known system devices that should not be mounted
-  set_fact:
-    system_devices: "{{ system_devices + ['/dev/loop', '/dev/ram', '/dev/zram'] }}"
-
-- name: Debug system devices
-  debug:
-    msg: "System devices to exclude: {{ system_devices | to_json }}"
-  when: ansible_verbosity > 1
-
-# Получение списка блочных устройств с UUID для более надежной идентификации
-- name: Get all block device UUIDs
-  shell: 'blkid | grep -v "TYPE=\"swap\"" | awk -F": " ''{print $1}'' | xargs -I{} bash -c ''echo {} $(blkid -s UUID -o value {})'' || echo "error"'
-  register: block_uuids
-  changed_when: false
-  ignore_errors: yes
-
-# Создание сопоставления устройств и их UUID
-- name: Initialize device to UUID mapping
-  set_fact:
-    device_uuid_map: "{{ {} }}"
-
-- name: Process block UUIDs
-  set_fact: 
-    device_uuid_map: "{{ device_uuid_map | combine({item.split()[0]: item.split()[1]}) }}"
-  with_items: "{{ block_uuids.stdout_lines }}"
-  when: block_uuids.stdout is defined and block_uuids.stdout != "error" and item.split() | length >= 2 and item.split()[1] != ""
-  ignore_errors: yes
-
-# Идентификация несистемных разделов с учетом полученной информации
-- name: Identify non-system partitions
-  set_fact:
-    non_system_partitions: "{{ [] }}"
-
-# Обработка блочных устройств для идентификации несистемных разделов
-- name: Process each block device to identify non-system partitions
-  set_fact:
-    non_system_partitions: "{{ non_system_partitions + (['/dev/' + item.1.name] if item.1.type == 'part' and (item.1.mountpoint is none or item.1.mountpoint not in system_mount_paths) and '/dev/' + item.1.name not in system_devices and '/dev/' + item.0.name not in system_devices and item.1.fstype is defined and item.1.fstype != 'swap' and item.1.fstype != '' and (item.1.mountpoint is none or item.1.mountpoint != '[SWAP]') else []) }}"
-  with_nested:
-    - "{{ disk_info_processed.blockdevices }}"
-    - "{{ item.children | default([]) }}"
-  when: item.type == 'disk' and item.children is defined
-  loop_control:
-    loop_var: item
-  ignore_errors: yes
-
-# Исправляем проблему с nested loop путем явного обработки разделов
-- name: Process each block device explicitly
-  block:
-    - name: Iterate through all blockdevices
-      include_tasks: process_disk.yml
-      loop: "{{ disk_info_processed.blockdevices }}"
-      loop_control:
-        loop_var: current_disk
-      when: disk_info_processed.blockdevices is defined
-  when: non_system_partitions | length == 0
-
-# Добавляем альтернативный метод обработки разделов в случае проблем с условиями
-- name: Manual processing of block devices (fallback)
-  set_fact:
-    manual_non_system_partitions: "{{ [] }}"
-  when: non_system_partitions | length == 0
-
-- name: Process sda1 partition
-  set_fact:
-    manual_non_system_partitions: "{{ manual_non_system_partitions + ['/dev/sda1'] }}"
-  when: non_system_partitions | length == 0
-
-- name: Process sda2 partition
-  set_fact:
-    manual_non_system_partitions: "{{ manual_non_system_partitions + ['/dev/sda2'] }}"
-  when: non_system_partitions | length == 0
-
-- name: Use manual partitions if automatic detection failed
-  set_fact:
-    non_system_partitions: "{{ manual_non_system_partitions }}"
-  when: non_system_partitions | length == 0 and manual_non_system_partitions is defined and manual_non_system_partitions | length > 0
-
-# Добавляем явное исключение системного диска
-- name: Add explicit system disk exclusion
-  set_fact:
-    system_devices: "{{ system_devices + ['/dev/sdb', '/dev/sdb1', '/dev/sdb2'] }}"
-  when: system_devices is defined
-
-# Обновляем список несистемных разделов с учетом явного исключения
-- name: Update non-system partitions with explicit exclusions
-  set_fact:
-    non_system_partitions: "{{ non_system_partitions | reject('in', system_devices) | list }}"
-  when: non_system_partitions is defined and system_devices is defined
-
-# Исключение всех LVM-разделов из VG, связанных с системными разделами
-- name: Initialize filtered LVM partitions
-  set_fact:
-    lvm_filtered_partitions: "{{ [] }}"
-  when: is_root_lvm and vg_names.stdout_lines | length > 0 and vg_names.stdout != "error"
-
-- name: Process each non-system partition to filter LVM
-  set_fact:
-    is_system_lv: "{{ item[0] is regex('^/dev/mapper/') and (item[0] is regex('^/dev/mapper/' + item[1] + '.*') and (item[1] == root_vg_name or vg_to_pv_mapping.get(item[1], []) | intersect(system_devices) | length > 0)) | ternary(true, false) }}"
-    lvm_filtered_partitions: "{{ lvm_filtered_partitions + ([item[0]] if not (item[0] is regex('^/dev/mapper/') and (item[0] is regex('^/dev/mapper/' + item[1] + '.*') and (item[1] == root_vg_name or vg_to_pv_mapping.get(item[1], []) | intersect(system_devices) | length > 0))) else []) }}"
-  with_nested:
-    - "{{ non_system_partitions }}"
-    - "{{ vg_names.stdout_lines }}"
-  when: is_root_lvm and vg_names.stdout_lines | length > 0 and vg_names.stdout != "error"
-  ignore_errors: yes
-
-- name: Update non-system partitions with LVM filtered
-  set_fact:
-    non_system_partitions: "{{ lvm_filtered_partitions | unique }}"
-  when: is_root_lvm and vg_names.stdout_lines | length > 0 and vg_names.stdout != "error" and lvm_filtered_partitions is defined
-
-# Исключение уже используемых в bind-монтировании дисков
-- name: Initialize bind mount filtered partitions
-  set_fact:
-    bind_filtered_partitions: "{{ [] }}"
-
-- name: Filter out partitions used in bind mounts
-  set_fact:
-    bind_filtered_partitions: "{{ bind_filtered_partitions + ([item] if item not in bind_mount_sources else []) }}"
-  with_items: "{{ non_system_partitions }}"
-  ignore_errors: yes
-
-- name: Update non-system partitions with bind filtered
-  set_fact:
-    non_system_partitions: "{{ bind_filtered_partitions | unique }}"
-  when: bind_filtered_partitions is defined
-
-- name: Display identified non-system partitions
-  debug:
-    msg: "Identified non-system partitions: {{ non_system_partitions | to_json }}"
-  when: ansible_verbosity > 1
-
-- name: Display warning if no non-system partitions found
-  debug:
-    msg: "WARNING: No non-system partitions were identified. Nothing will be mounted."
-  when: non_system_partitions | length == 0
-
-# Явно устанавливаем пустой список для переменных, если не найдены валидные разделы
-- name: Set empty values when no partitions found
-  set_fact:
-    safe_partitions: []
-    verified_safe_partitions: []
-    partitions_to_check: []
-  when: non_system_partitions | length == 0
-
-# Проверяем, что все элементы в списке - валидные пути к устройствам
-- name: Verify non-system partitions are valid device paths
-  set_fact:
-    valid_partitions: "{{ [] }}"
-
-- name: Process each partition to validate device path
-  set_fact:
-    valid_partitions: "{{ valid_partitions + ([item | trim] if item is string and item | trim != '' and item is regex('^/dev/.*') else []) }}"
-  with_items: "{{ non_system_partitions }}"
-  when: non_system_partitions | length > 0
-  ignore_errors: yes
-
-- name: Display valid partitions
-  debug:
-    msg: "Valid device paths: {{ valid_partitions | default([]) | to_json }}"
-  when: valid_partitions is defined
-
-# Установка списка партиций для проверки
-- name: Set partition list for checks when valid partitions are available
-  set_fact:
-    partitions_to_check: "{{ valid_partitions | list }}"
-  when: valid_partitions is defined and valid_partitions | length > 0
-
-# Отладка типа и значения переменной partitions_to_check
-- name: Debug partitions_to_check
-  debug:
-    msg: "Type of partitions_to_check: {{ partitions_to_check | type_debug }} | Value: {{ partitions_to_check | to_json }}"
-  when: partitions_to_check is defined
-
-# Проверка, если partitions_to_check не определена или пуста, устанавливаем её как пустой список
-- name: Ensure partitions_to_check is a valid list
-  set_fact:
-    partitions_to_check: []
-  when: partitions_to_check is not defined or partitions_to_check | length == 0 or partitions_to_check is string
-
-# Проверяем устройства только если partitions_to_check - валидный непустой список
-- name: Check partitions are not already mounted
-  shell: findmnt -n -o SOURCE "{{ item }}" || echo "not_mounted"
-  register: mount_check_results
-  changed_when: false
-  loop: "{{ partitions_to_check | list }}"
-  when: partitions_to_check is defined and partitions_to_check is not string and partitions_to_check | length > 0
-      
-- name: Verify no root partitions are in the detected list
-  shell: "findmnt -n -o SOURCE / | grep -q {{ item }} || echo 'safe'"
-  register: root_safety_check
-  with_items: "{{ partitions_to_check | list }}"
-  changed_when: false
-  ignore_errors: yes
-  when: partitions_to_check is defined and partitions_to_check is not string and partitions_to_check | length > 0
-      
-- name: Verify disk is not part of any critical mounts
-  shell: |
-    DISK_NAME=$(echo "{{ item }}" | sed 's/\/dev\///' | sed 's/[0-9]*$//')
-    lsblk -no NAME,MOUNTPOINT | grep -q "^$DISK_NAME" | grep -E ' /(boot|home|var|usr|lib|bin|sbin)($|/)' || echo 'safe'
-  register: critical_safety_check
-  with_items: "{{ partitions_to_check | list }}"
-  changed_when: false
-  ignore_errors: yes
-  when: partitions_to_check is defined and partitions_to_check is not string and partitions_to_check | length > 0
-      
-- name: Remove any partitions that may be system partitions (root check)
-  set_fact:
-    root_verified_non_system: "{{ partitions_to_check | zip(root_safety_check.results) | selectattr('1.stdout', 'equalto', 'safe') | map(attribute='0') | list }}"
-  when: partitions_to_check is defined and partitions_to_check is not string and partitions_to_check | length > 0 and root_safety_check is defined and root_safety_check.results is defined
-      
-- name: Remove any partitions that may be system partitions (critical mounts check)
-  set_fact:
-    verified_non_system: "{{ root_verified_non_system | zip(critical_safety_check.results) | selectattr('1.stdout', 'equalto', 'safe') | map(attribute='0') | list }}"
-  when: partitions_to_check is defined and partitions_to_check is not string and partitions_to_check | length > 0 and root_verified_non_system is defined and critical_safety_check is defined and critical_safety_check.results is defined
-      
-- name: Filter out already mounted partitions
-  set_fact:
-    safe_partitions: "{{ verified_non_system | zip(mount_check_results.results) | selectattr('1.stdout', 'equalto', 'not_mounted') | map(attribute='0') | list }}"
-  when: partitions_to_check is defined and partitions_to_check is not string and partitions_to_check | length > 0 and verified_non_system is defined and mount_check_results is defined and mount_check_results.results is defined
-
-- name: Display partitions that will be mounted
-  debug:
-    msg: "Partitions that will be safely mounted: {{ safe_partitions | default([]) | to_json }}"
-
-- name: Set empty safe_partitions if none were found in processing
-  set_fact:
-    safe_partitions: []
-  when: safe_partitions is not defined or safe_partitions | length == 0
-
-- name: Get filesystem types for partitions
-  shell: blkid -s TYPE -o value "{{ item }}"
-  register: fs_types
-  changed_when: false
-  with_items: "{{ safe_partitions | default([]) }}"
-  ignore_errors: yes
-  when: safe_partitions is defined and safe_partitions | length > 0
-
-- name: Check filesystem integrity before mounting (safe approach)
-  shell: |
-    FS_TYPE=$(blkid -s TYPE -o value "{{ item }}")
-    if [ "$FS_TYPE" = "ext4" ] || [ "$FS_TYPE" = "ext3" ] || [ "$FS_TYPE" = "ext2" ]; then 
-      # Используем более безопасные параметры для e2fsck
-      timeout 10 e2fsck -n "{{ item }}" 2>/dev/null || echo "fs_check_skipped"
-    else 
-      echo "not_ext"
-    fi
-  register: fs_integrity_checks
-  changed_when: false
-  with_items: "{{ safe_partitions | default([]) }}"
-  ignore_errors: yes
-  when: safe_partitions is defined and safe_partitions | length > 0
-
-- name: Filter out partitions with filesystem errors
-  set_fact:
-    verified_safe_partitions: "{{ [] }}"
-  when: safe_partitions is defined and safe_partitions | length > 0
-
-- name: Process filesystem integrity results
-  set_fact:
-    verified_safe_partitions: "{{ verified_safe_partitions + ([safe_partitions[idx]] if not fs_integrity_checks.results[idx].stdout is defined or not fs_integrity_checks.results[idx].stdout in ['fs_error', '0', '1', '2', '4', '8', '16', '32', '64', '128'] else []) }}"
-  loop: "{{ range(0, safe_partitions | length) | list }}"
-  loop_control:
-    loop_var: idx
-  when: safe_partitions is defined and safe_partitions | length > 0 and fs_integrity_checks is defined and fs_integrity_checks.results is defined
-
-- name: Set empty verified_safe_partitions if none were found or filtering not run
-  set_fact:
-    verified_safe_partitions: []
-  when: safe_partitions is not defined or safe_partitions | length == 0 or verified_safe_partitions is not defined or verified_safe_partitions | length == 0
-
-# Устанавливаем пакеты для поддержки разных файловых систем
-- name: Check filesystem types to install required packages
-  set_fact:
-    fs_types_to_support: "{{ fs_types.results | map(attribute='stdout') | list | unique }}"
-  when: fs_types is defined and fs_types.results is defined
-
-- name: Install NTFS support if needed
-  apt:
-    name: ntfs-3g
-    state: present
-    update_cache: yes
-  when: fs_types_to_support is defined and 'ntfs' in fs_types_to_support
-  become: yes
-
-- name: Install exFAT support if needed
-  apt:
-    name: exfat-fuse
-    state: present
-  when: fs_types_to_support is defined and 'exfat' in fs_types_to_support
-  become: yes
-
-- name: Create mount points for non-system partitions
+- name: Create mount points for storage devices
   file:
     path: "{{ nfs_mount_base }}/{{ item | basename }}"
     state: directory
     mode: '0755'
-  with_items: "{{ verified_safe_partitions | default([]) }}"
-  when: verified_safe_partitions is defined and verified_safe_partitions | length > 0 and nfs_mount_base is defined
-
-- name: Get network filesystem types
-  set_fact:
-    network_fs_types: ['nfs', 'nfs4', 'cifs', 'smbfs', 'glusterfs', 'fuse.glusterfs']
-  when: verified_safe_partitions is defined and verified_safe_partitions | length > 0
-
-# Определяем опции монтирования для каждого типа файловой системы
-- name: Set mount options for different filesystem types
-  set_fact:
-    ntfs_mount_opts: "defaults,uid=1000,gid=1000,umask=022,fmask=133,noatime,nofail,rw"
-    exfat_mount_opts: "defaults,uid=1000,gid=1000,umask=022,noatime,nofail,rw"
-    default_mount_opts: "defaults,noatime,nofail"
-    network_mount_opts: "defaults,noatime,soft,timeo=20,retry=3,_netdev,nofail"
-  when: verified_safe_partitions is defined and verified_safe_partitions | length > 0
-
-# Выбор правильных опций монтирования в зависимости от типа файловой системы
-- name: Mount non-system partitions with improved reliability
-  mount:
-    path: "{{ nfs_mount_base }}/{{ item.0 | basename }}"
-    src: "{{ 'UUID=' + device_uuid_map[item.0] if item.0 in device_uuid_map and device_uuid_map[item.0] else item.0 }}"
-    fstype: "{{ item.1.stdout if item.1 is defined and item.1.stdout is defined and item.1.stdout else 'auto' }}"
-    state: mounted
-    opts: >-
-      {% if item.1.stdout is defined and item.1.stdout == 'ntfs' %}{{ ntfs_mount_opts }}
-      {% elif item.1.stdout is defined and item.1.stdout == 'exfat' %}{{ exfat_mount_opts }}
-      {% elif item.1.stdout is defined and item.1.stdout in network_fs_types %}{{ network_mount_opts }}
-      {% else %}{{ default_mount_opts }}{% endif %}
-  register: mount_result
-  with_together:
-    - "{{ verified_safe_partitions | default([]) }}"
-    - "{{ fs_types.results | default([]) }}"
-  when: verified_safe_partitions is defined and verified_safe_partitions | length > 0 and nfs_mount_base is defined
-  ignore_errors: yes
-
-# Перемонтирование NTFS разделов с поддержкой записи, если обычное монтирование не сработало
-- name: Remount NTFS partitions with write support if needed
-  shell: |
-    if [ "$(findmnt {{ nfs_mount_base }}/{{ item.0 | basename }} | grep -i 'ro,')" ]; then
-      umount {{ nfs_mount_base }}/{{ item.0 | basename }} 2>/dev/null
-      ntfs-3g {{ item.0 }} {{ nfs_mount_base }}/{{ item.0 | basename }} -o uid=1000,gid=1000,umask=022,fmask=133,noatime,rw
-      echo "remounted_rw"
-    else
-      echo "already_rw"
-    fi
-  with_together:
-    - "{{ verified_safe_partitions | default([]) }}"
-    - "{{ fs_types.results | default([]) }}"
-  when: >
-    verified_safe_partitions is defined and verified_safe_partitions | length > 0 and 
-    nfs_mount_base is defined and item.1.stdout is defined and item.1.stdout == 'ntfs'
-  register: ntfs_remount_result
-  ignore_errors: yes
-
-# Получаем информацию о предыдущих монтированиях (улучшенный метод)
-- name: Get previously mounted disks
-  shell: |
-    {
-      findmnt -n -o SOURCE | grep "^/dev/" || true
-      cat /proc/mounts | grep "^/dev/" | awk '{print $1}' || true
-      lsblk -n -o NAME,MOUNTPOINT | grep -v "^loop" | awk '$2 != "" {print "/dev/"$1}' || true
-    } | sort -u
-  register: previous_mounts
-  changed_when: false
-  ignore_errors: yes
-
-- name: Set previous mounts fact
-  set_fact:
-    previous_mounted_disks: "{{ previous_mounts.stdout_lines | select('match', '^/dev/.*') | list }}"
-  when: previous_mounts is defined and previous_mounts.stdout_lines is defined
-
-# Track successfully mounted disks with improved detection
-- name: Track successfully mounted disks
-  set_fact:
-    ansible_mounted_disks: "{{ ansible_mounted_disks + [{'device': item.item.0, 'mountpoint': nfs_mount_base + '/' + item.item.0|basename, 'result': item, 'is_new': item.item.0 not in (previous_mounted_disks|default([]))}] }}"
-  loop: "{{ mount_result.results }}"
-  when: mount_result is defined and mount_result.results is defined and item.changed and not item.failed
-
-# Получаем текущие монтирования для отчета
-- name: Get current mounts for report
-  shell: findmnt -n -o SOURCE,TARGET,SIZE | grep "{{ nfs_mount_base }}" || true
-  register: current_mounts
-  changed_when: false
-  ignore_errors: yes
-
-- name: Debug current mounts and system devices
-  debug:
-    msg: 
-      - "Current mounts: {{ current_mounts.stdout_lines }}"
-      - "System devices: {{ system_devices }}"
-  when: ansible_verbosity > 1
-
-# Проверяем и устанавливаем поддержку NTFS
-- name: Install NTFS support
-  package:
-    name: ntfs-3g
-    state: present
-  when: disk_info_processed.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list | length > 0
-
-# Проверка и размонтирование занятых точек монтирования
-- name: Check and unmount busy mount points
-  block:
-    - name: Check if mount point is busy
-      shell: lsof "{{ nfs_mount_base }}/{{ item.name }}" 2>/dev/null || true
-      register: lsof_result
-      with_items: "{{ disk_info_processed.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
-      ignore_errors: yes
-
-    - name: Gracefully unmount if busy
-      shell: |
-        if mountpoint -q "{{ nfs_mount_base }}/{{ item.name }}"; then
-          fuser -km "{{ nfs_mount_base }}/{{ item.name }}" 2>/dev/null || true
-          sleep 2
-          umount -l "{{ nfs_mount_base }}/{{ item.name }}" 2>/dev/null || true
-          sleep 1
-        fi
-      with_items: "{{ disk_info_processed.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
-      ignore_errors: yes
-
-# Монтируем NTFS разделы с поддержкой записи и обработкой ошибок
-- name: Mount NTFS partitions with write support
-  block:
-    - name: Attempt to mount NTFS partition
-      shell: "umount {{ item.mountpoint }} 2>/dev/null; mkdir -p {{ nfs_mount_base }}/{{ item.name }} && mount -t ntfs-3g -o rw,uid=0,gid=0,umask=000 /dev/{{ item.name }} {{ nfs_mount_base }}/{{ item.name }}"
-      with_items: "{{ disk_info_processed.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
-      ignore_errors: yes
-  rescue:
-    - name: Force mount if regular mount fails
-      shell: |
-        umount -f "{{ nfs_mount_base }}/{{ item.name }}" 2>/dev/null || true
-        sleep 2
-        ntfs-3g -o remove_hiberfile,force "/dev/{{ item.name }}" "{{ nfs_mount_base }}/{{ item.name }}"
-      with_items: "{{ disk_info_processed.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
-      ignore_errors: yes
-
-# Проверка успешности монтирования
-- name: Verify NTFS mounts
-  shell: findmnt -n -o SOURCE,TARGET,FSTYPE | grep "{{ nfs_mount_base }}/{{ item.name }}" || echo "not_mounted"
-  register: mount_verification
-  with_items: "{{ disk_info_processed.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
-  changed_when: false
-  ignore_errors: yes
-
-- name: Display mount verification results
-  debug:
-    msg: "Mount status for {{ item.item.name }}: {{ 'Successfully mounted' if 'not_mounted' not in item.stdout else 'Failed to mount' }}"
-  with_items: "{{ mount_verification.results }}"
-  when: mount_verification is defined
-
-# Настройка NFS сервера
-- name: Ensure NFS utilities are installed
-  package:
-    name: 
-      - nfs-common
-      - nfs-kernel-server
-    state: present
-  become: yes
-
-- name: Get NFS server IP
-  set_fact:
-    nfs_server_ip: "{{ hostvars[inventory_hostname]['ansible_default_ipv4']['address'] }}"
-  when: hostvars[inventory_hostname]['ansible_default_ipv4'] is defined
-
-# Создаем базовую директорию для NFS
-- name: Ensure NFS base directory exists
-  file:
-    path: "{{ nfs_mount_base }}"
-    state: directory
-    mode: '0755'
-  become: yes
-
-# Отладка переменных
-- name: Debug NFS variables
-  debug:
-    msg:
-      - "NFS mount base: {{ nfs_mount_base }}"
-      - "Verified safe partitions: {{ verified_safe_partitions }}"
-      - "Server IP: {{ nfs_server_ip }}"
-
-# Создаем конфигурацию NFS напрямую
-- name: Configure NFS exports
-  copy:
-    dest: /etc/exports
-    content: |
-      {% if verified_safe_partitions %}
-      {% for disk in verified_safe_partitions %}
-      {{ nfs_mount_base }}/{{ disk | basename }} *(rw,sync,no_subtree_check,no_root_squash,insecure)
-      {% endfor %}
-      {% else %}
-      # No partitions to export
-      {% endif %}
-    mode: '0644'
-  become: yes
-  register: exports_config
-  when: "'nfs_server' in group_names"
-
-# Перезапускаем NFS сервер и проверяем экспорты
-- name: Reload NFS configuration
-  block:
-    - name: Update exports
-      shell: exportfs -ra
-      become: yes
-
-    - name: Restart NFS server
-      service:
-        name: nfs-kernel-server
-        state: restarted
-      become: yes
-
-    - name: Verify exports
-      shell: exportfs -v
-      register: export_list
-      changed_when: false
-
-    - name: Display exports
-      debug:
-        var: export_list.stdout_lines
-  when: "'nfs_server' in group_names"
-  ignore_errors: yes
-
-# Настройка клиента NFS
-- name: Configure NFS client
-  block:
-    - name: Ensure NFS client packages are installed
-      package:
-        name: nfs-common
-        state: present
-      become: yes
-
-    - name: Create NFS mount directories
-      file:
-        path: "{{ nfs_mount_base }}/{{ item | basename }}"
-        state: directory
-        mode: '0755'
-        owner: root
-        group: root
-      with_items: "{{ verified_safe_partitions }}"
-      become: yes
-
-    - name: Wait for NFS server to be ready
-      wait_for:
-        host: "{{ nfs_server_ip }}"
-        port: 2049
-        timeout: 30
-      ignore_errors: yes
-
-    - name: Show available NFS exports
-      shell: showmount -e {{ nfs_server_ip }} || echo "No exports available"
-      register: nfs_exports
-      ignore_errors: yes
-
-    - name: Debug NFS exports
-      debug:
-        msg: "Available exports: {{ nfs_exports.stdout_lines }}"
-
-    - name: Ensure rpcbind is running
-      service:
-        name: rpcbind
-        state: started
-        enabled: yes
-      become: yes
-
-    - name: Mount NFS shares with retry
-      mount:
-        path: "{{ nfs_mount_base }}/{{ item | basename }}"
-        src: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item | basename }}"
-        fstype: nfs4
-        opts: "rw,soft,intr,rsize=32768,wsize=32768,vers=4,_netdev"
-        state: mounted
-      register: nfs_mount_result
-      retries: 3
-      delay: 5
-      until: nfs_mount_result is success
-      with_items: "{{ verified_safe_partitions }}"
-      become: yes
-      ignore_errors: yes
-
-    - name: Force mount if regular mount fails
-      shell: |
-        mkdir -p "{{ nfs_mount_base }}/{{ item | basename }}"
-        umount -f "{{ nfs_mount_base }}/{{ item | basename }}" 2>/dev/null || true
-        sleep 2
-        mount -t nfs4 -o rw,soft,intr,vers=4 "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item | basename }}" "{{ nfs_mount_base }}/{{ item | basename }}"
-      with_items: "{{ verified_safe_partitions }}"
-      when: nfs_mount_result is failed
-      become: yes
-      ignore_errors: yes
-  when: "'nfs_client' in group_names"
-
-# Проверка статуса NFS монтирования
-- name: Verify NFS mounts
-  shell: "df -h | grep {{ nfs_server_ip }} || true"
-  register: nfs_mount_verification
-  changed_when: false
-  ignore_errors: yes
-  when: "'nfs_client' in group_names"
-
-- name: Display NFS mount verification results
-  debug:
-    msg: 
-      - "NFS mount status:"
-      - "{{ nfs_mount_verification.stdout_lines if nfs_mount_verification.stdout_lines else 'No NFS mounts found' }}"
-  when: "'nfs_client' in group_names"
-
-# Добавляем проверку на сложные ситуации (NTFS и специфические файловые системы)
-- name: Add support tasks for non-standard filesystems
-  block:
-    - name: Check for NTFS partitions
-      debug:
-        msg: "Found NTFS partitions in the system"
-      when: disk_info_processed.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list | length > 0
-
-    - name: Install essential NTFS packages
-      package:
-        name: "{{ item }}"
-        state: present
-      with_items:
-        - ntfs-3g
-        - ntfsprogs
-      when: ansible_os_family == "Debian"
-      ignore_errors: yes
-
-    - name: Run ntfsfix on all NTFS partitions
-      shell: "ntfsfix /dev/{{ item.name }}"
-      with_items: "{{ disk_info_processed.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
-      register: ntfsfix_result
-      ignore_errors: yes
-
-    - name: Remove hibernation and cleanup on NTFS partitions
-      shell: "ntfs-3g -o remove_hiberfile,norecover /dev/{{ item.name }} /mnt/temp_ntfs_{{ item.name }} || echo 'Failed'"
-      with_items: "{{ disk_info_processed.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
-      ignore_errors: yes
-
-    - name: Cleanup temporary NTFS mounts
-      shell: "umount /mnt/temp_ntfs_{{ item.name }} || true"
-      with_items: "{{ disk_info_processed.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
-      ignore_errors: yes
-
-    - name: Update partition table after NTFS fixes
-      shell: "partprobe /dev/{{ item.name | regex_replace('[0-9]+$','') }}"
-      with_items: "{{ disk_info_processed.blockdevices | selectattr('children', 'defined') | map(attribute='children') | flatten | selectattr('fstype', 'equalto', 'ntfs') | list }}"
-      ignore_errors: yes
-  when: ansible_os_family == "Debian"
-  ignore_errors: yes
-
-# Находим и используем физические диски, которые не являются системными
-- name: Get available raw disks
-  shell: >
-    lsblk -pndo NAME,SIZE,TYPE | 
-    grep -v "rom\|loop\|sr" | 
-    grep disk | 
-    grep -v "{{ system_disk_device.stdout }}" | 
-    {% if excluded_devices is defined %}
-    {% for device in excluded_devices %}
-    grep -v "{{ device }}" | 
-    {% endfor %}
-    {% endif %}
-    sort | 
-    awk '{print $1","$2}'
-  register: available_raw_disks
-  changed_when: false
-  ignore_errors: yes
-
-- name: Display available raw disks
-  debug:
-    msg: "Available raw disks: {{ available_raw_disks.stdout_lines }}"
-  when: available_raw_disks.stdout_lines is defined and available_raw_disks.stdout_lines | length > 0
-
-- name: Check if disk has a partition table
-  shell: "parted -s {{ item.split(',')[0] }} print || echo 'uninitialized'"
-  register: disk_partitions
-  with_items: "{{ available_raw_disks.stdout_lines }}"
-  changed_when: false
-  ignore_errors: yes
-  when: available_raw_disks.stdout_lines is defined and available_raw_disks.stdout_lines | length > 0
-
-- name: Create partition table on uninitialized disks
-  shell: "parted -s {{ item.item.split(',')[0] }} mklabel gpt"
-  with_items: "{{ disk_partitions.results }}"
-  when: 
-    - disk_partitions.results is defined 
-    - item.stdout is defined
-    - item.stdout | regex_search('uninitialized')
-  ignore_errors: yes
-
-- name: Create single large partition on each disk
-  shell: "parted -s {{ item.split(',')[0] }} mkpart primary ext4 0% 100%"
-  with_items: "{{ available_raw_disks.stdout_lines }}"
-  ignore_errors: yes
-  when: available_raw_disks.stdout_lines is defined and available_raw_disks.stdout_lines | length > 0
-
-- name: Wait for partitions to be detected by kernel
-  pause:
-    seconds: 2
-
-- name: Get newly created partitions
-  shell: "lsblk -pno NAME,SIZE,TYPE {{ item.split(',')[0] }} | grep part | awk '{print $1}'"
-  register: new_partitions
-  with_items: "{{ available_raw_disks.stdout_lines }}"
-  changed_when: false
-  ignore_errors: yes
-  when: available_raw_disks.stdout_lines is defined and available_raw_disks.stdout_lines | length > 0
-
-# Проверяем существующие разделы
-- name: Get existing mounted partitions
-  shell: "df -h | grep -v '/dev/loop' | awk '{print $1}'"
-  register: existing_mounts
-  changed_when: false
-  ignore_errors: yes
-
-- name: Format new partitions with ext4
-  filesystem:
-    fstype: ext4
-    dev: "{{ item.stdout }}"
-    force: no  # Не форматировать уже отформатированные разделы
-  with_items: "{{ new_partitions.results }}"
-  when: 
-    - new_partitions.results is defined
-    - item.stdout is defined
-    - item.stdout | length > 0
-    - item.stdout not in existing_mounts.stdout_lines
-  ignore_errors: yes
-
-- name: Collect all partitions into a single list
-  set_fact:
-    storage_partitions: "{{ new_partitions.results | map(attribute='stdout') | list }}"
-  when: new_partitions.results is defined
-
-- name: Create mount points for each partition
-  file:
-    path: "{{ nfs_mount_base }}/{{ item | basename }}"
-    state: directory
-    mode: '0777'
     owner: root
     group: root
-  with_items: "{{ storage_partitions }}"
-  when: storage_partitions is defined and storage_partitions | length > 0
+  with_items: "{{ storage_devices | default([]) }}"
+  when: "storage_devices is defined and storage_devices | length > 0"
 
-- name: Mount new partitions
+# Монтируем устройства с разными типами ФС
+- name: Mount storage devices
   mount:
-    path: "{{ nfs_mount_base }}/{{ item | basename }}"
-    src: "{{ item }}"
-    fstype: auto
-    opts: defaults,nofail
+    path: "{{ nfs_mount_base }}/{{ item.0 | basename }}"
+    src: "{{ item.0 }}"
+    fstype: "{{ item.1.stdout if item.1.stdout != 'unknown' else 'ext4' }}"
+    opts: "{{ mount_opts[item.1.stdout] | default('defaults,noatime,nofail') }}"
     state: mounted
-  with_items: "{{ storage_partitions }}"
-  when: storage_partitions is defined and storage_partitions | length > 0
+  vars:
+    mount_opts:
+      ntfs: "remove_hiberfile,uid=0,gid=0,umask=000,noatime"
+      ext4: "defaults,noatime,data=ordered"
+      xfs: "defaults,noatime,logbufs=8"
+      exfat: "defaults,uid=0,gid=0,umask=000,noatime"
+      vfat: "defaults,uid=0,gid=0,umask=000,noatime"
+  with_together:
+    - "{{ storage_devices | default([]) }}"
+    - "{{ fs_types.results | default([]) }}"
+  register: mount_results
+  ignore_errors: yes
+  when: "storage_devices is defined and storage_devices | length > 0 and fs_types.results is defined"
+
+# Специальная обработка для NTFS дисков
+- name: Special handling for NTFS devices
+  shell: |
+    umount {{ item.0 }} 2>/dev/null || true
+    ntfs-3g -o remove_hiberfile,force,rw,uid=0,gid=0,umask=000 {{ item.0 }} {{ nfs_mount_base }}/{{ item.0 | basename }}
+  with_together:
+    - "{{ storage_devices | default([]) }}"
+    - "{{ fs_types.results | default([]) }}"
+  when: 
+    - "storage_devices is defined and storage_devices | length > 0" 
+    - "fs_types.results is defined"
+    - "item.1.stdout == 'ntfs'"
   ignore_errors: yes
 
-- name: Store disk configuration for NFS export
-  set_fact:
-    storage_disks: "{{ [] }}"
-    cacheable: yes
+# Проверяем успешность монтирования
+- name: Verify mounts
+  shell: "df -h | grep {{ nfs_mount_base }}"
+  register: mount_verification
+  changed_when: false
+  ignore_errors: yes
 
-- name: Build storage_disks configuration
+- name: Display mounted devices
+  debug:
+    msg: "Successfully mounted devices: {{ mount_verification.stdout_lines | default([]) }}"
+
+# Создание storage_disks для использования в других ролях
+- name: Initialize storage_disks variable
   set_fact:
-    storage_disks: "{{ storage_disks + [{'device': item, 'mountpoint': item | basename, 'fstype': 'auto'}] }}"
-  with_items: "{{ storage_partitions }}"
-  when: storage_partitions is defined and storage_partitions | length > 0
+    storage_disks: []
+
+- name: Update storage_disks with mounted devices
+  set_fact:
+    storage_disks: "{{ storage_disks + [{'device': item.0, 'mountpoint': item.0 | basename, 'fstype': item.1.stdout if item.1.stdout != 'unknown' else 'ext4'}] }}"
+  with_together:
+    - "{{ storage_devices | default([]) }}"
+    - "{{ fs_types.results | default([]) }}"
+  when: 
+    - "storage_devices is defined and storage_devices | length > 0" 
+    - "fs_types.results is defined"
+    - "item.1 is defined"
