@@ -1,36 +1,95 @@
 ---
+# Безопасная установка и настройка NFS сервера
+
+# Установка NFS сервера
 - name: Install NFS server packages
   package:
-    name:
+    name: 
       - nfs-kernel-server
       - ntfs-3g
       - ntfs-3g-dev
+      - nfs-common
     state: present
-  register: nfs_install
-  async: 300
-  poll: 0
+  register: nfs_server_install
 
-- name: Wait for NFS package installation
-  async_status:
-    jid: "{{ nfs_install.ansible_job_id }}"
-  register: nfs_install_result
-  until: nfs_install_result.finished
-  retries: 30
-  delay: 5
-  when: nfs_install.ansible_job_id is defined
-
-- name: Display NFS installation status
+- name: Display NFS server installation status
   debug:
-    msg: "{{ 'SUCCESS: NFS server installed' if nfs_install_result is succeeded else 'ERROR: Failed to install NFS server' }}"
-  when: nfs_install_result is defined
+    msg: "{{ 'SUCCESS: NFS server installed' if nfs_server_install is succeeded else 'ERROR: Failed to install NFS server' }}"
 
+# Создаем базовую директорию для хранения данных
 - name: Create base storage directory
   file:
     path: "{{ nfs_mount_base }}"
     state: directory
     mode: '0777'
+    owner: nobody
+    group: nogroup
+
+# Настройка NFS
+- name: Configure NFS exports
+  template:
+    src: exports.j2
+    dest: /etc/exports
     owner: root
     group: root
+    mode: '0644'
+  register: nfs_exports_config
+
+- name: Display NFS exports configuration status
+  debug:
+    msg: "{{ 'SUCCESS: NFS exports configured' if nfs_exports_config is succeeded else 'ERROR: Failed to configure NFS exports' }}"
+
+# Перезапускаем NFS только если нужно
+- name: Restart NFS server
+  systemd:
+    name: nfs-kernel-server
+    state: restarted
+  when: 
+    - nfs_exports_config is changed or 
+      nfs_server_install is changed
+
+- name: Ensure NFS server is enabled to start at boot
+  systemd:
+    name: nfs-kernel-server
+    enabled: yes
+
+# Обновляем таблицу экспортов
+- name: Update NFS exports
+  shell: "exportfs -ra"
+  when: nfs_exports_config is changed
+
+- name: Verify NFS exports
+  shell: "exportfs -v"
+  register: exports_verification
+  changed_when: false
+
+- name: Display exports verification
+  debug:
+    msg: "Current NFS exports: {{ exports_verification.stdout_lines }}"
+  when: exports_verification.stdout_lines is defined
+
+# Создаем директории для экспорта
+- name: Create export directories for disks
+  file:
+    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
+    state: directory
+    owner: nobody
+    group: nogroup
+    mode: '0777'
+  with_items: "{{ storage_disks }}"
+  when: storage_disks is defined
+
+# Проверяем, что NFS сервер правильно слушает порты
+- name: Check NFS server ports
+  shell: "rpcinfo -p | grep -E 'nfs|mountd'"
+  register: nfs_ports
+  changed_when: false
+  failed_when: false
+
+- name: Display NFS ports
+  debug:
+    msg: "NFS ports: {{ nfs_ports.stdout_lines }}"
+  when: nfs_ports.stdout_lines is defined
 
 - name: Unmount any existing mounts
   mount:
@@ -38,14 +97,11 @@
     state: unmounted
   with_items: "{{ storage_disks }}"
   ignore_errors: yes
-  async: 60
-  poll: 0
 
 - name: Wait for unmount operations
-  wait_for:
-    timeout: 2
-  delegate_to: localhost
-  
+  pause:
+    seconds: 2
+
 - name: Create mount points for disks
   file:
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
@@ -54,13 +110,10 @@
     owner: root
     group: root
   with_items: "{{ storage_disks }}"
-  async: 60
-  poll: 0
 
 - name: Wait for directory creation
-  wait_for:
-    timeout: 1
-  delegate_to: localhost
+  pause:
+    seconds: 1
 
 - name: Run ntfsfix on NTFS partitions in parallel
   shell: "ntfsfix {{ item.device }}"
@@ -68,15 +121,14 @@
   when: item.fstype == 'ntfs'
   ignore_errors: yes
   register: ntfsfix_result
-  async: 120
-  poll: 0
 
 - name: Wait for ntfsfix completion
   async_status:
     jid: "{{ item.ansible_job_id }}"
   register: ntfsfix_status
   with_items: "{{ ntfsfix_result.results | default([]) }}"
-  when: ntfsfix_result is defined and item.ansible_job_id is defined
+  when: 
+    - ntfsfix_result is defined and item.ansible_job_id is defined
   until: ntfsfix_status.finished
   retries: 30
   delay: 2
@@ -87,8 +139,6 @@
   when: item.fstype == 'ntfs'
   register: ntfs_mount_result
   ignore_errors: yes
-  async: 120
-  poll: 0
 
 - name: Mount non-NTFS disks
   mount:
@@ -101,58 +151,13 @@
   when: item.fstype != 'ntfs'
   register: other_mount_result
   ignore_errors: yes
-  async: 120
-  poll: 0
 
 - name: Wait for mount operations to complete
-  wait_for:
-    timeout: 3
-  delegate_to: localhost
+  pause:
+    seconds: 3
 
 - name: Check mount status
   shell: "mount | grep {{ item.device }} || echo 'Not mounted'"
   with_items: "{{ storage_disks }}"
   register: mount_status
   changed_when: false
-
-- name: Ensure exports file exists
-  file:
-    path: "{{ nfs_exports_file }}"
-    state: touch
-    mode: '0644'
-    owner: root
-    group: root
-
-- name: Configure NFS exports
-  blockinfile:
-    path: "{{ nfs_exports_file }}"
-    marker: "# {mark} ANSIBLE MANAGED BLOCK FOR {{ nfs_client_ip }}"
-    block: |
-      {% for disk in storage_disks %}
-      {{ nfs_mount_base }}/{{ disk.mountpoint }} {{ nfs_client_ip }}({{ nfs_opts }})
-      {% endfor %}
-    state: present
-  register: nfs_config
-
-- name: Start and enable NFS server
-  systemd:
-    name: nfs-server
-    state: restarted
-    enabled: yes
-  register: nfs_service
-
-- name: Export NFS shares
-  command: exportfs -ra
-  register: export_result
-  retries: "{{ nfs_mount_retries | default(3) }}"
-  delay: "{{ nfs_mount_delay | default(2) }}"
-  until: export_result is success
-
-- name: Verify exported shares
-  command: exportfs -v
-  register: export_verification
-  changed_when: false
-
-- name: Display exported shares
-  debug:
-    msg: "Exported NFS shares: {{ export_verification.stdout_lines }}"

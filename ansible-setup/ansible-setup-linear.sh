@@ -1,50 +1,42 @@
 #!/bin/bash
+set -eo pipefail
 
-# Скрипт для запуска Ansible playbook с линейной стратегией (более стабильной)
-# Используйте если возникают проблемы со стратегией free
+# Устанавливаем переменные окружения для безопасности
+export ANSIBLE_RETRY_FILES_ENABLED=false
+export ANSIBLE_ALLOW_WORLD_READABLE_TMPFILES=true
+export ANSIBLE_HOST_KEY_CHECKING=false
+export ANSIBLE_TIMEOUT=30
+export ANSIBLE_KEEP_REMOTE_FILES=false
+export ANSIBLE_RETRY_FILES_ENABLED=false
+export ANSIBLE_COMMAND_WARNINGS=false
+export ANSIBLE_PIPELINING=true
 
-# Очистка кэша фактов
-echo "Очистка кэша фактов..."
-rm -rf /tmp/ansible_fact_cache
-mkdir -p /tmp/ansible_fact_cache
+# Выключаем async совсем
+export ANSIBLE_ASYNC_DIR=/tmp/ansible_async
+export ANSIBLE_ASYNC_POLL_INTERVAL=0
+export DISABLE_ASYNC=true
 
-# Настройка переменных окружения для оптимизации
-export ANSIBLE_PIPELINING=True
-export ANSIBLE_SSH_PIPELINING=True
-export ANSIBLE_CACHE_PLUGIN=jsonfile
-export ANSIBLE_CACHE_PLUGIN_CONNECTION=/tmp/ansible_fact_cache
-export ANSIBLE_CACHE_PLUGIN_TIMEOUT=86400
-export ANSIBLE_GATHERING=smart
-export ANSIBLE_STRATEGY=linear
-export ANSIBLE_FORKS=20
-export ANSIBLE_TIMEOUT=60
-export ANSIBLE_CALLBACK_WHITELIST=profile_tasks,timer
-export ANSIBLE_STDOUT_CALLBACK=yaml
-export ANSIBLE_SSH_RETRIES=5
+# Очищаем временную директорию
+rm -rf /tmp/ansible_async
+mkdir -p /tmp/ansible_async
+chmod 700 /tmp/ansible_async
 
-# Проверка SSH-соединения перед запуском
-echo "Проверка SSH-соединения с хостами..."
-for host in $(awk '/ansible_user/ {print $1}' inventory); do
-  nc -z -w 2 $host 22 &> /dev/null
-  if [ $? -eq 0 ]; then
-    echo "SSH доступен для $host"
-  else
-    echo "ПРЕДУПРЕЖДЕНИЕ: SSH недоступен для $host, проверьте настройки подключения"
-  fi
-done
+# Запоминаем время начала
+date +%s > /tmp/ansible_start_time.txt
+chmod 644 /tmp/ansible_start_time.txt
 
-# Включаем подсчет времени
-START_TIME=$(date +%s)
+echo "Запуск Ansible в линейном режиме (без асинхронности)..."
+echo "Все диагностические сообщения будут сохранены в файле ansible_log.txt"
 
-# Запуск playbook с линейной стратегией
-echo "Запуск playbook с линейной стратегией..."
-ansible-playbook -i inventory playbook.yml --diff "$@"
+# Вызов Ansible с линейной стратегией и исключенной асинхронностью
+ansible-playbook -i inventory playbook.yml --diff -vvv -e "disable_async=true" "$@" | tee ansible_log.txt
 
-# Подсчет общего времени выполнения
-END_TIME=$(date +%s)
-DURATION=$((END_TIME - START_TIME))
-MINUTES=$((DURATION / 60))
-SECONDS=$((DURATION % 60))
+# Вывод отчета о выполнении
+if [ -f /tmp/ansible_mount_report.txt ]; then
+  echo -e "\n\nОТЧЕТ ВЫПОЛНЕНИЯ:"
+  cat /tmp/ansible_mount_report.txt
+else
+  echo -e "\n\nОТЧЕТ НЕ СГЕНЕРИРОВАН!"
+fi
 
-# Вывод времени работы скрипта
-echo "Скрипт выполнен за ${MINUTES}:${SECONDS} (${MINUTES} минут ${SECONDS} секунд)!" 
+echo -e "\nВыполнение скрипта завершено."

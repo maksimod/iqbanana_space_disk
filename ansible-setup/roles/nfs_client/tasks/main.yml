@@ -1,5 +1,10 @@
 ---
-# Установка NFS клиента
+# Устанавливаем переменную для контроля async операций
+- name: Set default for role_disable_async if not defined
+  set_fact:
+    role_disable_async: "{{ role_disable_async | default(false) }}"
+
+# Установка NFS клиента без асинхронности
 - name: Install NFS client packages
   package:
     name: 
@@ -7,17 +12,6 @@
       - ntfs-3g
     state: present
   register: nfs_client_install
-  async: 300
-  poll: 0
-
-- name: Wait for NFS client installation
-  async_status:
-    jid: "{{ nfs_client_install.ansible_job_id }}"
-  register: nfs_client_install_result
-  until: nfs_client_install_result.finished
-  retries: 30
-  delay: 5
-  when: nfs_client_install.ansible_job_id is defined
 
 - name: Display NFS client installation status
   debug:
@@ -29,6 +23,7 @@
     port: 2049
     timeout: "{{ nfs_mount_timeout | default(30) }}"
   register: nfs_network_check
+  failed_when: nfs_network_check is failed
 
 - name: Display network connectivity status
   debug:
@@ -42,23 +37,28 @@
     owner: root
     group: root
 
-# Unmount any existing mounts
+# Безопасная проверка монтирования
+- name: Check if NFS shares are already mounted
+  shell: "df -h | grep {{ nfs_server_ip }}"
+  register: existing_mounts
+  changed_when: false
+  failed_when: false
+
+# Размонтируем только если диски уже примонтированы
 - name: Unmount existing NFS shares
   mount:
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
     state: unmounted
   with_items: "{{ storage_disks }}"
-  ignore_errors: yes
-  async: 60
-  poll: 0
+  when: existing_mounts.rc == 0
+  failed_when: false
 
 - name: Wait for unmount operations
-  wait_for:
-    timeout: 2
-  delegate_to: localhost
+  pause:
+    seconds: 2
 
 # Создаем точки монтирования
-- name: Create mount points for NFS shares in parallel
+- name: Create mount points for NFS shares
   file:
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
     state: directory
@@ -66,79 +66,63 @@
     owner: root
     group: root
   with_items: "{{ storage_disks }}"
-  async: 60
-  poll: 0
 
-- name: Wait for directory creation
-  wait_for:
-    timeout: 1
-  delegate_to: localhost
-
-# Check available exports
+# Check available exports перед монтированием
 - name: Show available NFS exports
-  shell: "showmount -e {{ nfs_server_ip }} || echo 'No exports found'"
+  shell: "showmount -e {{ nfs_server_ip }}"
   register: nfs_exports
   changed_when: false
-  ignore_errors: yes
+  failed_when: false
   retries: 3
   delay: 2
-  until: "'No exports found' not in nfs_exports.stdout"
+  until: nfs_exports.rc == 0
 
 - name: Display available exports
   debug:
     msg: "Available exports: {{ nfs_exports.stdout_lines }}"
+  when: nfs_exports.stdout is defined
 
-# Монтируем NFS шары параллельно
-- name: Mount NFS shares in parallel
-  shell: "mkdir -p {{ nfs_mount_base }}/{{ item.mountpoint }} && mount -t nfs -o {{ nfs_client_mount_opts }} {{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }}"
+# Монтируем NFS шары последовательно и безопасно
+- name: Mount NFS shares sequentially
+  mount:
+    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
+    src: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}"
+    fstype: nfs
+    opts: "{{ nfs_client_mount_opts }}"
+    state: mounted
   with_items: "{{ storage_disks }}"
   register: nfs_mount_result
-  retries: "{{ nfs_mount_retries | default(3) }}"
-  delay: "{{ nfs_mount_delay | default(2) }}"
-  until: nfs_mount_result is success
-  ignore_errors: yes
-  async: 120
-  poll: 0
+  failed_when: false
 
-- name: Wait for mount operations to complete
-  wait_for:
-    timeout: 3
-  delegate_to: localhost
+- name: Display mount status
+  debug:
+    msg: "Mount status for {{ item.item.mountpoint }}: {{ 'SUCCESS' if item.changed else 'FAILED or ALREADY MOUNTED' }}"
+  with_items: "{{ nfs_mount_result.results }}"
 
 # Проверяем монтирование
 - name: Verify NFS mounts
-  shell: "df -h | grep {{ nfs_server_ip }} || echo 'No mounts found'"
+  shell: "df -h | grep {{ nfs_server_ip }}"
   register: mount_verification
   changed_when: false
+  failed_when: false
 
 - name: Display verification status
   debug:
-    msg: "Mounts found: {{ mount_verification.stdout_lines }}"
+    msg: "Mounts found: {{ mount_verification.stdout_lines | default(['No mounts found']) }}"
 
-# Проверка прав на запись
-- name: Test write permissions in parallel
-  shell: "touch {{ nfs_mount_base }}/{{ item.mountpoint }}/test_write_permissions.txt && echo 'OK' || echo 'Failed'"
+# Проверка прав на запись только если монтирование успешно
+- name: Test write permissions sequentially
+  shell: "touch {{ nfs_mount_base }}/{{ item.mountpoint }}/test_write_permissions.txt"
   with_items: "{{ storage_disks }}"
   register: write_test
-  ignore_errors: yes
-  async: 60
-  poll: 0
+  failed_when: false
+  when: mount_verification.rc == 0
 
-- name: Wait for write test operations to complete
-  async_status:
-    jid: "{{ item.ansible_job_id }}"
-  register: write_test_results
-  until: write_test_results.finished
-  retries: 10
-  delay: 2
-  with_items: "{{ write_test.results }}"
-  when: write_test.results is defined
-  
 - name: Display write permissions test results
   debug:
-    msg: "Write test on {{ item.item.item.mountpoint }}: {{ item.stdout }}"
-  with_items: "{{ write_test_results.results | default([]) }}"
-  when: write_test_results.results is defined
+    msg: "Write test on {{ item.item.mountpoint }}: {{ 'SUCCESS' if item.rc == 0 else 'FAILED' }}"
+  with_items: "{{ write_test.results | default([]) }}"
+  when: write_test.results is defined
 
 # Обновление конфигурации backend для корректной работы с монтированными дисками
 - name: Create backend config directory if it doesn't exist
@@ -146,7 +130,6 @@
     path: "{{ backend_config_path | default('/home/client/iqbanana_space_disk/backend/config') }}"
     state: directory
     mode: '0755'
-  ignore_errors: yes
 
 - name: Generate disk config for backend
   template:

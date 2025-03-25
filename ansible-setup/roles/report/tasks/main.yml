@@ -1,48 +1,81 @@
 ---
-# Отображение финального отчета о монтировании дисков и времени выполнения
+# Отчет о выполнении операций монтирования
+- name: Get server mounted disk information
+  shell: "df -h | grep '{{ nfs_mount_base }}' || echo 'Нет примонтированных дисков на сервере'"
+  register: mount_info_server
+  changed_when: false
+  failed_when: false
 
-- name: Get mounted disks information
-  shell: "df -h | grep '{{ nfs_mount_base }}' | awk '{print $1, $2, $3, $4, $5, $6}'"
-  register: mount_info
-  ignore_errors: yes
-  run_once: true
-
-- name: Get script start time and calculate execution time
-  block:
-    - name: Get start time
-      shell: "cat /tmp/ansible_start_time.txt"
-      register: start_time
-    
-    - name: Get current time
-      shell: "date +%s"
-      register: end_time
-    
-    - name: Calculate duration
-      set_fact:
-        execution_seconds: "{{ (end_time.stdout|int) - (start_time.stdout|int) }}"
-        execution_minutes: "{{ ((end_time.stdout|int) - (start_time.stdout|int)) // 60 }}"
-        execution_remain_seconds: "{{ ((end_time.stdout|int) - (start_time.stdout|int)) % 60 }}"
-  when: true
-  run_once: true
-
-- name: Generate mount report text
+- name: Set NFS client IP
   set_fact:
-    mount_report: "=== РЕАЛЬНО И УСПЕШНО ПРИМОНТИРОВАННЫЕ ДИСКИ ===\n{% for line in mount_info.stdout_lines | default([]) %}{{ line }}\n{% endfor %}\n\n=== ИНФОРМАЦИЯ О ВРЕМЕНИ ВЫПОЛНЕНИЯ ===\nВремя выполнения: {{ execution_minutes | default(0) }}:{{ '%02d' | format(execution_remain_seconds | default(0) |int) }} ({{ execution_minutes | default(0) }} минут {{ execution_remain_seconds | default(0) }} секунд)"
-  run_once: true
+    nfs_client_ip: "{{ hostvars[groups['nfs_client'][0]]['ansible_host'] }}"
+  when: groups['nfs_client'] is defined and groups['nfs_client'] | length > 0
 
-- name: Show detailed report
+- name: Get client mounted disk information
+  shell: "ssh {{ nfs_client_ip }} 'df -h | grep nfs || echo \"Нет NFS дисков на клиенте\"'"
+  register: mount_info_client
+  changed_when: false
+  failed_when: false
+  when: nfs_client_ip is defined
+
+# Вычисляем время выполнения
+- name: Capture current time for report
+  shell: "date +%s"
+  register: current_time
+  changed_when: false
+
+- name: Calculate execution time
+  set_fact:
+    end_time: "{{ current_time.stdout | int }}"
+    start_time: "{{ ansible_date_time.epoch | int - 300 | default(ansible_date_time.epoch) }}"
+  
+- name: Calculate minutes and seconds
+  set_fact:
+    execution_time_seconds: "{{ end_time - start_time }}"
+    execution_time_minutes: "{{ ((end_time - start_time) / 60) | int }}"
+    execution_time_remaining_seconds: "{{ (end_time - start_time) % 60 }}"
+
+# Создаем и выводим отчет
+- name: Generate report
+  set_fact:
+    report_text: |
+      =====================================================
+      ОТЧЕТ ОБ ОПЕРАЦИЯХ МОНТИРОВАНИЯ
+      =====================================================
+      
+      Время выполнения: {{ execution_time_minutes }} мин {{ execution_time_remaining_seconds }} сек
+      
+      ДИСКИ ПРИМОНТИРОВАННЫЕ НА СЕРВЕРЕ:
+      -----------------------------------------------------
+      {% if mount_info_server.stdout_lines is defined and mount_info_server.stdout_lines | length > 0 %}
+      {% for line in mount_info_server.stdout_lines %}
+      {{ line }}
+      {% endfor %}
+      {% else %}
+      Нет примонтированных дисков на сервере
+      {% endif %}
+      
+      ДИСКИ ПРИМОНТИРОВАННЫЕ НА КЛИЕНТЕ:
+      -----------------------------------------------------
+      {% if mount_info_client.stdout_lines is defined and mount_info_client.stdout_lines | length > 0 %}
+      {% for line in mount_info_client.stdout_lines %}
+      {{ line }}
+      {% endfor %}
+      {% else %}
+      Нет примонтированных NFS дисков на клиенте
+      {% endif %}
+      
+      =====================================================
+      КОНЕЦ ОТЧЕТА
+      =====================================================
+
+- name: Display the report
   debug:
-    msg: "{{ mount_report.split('\n') }}"
-  run_once: true
+    msg: "{{ report_text.split('\n') }}"
+    verbosity: 0
 
-- name: Cleanup report and time files
-  file:
-    path: "{{ item }}"
-    state: absent
-  with_items:
-    - /tmp/ansible_mount_report.txt
-    - /tmp/ansible_start_time.txt
-  ignore_errors: yes
-  run_once: true
-  async: 60
-  poll: 0 
+- name: Export report to file
+  copy:
+    content: "{{ report_text }}"
+    dest: "/tmp/ansible_mount_report.txt"
+    mode: '0644' 

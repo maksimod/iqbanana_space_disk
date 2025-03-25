@@ -4,12 +4,24 @@
   hosts: nfs_server
   become: yes
   gather_facts: no
+  vars:
+    # Используем простые проверки без взаимозависимостей
+    disable_async: "{{ lookup('env', 'DISABLE_ASYNC') | default(false) | bool }}"
+    ansible_strategy_linear: "{{ lookup('env', 'ANSIBLE_STRATEGY') == 'linear' }}"
+    is_linear_mode: "{{ ansible_strategy_linear or disable_async }}"
   tasks:
     - name: Record script start time
       shell: "date +%s > /tmp/ansible_start_time.txt"
       args:
         creates: /tmp/ansible_start_time.txt
       run_once: true
+    
+    # Создаем глобальные факты для использования во всех хостах
+    - name: Set global facts for async control
+      set_fact:
+        disable_async: "{{ disable_async }}"
+        is_linear_mode: "{{ is_linear_mode }}"
+        cacheable: yes
 
 # Проверка подключения и установка пакетов (объединено для ускорения)
 - name: Initial setup and verification
@@ -17,6 +29,10 @@
   become: yes
   gather_facts: no
   strategy: "{{ lookup('env', 'ANSIBLE_STRATEGY') | default('free', true) }}"
+  vars:
+    # Используем более простой подход
+    disable_async: "{{ hostvars[inventory_hostname].disable_async | default(lookup('env', 'DISABLE_ASYNC') | default(false) | bool) }}"
+    is_linear_mode: "{{ hostvars[inventory_hostname].is_linear_mode | default(lookup('env', 'ANSIBLE_STRATEGY') == 'linear' or disable_async) }}"
   tasks:
     - name: Check SSH connection and install required packages
       block:
@@ -36,8 +52,9 @@
           retries: 3
           delay: 5
           until: package_install is success
-          async: 300
-          poll: 0
+          # Используем async только если явно не отключено
+          async: "{{ 0 if is_linear_mode else 300 }}"
+          poll: "{{ 10 if is_linear_mode else 0 }}"
           
       rescue:
         - name: Report connection failure
@@ -51,7 +68,10 @@
       until: job_result.finished
       retries: 30
       delay: 10
-      when: package_install is defined and package_install.ansible_job_id is defined
+      when: 
+        - package_install is defined 
+        - package_install.ansible_job_id is defined
+        - not is_linear_mode
 
 - name: Configure NFS Server
   hosts: nfs_server
@@ -61,6 +81,9 @@
     nfs_mount_base: "/mnt/storage"
     temp_disk_info: "/tmp/disk_info.tmp"
     temp_mount_info: "/tmp/mount_info.tmp"
+    # Используем более простой подход
+    disable_async: "{{ hostvars[inventory_hostname].disable_async | default(lookup('env', 'DISABLE_ASYNC') | default(false) | bool) }}"
+    is_linear_mode: "{{ hostvars[inventory_hostname].is_linear_mode | default(lookup('env', 'ANSIBLE_STRATEGY') == 'linear' or disable_async) }}"
   tasks:
     - name: Set server IP address
       set_fact:
@@ -82,10 +105,14 @@
     - name: Include disk detection role
       include_role:
         name: disk_detection
+      vars:
+        role_disable_async: "{{ is_linear_mode }}"
 
     - name: Include NFS server role
       include_role:
         name: nfs_server
+      vars:
+        role_disable_async: "{{ is_linear_mode }}"
 
 - name: Wait for NFS server to stabilize
   hosts: nfs_client
@@ -127,6 +154,10 @@
   hosts: nfs_client
   become: yes
   gather_facts: no
+  vars:
+    # Используем более простой подход
+    disable_async: "{{ hostvars[inventory_hostname].disable_async | default(lookup('env', 'DISABLE_ASYNC') | default(false) | bool) }}"
+    is_linear_mode: "{{ hostvars[inventory_hostname].is_linear_mode | default(lookup('env', 'ANSIBLE_STRATEGY') == 'linear' or disable_async) }}"
   tasks:
     - name: Check NFS mounts
       shell: "df -h | grep {{ nfs_server_ip }} || echo 'No mounts found'"
@@ -142,8 +173,9 @@
       with_items: "{{ storage_disks }}"
       register: write_test
       ignore_errors: yes
-      async: 60
-      poll: 0
+      # Используем async только если явно не отключено
+      async: "{{ 0 if is_linear_mode else 60 }}"
+      poll: "{{ 10 if is_linear_mode else 0 }}"
 
     - name: Collect async results
       async_status:
@@ -153,7 +185,9 @@
       retries: 10
       delay: 5
       with_items: "{{ write_test.results }}"
-      when: write_test.results is defined
+      when: 
+        - write_test.results is defined
+        - not is_linear_mode
       
     - name: Display write test results
       debug:
@@ -166,6 +200,9 @@
   vars:
     temp_disk_info: "/tmp/disk_info.tmp"
     temp_mount_info: "/tmp/mount_info.tmp"
+    # Используем более простой подход
+    disable_async: "{{ hostvars[inventory_hostname].disable_async | default(lookup('env', 'DISABLE_ASYNC') | default(false) | bool) }}"
+    is_linear_mode: "{{ hostvars[inventory_hostname].is_linear_mode | default(lookup('env', 'ANSIBLE_STRATEGY') == 'linear' or disable_async) }}"
   tasks:
     - name: Remove temporary files
       file:
@@ -175,8 +212,9 @@
         - "{{ temp_disk_info }}"
         - "{{ temp_mount_info }}"
       ignore_errors: yes
-      async: 60
-      poll: 0
+      # Используем async только если явно не отключено
+      async: "{{ 0 if is_linear_mode else 60 }}"
+      poll: "{{ 10 if is_linear_mode else 0 }}"
 
 # Проверка работоспособности backend с обновленной конфигурацией
 - name: Verify Backend Configuration
@@ -204,7 +242,13 @@
   hosts: nfs_server
   become: yes
   gather_facts: no
+  vars:
+    # Используем более простой подход
+    disable_async: "{{ hostvars[inventory_hostname].disable_async | default(lookup('env', 'DISABLE_ASYNC') | default(false) | bool) }}"
+    is_linear_mode: "{{ hostvars[inventory_hostname].is_linear_mode | default(lookup('env', 'ANSIBLE_STRATEGY') == 'linear' or disable_async) }}"
   tasks:
     - name: Include report role
       include_role:
         name: report
+      vars:
+        role_disable_async: "{{ is_linear_mode }}"
