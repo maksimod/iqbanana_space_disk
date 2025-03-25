@@ -63,7 +63,7 @@
 - name: Set system disk list for LVM
   set_fact:
     system_disks: "{{ physical_volumes.stdout_lines | map('regex_replace', '\\s+', '') | list }}"
-  when: "physical_volumes is defined and physical_volumes.stdout != ''"
+  when: "physical_volumes is defined and physical_volumes.stdout_lines is defined and physical_volumes.stdout_lines | length > 0"
 
 - name: Add system disk to system_disks
   set_fact:
@@ -258,14 +258,14 @@
 
 # Проверяем успешность монтирования
 - name: Verify mounts
-  shell: "df -h | grep {{ nfs_mount_base }}"
+  shell: "df -h | grep -E '{{ nfs_mount_base }}|No mounted devices found' || echo 'No mounted devices found'"
   register: mount_verification
   changed_when: false
-  ignore_errors: yes
+  failed_when: false # Важно чтобы задача не завершалась с ошибкой при отсутствии монтирований
 
 - name: Display mounted devices
   debug:
-    msg: "Successfully mounted devices: {{ mount_verification.stdout_lines | default([]) }}"
+    msg: "{{ mount_verification.stdout_lines | default(['No mounted devices found']) }}"
 
 # Создание storage_disks для использования в других ролях
 - name: Initialize storage_disks variable
