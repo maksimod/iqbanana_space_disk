@@ -111,9 +111,10 @@
       debug:
         msg: "NFS server is {{ 'ready' if nfs_ready is success else 'not ready' }}"
 
-    - name: Wait 15 seconds for NFS server to fully initialize
-      pause:
-        seconds: 15
+    # Используем shell вместо pause для совместимости с free-стратегией
+    - name: Wait for NFS server to fully initialize
+      shell: "sleep 15"
+      changed_when: false
       when: nfs_ready is success
 
 - name: Configure NFS Client

@@ -114,12 +114,18 @@
     name: nfs-kernel-server
     enabled: yes
 
-# Подождем 10 секунд, чтобы сервер NFS полностью запустился
-- name: Wait for NFS service to be fully up
-  pause:
-    seconds: 10
-  delegate_to: localhost
-  run_once: true
+# Вместо pause используем wait_for, который работает с free-стратегией
+- name: Wait for NFS service to be fully up with wait_for
+  wait_for:
+    path: /proc/fs/nfsd/exports
+    timeout: 10
+  ignore_errors: yes
+  
+# Альтернативный метод ожидания, если предыдущий не сработал
+- name: Alternative wait using shell command
+  shell: "sleep 10"
+  changed_when: false
+  when: storage_disks is defined and storage_disks | length > 0
   
 # Проверка прав доступа к экспортируемым каталогам
 - name: Ensure proper permissions on exported directories

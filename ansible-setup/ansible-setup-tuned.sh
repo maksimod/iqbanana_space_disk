@@ -169,3 +169,19 @@ if [ $PLAYBOOK_STATUS -ne 0 ]; then
             echo "Не удалось определить IP сервера NFS из inventory"
         fi
     fi
+fi
+
+# Подсчет общего времени выполнения
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+MINUTES=$((DURATION / 60))
+SECONDS=$((DURATION % 60))
+
+# Вывод времени работы скрипта
+echo "Скрипт выполнен за ${MINUTES}:${SECONDS} (${MINUTES} минут ${SECONDS} секунд)!"
+
+# Вывод сводной информации о смонтированных дисках
+echo "Смонтированные NFS диски:"
+df -h | grep -E "/mnt/storage|nfs" || echo "NFS диски не смонтированы!"
+
+exit $PLAYBOOK_STATUS
