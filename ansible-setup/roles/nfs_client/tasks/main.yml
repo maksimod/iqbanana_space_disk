@@ -209,32 +209,6 @@
   ignore_errors: yes
   when: backend_config_path is defined
 
-# Управление резервными копиями
-if [ -f "$CONFIG_FILE" ]; then
-  # Директория, в которой находится конфигурационный файл
-  CONFIG_DIR=$(dirname "$CONFIG_FILE")
-  
-  # Базовое имя конфигурационного файла
-  CONFIG_BASENAME=$(basename "$CONFIG_FILE")
-  
-  # Подсчет существующих резервных копий
-  BACKUP_COUNT=$(find "$CONFIG_DIR" -name "${CONFIG_BASENAME}.backup.*" | wc -l)
-  
-  # Если резервных копий 10 или больше, удаляем самую старую
-  if [ $BACKUP_COUNT -ge 10 ]; then
-    OLDEST_BACKUP=$(find "$CONFIG_DIR" -name "${CONFIG_BASENAME}.backup.*" -type f -printf '%T+ %p\n' | sort | head -n 1 | awk '{print $2}')
-    if [ ! -z "$OLDEST_BACKUP" ]; then
-      echo "Удаление самой старой резервной копии: $(basename "$OLDEST_BACKUP")"
-      rm "$OLDEST_BACKUP"
-    fi
-  fi
-  
-  # Создаем новую резервную копию
-  BACKUP_FILE="${CONFIG_FILE}.backup.$(date +%s)"
-  cp "$CONFIG_FILE" "$BACKUP_FILE"
-  echo "Создана резервная копия конфигурации: $(basename "$BACKUP_FILE")"
-fi
-
 # Генерация и установка нового config.js на основе смонтированных дисков
 - name: Generate and install backend config
   template:
