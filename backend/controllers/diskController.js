@@ -8,6 +8,8 @@ const execPromise = util.promisify(exec);
 /**
  * Получение списка дисков с информацией о пространстве
  */
+// Найдите функцию getFiles и измените этот фрагмент кода:
+
 const getDisks = async (req, res, next) => {
   try {
     logger.info('Запрос на получение списка дисков');
@@ -28,15 +30,13 @@ const getDisks = async (req, res, next) => {
             used: 0
           };
         }
+
+        // Получаем общий размер и доступное пространство из df
+        const { stdout: dfOutput } = await execPromise(`df -k "${mountPoint}" | tail -n 1`);
+        const dfParts = dfOutput.trim().split(/\s+/);
         
-        // Получаем данные в мегабайтах для большей точности
-        const { stdout } = await execPromise(`df --block-size=1M "${mountPoint}" | tail -n 1`);
-        
-        // Парсим вывод команды df
-        const parts = stdout.trim().split(/\s+/);
-        
-        if (parts.length < 4) {
-          logger.error(`Неправильный формат вывода df для ${mountPoint}: ${stdout}`);
+        if (dfParts.length < 4) {
+          logger.error(`Неправильный формат вывода df для ${mountPoint}: ${dfOutput}`);
           return {
             name,
             mountPoint,
@@ -46,25 +46,34 @@ const getDisks = async (req, res, next) => {
             used: 0
           };
         }
+
+        // Получаем общее пространство и доступное из df
+        const totalKB = parseInt(dfParts[1], 10);
+        const freeKB = parseInt(dfParts[3], 10);
         
-        // Получаем значения в мегабайтах и убираем 'M' суффикс
-        const totalMB = parseInt(parts[1].replace('M', ''), 10);
-        const usedMB = parseInt(parts[2].replace('M', ''), 10);
-        const freeMB = parseInt(parts[3].replace('M', ''), 10);
+        // Получаем фактический размер всех файлов через du
+        // Используем команду с игнорированием ошибок чтения для некоторых файлов
+        const { stdout: duOutput } = await execPromise(
+          `find "${mountPoint}" -type f -exec du -sk {} \\; 2>/dev/null | awk '{sum+=$1} END {print sum}'`
+        );
         
-        // Конвертируем в байты для единообразия и сохранения точности
-        const total = totalMB * 1024 * 1024;
-        const used = usedMB * 1024 * 1024;
-        const free = freeMB * 1024 * 1024;
+        const actualUsedKB = parseInt(duOutput.trim() || '0', 10);
         
-        logger.info(`Диск ${name} размеры (мегабайты): total=${totalMB}MB, used=${usedMB}MB, free=${freeMB}MB`);
-        logger.info(`Диск ${name} размеры (в байтах): total=${total}, used=${used}, free=${free}`);
+        // Конвертируем в байты
+        const total = totalKB * 1024;
+        const free = freeKB * 1024;
+        // Используем du для определения использованного пространства
+        const used = actualUsedKB * 1024;
+        
+        logger.info(`Диск ${name} - данные из df: total=${totalKB}KB, free=${freeKB}KB`);
+        logger.info(`Диск ${name} - фактический размер файлов: ${actualUsedKB}KB`);
+        logger.info(`Диск ${name} - итого: total=${formatBytes(total)}, used=${formatBytes(used)}, free=${formatBytes(free)}`);
         
         return {
           name,
           mountPoint,
           total,
-          free,
+          free: Math.max(0, total - used), // Вычисляем свободное место как total - used
           used
         };
       } catch (error) {
@@ -72,7 +81,7 @@ const getDisks = async (req, res, next) => {
         return {
           name,
           mountPoint,
-          error: 'Не удалось получить информацию о диске',
+          error: 'Не удалось получить информацию о диске: ' + error.message,
           total: 0,
           free: 0,
           used: 0
@@ -88,6 +97,19 @@ const getDisks = async (req, res, next) => {
     next(error);
   }
 };
+
+// Вспомогательная функция для форматирования байтов
+function formatBytes(bytes, decimals = 2) {
+  if (bytes === 0) return '0 Bytes';
+  
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+  
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
 
 /**
  * Проверка монтирования диска

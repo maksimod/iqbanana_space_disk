@@ -8,6 +8,8 @@ const logger = require('../utils/logger');
 /**
  * Получение списка файлов в директории
  */
+// Найдите функцию getFiles и измените этот фрагмент кода:
+
 const getFiles = (req, res, next) => {
   const { disk } = req.params;
   const folderPath = req.query.path || '';
@@ -38,28 +40,56 @@ const getFiles = (req, res, next) => {
         // Для лучшей отладки логируем содержимое директории
         logger.info(`Найдено ${files.length} файлов в директории ${fullPath}`);
         
-        const filesList = files.map(file => {
+        // Массив для хранения промисов получения размеров файлов
+        const fileSizePromises = files.map(file => {
           const isDirectory = file.isDirectory();
           const filePath = path.join(fullPath, file.name);
-          let fileSize = 0;
           
-          try {
-            const stats = fs.statSync(filePath);
-            fileSize = stats.size;
-          } catch (error) {
-            logger.warn(`Ошибка при получении размера для ${filePath}`, error);
-          }
-          
-          return {
-            name: file.name,
-            isDirectory,
-            size: fileSize,
-            path: path.join(folderPath, file.name)
-          };
+          return new Promise(resolve => {
+            if (isDirectory) {
+              resolve({
+                name: file.name,
+                isDirectory: true,
+                size: 0,
+                path: path.join(folderPath, file.name)
+              });
+            } else {
+              // Используем более точный способ получения размера файла
+              exec(`du -sk "${filePath}" | cut -f1`, (error, stdout) => {
+                let fileSize = 0;
+                
+                if (error) {
+                  logger.warn(`Ошибка при получении размера для ${filePath}`, error);
+                  try {
+                    const stats = fs.statSync(filePath);
+                    fileSize = stats.size;
+                  } catch (statError) {
+                    logger.error(`Не удалось получить размер файла ${filePath}`, statError);
+                  }
+                } else {
+                  // Преобразуем килобайты в байты для согласованности
+                  fileSize = parseInt(stdout.trim(), 10) * 1024;
+                }
+                
+                resolve({
+                  name: file.name,
+                  isDirectory: false,
+                  size: fileSize,
+                  path: path.join(folderPath, file.name)
+                });
+              });
+            }
+          });
         });
         
-        logger.info(`Отправка списка из ${filesList.length} файлов и папок`);
-        res.json(filesList);
+        // Дожидаемся завершения всех промисов
+        Promise.all(fileSizePromises).then(filesList => {
+          logger.info(`Отправка списка из ${filesList.length} файлов и папок`);
+          res.json(filesList);
+        }).catch(error => {
+          logger.error(`Ошибка при обработке размеров файлов: ${fullPath}`, error);
+          next(error);
+        });
       } catch (error) {
         logger.error(`Ошибка при обработке списка файлов: ${fullPath}`, error);
         next(error);

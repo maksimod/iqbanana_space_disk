@@ -1,13 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const fileController = require('../controllers/fileController');
-const upload = require('../middleware/upload');
+const { handleFileUpload } = require('../middleware/upload');
 
 // Маршрут для получения списка файлов
 router.get('/:disk/files', fileController.getFiles);
 
-// Маршрут для загрузки файла
-router.post('/:disk/upload', upload.single('file'), fileController.uploadFile);
+// Маршрут для загрузки файла (используем новый middleware)
+router.post('/:disk/upload', handleFileUpload, fileController.uploadFile);
 
 // Маршрут для удаления файла или директории
 router.delete('/:disk/files', fileController.deleteFile);
