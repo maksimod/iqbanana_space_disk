@@ -101,6 +101,9 @@ const getFiles = (req, res, next) => {
 /**
  * Загрузка файла
  */
+/**
+ * Загрузка файла
+ */
 const uploadFile = (req, res) => {
   if (!req.file) {
     logger.warn('Попытка загрузки без файла');
@@ -110,26 +113,14 @@ const uploadFile = (req, res) => {
   const { disk } = req.params;
   const folderPath = req.query.path || '';
   const fileInfo = {
-    name: req.file.filename,
+    name: req.file.filename || req.file.originalname,
     size: req.file.size,
-    path: path.join(folderPath, req.file.filename),
+    path: path.join(folderPath, req.file.filename || req.file.originalname),
     mimetype: req.file.mimetype,
     uploadedAt: new Date()
   };
   
-  logger.info(`Файл загружен: ${disk}:${path.join(folderPath, req.file.filename)} (${req.file.size} байт)`);
-  
-  // Устанавливаем правильные разрешения для загруженного файла
-  try {
-    const fullPath = path.join(config.disks[disk], folderPath, req.file.filename);
-    fs.chmod(fullPath, 0o644, (err) => {
-      if (err) {
-        logger.warn(`Не удалось установить разрешения для файла ${fullPath}`, err);
-      }
-    });
-  } catch (error) {
-    logger.warn('Ошибка при установке разрешений файла', error);
-  }
+  logger.info(`Файл загружен: ${disk}:${fileInfo.path} (${req.file.size} байт)`);
   
   res.json({ 
     success: true, 

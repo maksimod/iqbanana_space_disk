@@ -2,7 +2,7 @@
 # Основные настройки NFS
 nfs_mount_base: /mnt/storage
 nfs_exports_file: /etc/exports
-nfs_opts: "rw,sync,no_subtree_check,insecure,no_root_squash"
+nfs_opts: "rw,sync,no_subtree_check,insecure,no_root_squash,no_wdelay"
 
 # Настройки монтирования для различных файловых систем
 fs_mount_opts:
@@ -18,6 +18,7 @@ required_packages:
   - nfs-kernel-server
   - nfs4-acl-tools
   - util-linux
+  - iperf3
 
 # Исключаемые устройства
 excluded_devices:
@@ -26,11 +27,11 @@ excluded_devices:
   - /dev/zram
   - /dev/sr
 
-# Оптимизированные параметры монтирования NFS для максимальной производительности
-nfs_client_mount_opts: "rw,soft,timeo=10,retrans=2,noatime,_netdev,rsize=1048576,wsize=1048576,nconnect=16,lookupcache=positive,fsc,actimeo=600,nolock,local_lock=none,tcp"
+# Высокопроизводительные параметры монтирования NFS
+nfs_client_mount_opts: "rw,soft,tcp,noatime,rsize=32768,wsize=32768,timeo=600,retrans=2,noresvport,_netdev"
 
 # Параметры сервера NFS для высокой производительности
-nfs_server_opts: "rw,sync,no_subtree_check,no_root_squash,insecure,fsid=0,crossmnt,async"
+nfs_server_opts: "rw,sync,no_subtree_check,no_root_squash,insecure,no_wdelay"
 
 # Дополнительные параметры для повышения надежности монтирования
 nfs_mount_timeout: 60
@@ -39,3 +40,20 @@ nfs_mount_delay: 10
 
 # Путь к директории конфигурации backend
 backend_config_path: "/home/client/iqbanana_space_disk/backend/config"
+
+# Оптимизированные параметры sysctl для NFS
+nfs_sysctl_params:
+  net.core.rmem_default: 262144
+  net.core.wmem_default: 262144
+  net.core.rmem_max: 16777216
+  net.core.wmem_max: 16777216
+  net.ipv4.tcp_rmem: "4096 131072 16777216"
+  net.ipv4.tcp_wmem: "4096 131072 16777216"
+  net.ipv4.tcp_window_scaling: 1
+  net.ipv4.tcp_timestamps: 1
+  net.ipv4.tcp_sack: 1
+  net.ipv4.tcp_fastopen: 3
+  vm.dirty_ratio: 80
+  vm.dirty_background_ratio: 5
+  vm.dirty_expire_centisecs: 12000
+  sunrpc.tcp_slot_table_entries: 128
