@@ -2,7 +2,7 @@
 # Основные настройки NFS
 nfs_mount_base: /mnt/storage
 nfs_exports_file: /etc/exports
-nfs_opts: "rw,sync,no_subtree_check,insecure"
+nfs_opts: "rw,sync,no_subtree_check,insecure,no_root_squash"
 
 # Настройки монтирования для различных файловых систем
 fs_mount_opts:
@@ -12,11 +12,11 @@ fs_mount_opts:
   vfat: "defaults,uid=0,gid=0,umask=000,noatime"
   
 # Инструменты для работы с файловыми системами
-# Инструменты для работы с файловыми системами
 required_packages:
   - ntfs-3g
   - nfs-common
   - nfs-kernel-server
+  - nfs4-acl-tools
   - util-linux
 
 # Исключаемые устройства
@@ -26,8 +26,11 @@ excluded_devices:
   - /dev/zram
   - /dev/sr
 
-# Параметры монтирования NFS для оптимизации производительности
-nfs_client_mount_opts: "rw,soft,timeo=10,retrans=2,noatime,_netdev,rsize=262144,wsize=262144,nconnect=8,lookupcache=positive"
+# Оптимизированные параметры монтирования NFS для максимальной производительности
+nfs_client_mount_opts: "rw,soft,timeo=10,retrans=2,noatime,_netdev,rsize=1048576,wsize=1048576,nconnect=16,lookupcache=positive,fsc,actimeo=600,nolock,local_lock=none,tcp"
+
+# Параметры сервера NFS для высокой производительности
+nfs_server_opts: "rw,sync,no_subtree_check,no_root_squash,insecure,fsid=0,crossmnt,async"
 
 # Дополнительные параметры для повышения надежности монтирования
 nfs_mount_timeout: 60

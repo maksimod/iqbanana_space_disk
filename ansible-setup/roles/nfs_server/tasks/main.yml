@@ -9,12 +9,34 @@
       - ntfs-3g
       - nfs-common
       - portmap
+      - nfs4-acl-tools
     state: present
   register: nfs_server_install
 
 - name: Display NFS server installation status
   debug:
     msg: "{{ 'SUCCESS: NFS server installed' if nfs_server_install is succeeded else 'ERROR: Failed to install NFS server' }}"
+
+# Оптимизация параметров ядра для NFS сервера
+- name: Optimize kernel parameters for NFS server
+  sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_set: yes
+    reload: yes
+  with_items:
+    - { key: "fs.nfs.nlm_tcpport", value: "32768" }
+    - { key: "fs.nfs.nlm_udpport", value: "32768" }
+    - { key: "sunrpc.tcp_slot_table_entries", value: "128" }
+    - { key: "net.core.rmem_default", value: "262144" }
+    - { key: "net.core.wmem_default", value: "262144" }
+    - { key: "net.core.rmem_max", value: "16777216" }
+    - { key: "net.core.wmem_max", value: "16777216" }
+    - { key: "vm.dirty_ratio", value: "80" }
+    - { key: "vm.dirty_background_ratio", value: "5" }
+    - { key: "vm.dirty_expire_centisecs", value: "12000" }
+  ignore_errors: yes
 
 # Убеждаемся, что службы не замаскированы
 - name: Ensure NFS services are not masked
@@ -71,6 +93,17 @@
     group: root
     mode: '0644'
   register: nfs_exports_config
+  when: storage_disks is defined and storage_disks | length > 0
+
+# Настройка более производительного демона NFS
+- name: Configure NFS daemon for performance
+  template:
+    src: nfs.conf.j2
+    dest: /etc/nfs.conf
+    owner: root
+    group: root
+    mode: '0644'
+  register: nfs_conf_update
   when: storage_disks is defined and storage_disks | length > 0
 
 # Диагностика экспортов

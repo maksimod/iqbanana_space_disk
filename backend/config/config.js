@@ -16,7 +16,15 @@ const config = {
   
   // Пути к смонтированным дискам на веб-сервере
   disks: {
-    'disk_sda1': '/mnt/storage/sda1',    'disk_sda2': '/mnt/storage/sda2'  }
+    'disk_sda': '/mnt/storage/sda',
+  },
+  
+  // Настройки производительности для файловых операций
+  performance: {
+    chunkSize: 8 * 1024 * 1024,
+    concurrentUploads: 4,
+    maxFileSize: 10 * 1024 * 1024 * 1024
+  }
 };
 
-module.exports = config; 
+module.exports = config;

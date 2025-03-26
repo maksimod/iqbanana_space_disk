@@ -1,0 +1,41 @@
+# Файл конфигурации NFS для оптимальной производительности
+# Автоматически сгенерирован Ansible {{ ansible_date_time.iso8601 }}
+
+[general]
+pipefs-directory=/var/lib/nfs/rpc_pipefs
+
+[nfsd]
+# Увеличиваем число потоков NFS сервера для большей производительности
+threads=16
+# Увеличиваем размер буфера для больших файлов
+tcp-buffer-size=1048576
+udp-buffer-size=1048576
+# Используем ядро NFSv4 для более эффективной работы
+vers3=y
+vers4=y
+vers4.0=y
+vers4.1=y
+vers4.2=y
+
+[mountd]
+# Обеспечиваем достаточное количество потоков для монтирования
+threads=8
+cache-use-retired-count=y
+
+[statd]
+port=32765
+outgoing-port=32766
+
+[lockd]
+port=32768
+udp-port=32768
+
+[sm-notify]
+outgoing-port=32769
+
+# Оптимизации для больших файлов и высокой нагрузки
+[nfs]
+server-threads=16
+nfs4-grace=90
+udp=n
+tcp=y
