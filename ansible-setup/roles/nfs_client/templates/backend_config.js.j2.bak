@@ -16,13 +16,16 @@ const config = {
   
   // Пути к смонтированным дискам на веб-сервере
   disks: {
+{% for disk in storage_disks %}
+    '{{ disk.device | regex_replace('/dev/', 'disk_') }}': '{{ nfs_mount_base }}/{{ disk.mountpoint }}'{% if not loop.last %},{% endif %}
+{% endfor %}
   },
   
   // Настройки производительности для файловых операций
   performance: {
-    chunkSize: 8 * 1024 * 1024,
-    concurrentUploads: 4,
-    maxFileSize: 10 * 1024 * 1024 * 1024
+    chunkSize: 8 * 1024 * 1024, // 8MB чанки для потоковой передачи
+    concurrentUploads: 4,        // Количество одновременных загрузок
+    maxFileSize: 10 * 1024 * 1024 * 1024 // 10GB максимальный размер файла
   }
 };
 

@@ -129,13 +129,12 @@
   with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
-# Монтирование NFS с оптимальными параметрами
 - name: Mount NFS shares with optimized parameters
   mount:
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
     src: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}"
     fstype: nfs
-    opts: "rw,soft,timeo=10,retrans=2,noatime,_netdev,rsize=1048576,wsize=1048576,nconnect=16,lookupcache=positive,fsc,actimeo=600,nolock,local_lock=none,tcp"
+    opts: "rw,soft,timeo=5,retrans=2,noatime,_netdev,rsize=4194304,wsize=4194304,nconnect=16,lookupcache=positive,fsc,actimeo=600,nolock,async,local_lock=none,tcp"
     state: mounted
   with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   register: nfs_mount_result
