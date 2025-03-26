@@ -36,7 +36,7 @@
 
     - name: Set client IP address
       set_fact:
-        nfs_client_ip: "{{ groups['nfs_client'][0] }}"
+        nfs_client_ip: "{{ hostvars[groups['nfs_client'][0]]['ansible_host'] | default(groups['nfs_client'][0]) }}"
         cacheable: yes
 
     - name: Create NFS mount base directory
@@ -50,11 +50,13 @@
       include_role:
         name: disk_detection
       
-    - name: Fail if no storage devices found
-      fail:
-        msg: "No storage devices found to export! Check if there are any non-system disks available."
-      when: storage_devices is not defined or storage_devices | length == 0
-      ignore_errors: yes
+    - name: Display found disks
+      debug:
+        msg: "Storage disks found: {{ storage_disks | default([]) }}"
+        
+    - name: Skip if no disks found
+      meta: end_play
+      when: storage_disks is not defined or storage_disks | length == 0
 
     - name: Include NFS server role
       include_role:
@@ -95,10 +97,17 @@
         storage_disks: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
         cacheable: yes
       
+    - name: Display storage disks to mount
+      debug:
+        msg: "Storage disks to mount: {{ storage_disks | default([]) }}"
+
+    - name: Skip if no disks found on server
+      meta: end_play
+      when: storage_disks is not defined or storage_disks | length == 0
+        
     - name: Include NFS client role
       include_role:
         name: nfs_client
-      when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
 - name: Verify NFS Setup and Generate Report
   hosts: nfs_client
