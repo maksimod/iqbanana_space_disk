@@ -71,7 +71,14 @@ done
 
 # Установка необходимых модулей Python
 echo "Установка необходимых модулей Python..."
-pip3 install paramiko jinja2 PyYAML
+
+apt-get install -y python3-paramiko python3-jinja2 python3-yaml
+
+# Заменить строку
+apt-get install -y nfs-common portmap rpcbind >/dev/null 2>&1
+
+# На следующие строки
+apt-get install -y nfs-common portmap rpcbind iptables >/dev/null 2>&1
 
 # Очистка кэша фактов
 echo "Очистка кэша фактов..."

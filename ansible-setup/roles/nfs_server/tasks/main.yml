@@ -80,16 +80,31 @@
   when: storage_disks is defined and storage_disks | length > 0
 
 # Добавление правил в фаервол для NFS
-- name: Add firewall rules for NFS
-  shell: |
-    iptables -F
-    iptables -I INPUT -p tcp --dport 2049 -j ACCEPT
-    iptables -I INPUT -p udp --dport 2049 -j ACCEPT
-    iptables -I INPUT -p tcp --dport 111 -j ACCEPT
-    iptables -I INPUT -p udp --dport 111 -j ACCEPT
-    iptables -I INPUT -s {{ nfs_client_ip }} -j ACCEPT
+- name: Install iptables if needed
+  package:
+    name: iptables
+    state: present
   ignore_errors: yes
+
+- name: Add firewall rules for NFS
+  block:
+    - name: Check if iptables is available
+      command: which iptables
+      register: iptables_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Configure firewall with iptables if available
+      shell: |
+        iptables -F
+        iptables -I INPUT -p tcp --dport 2049 -j ACCEPT
+        iptables -I INPUT -p udp --dport 2049 -j ACCEPT
+        iptables -I INPUT -p tcp --dport 111 -j ACCEPT
+        iptables -I INPUT -p udp --dport 111 -j ACCEPT
+        iptables -I INPUT -s {{ nfs_client_ip }} -j ACCEPT
+      when: iptables_check.rc == 0
   when: storage_disks is defined and storage_disks | length > 0
+  ignore_errors: yes
 
 # Обновляем таблицу экспортов
 - name: Update NFS exports

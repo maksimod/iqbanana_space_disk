@@ -39,14 +39,26 @@
   ignore_errors: yes
 
 # Ручной запуск nfs-common, если служба замаскирована
+# На следующую задачу
+# Исправляем задачу, используя shell вместо pause
 - name: Start NFS common manually if service is masked
-  shell: |
-    if systemctl is-enabled nfs-common | grep -q masked; then
-      systemctl unmask nfs-common
-      systemctl restart nfs-common
-    else
-      systemctl restart nfs-common || true
-    fi
+  block:
+    - name: Unmask nfs-common if masked
+      systemd:
+        name: nfs-common
+        masked: no
+      ignore_errors: yes
+
+    - name: Wait for service to be unmasked (using shell)
+      shell: "sleep 2"
+      changed_when: false
+
+    - name: Enable and restart nfs-common
+      systemd:
+        name: nfs-common
+        state: restarted
+        enabled: yes
+      ignore_errors: yes
   ignore_errors: yes
 
 # Проверка доступности NFS сервера
