@@ -38,27 +38,19 @@
     - rpcbind
   ignore_errors: yes
 
-# Ручной запуск nfs-common, если служба замаскирована
-# На следующую задачу
-# Исправляем задачу, используя shell вместо pause
-- name: Start NFS common manually if service is masked
-  block:
-    - name: Unmask nfs-common if masked
-      systemd:
-        name: nfs-common
-        masked: no
-      ignore_errors: yes
-
-    - name: Wait for service to be unmasked (using shell)
-      shell: "sleep 2"
-      changed_when: false
-
-    - name: Enable and restart nfs-common
-      systemd:
-        name: nfs-common
-        state: restarted
-        enabled: yes
-      ignore_errors: yes
+# Проверка, работает ли nfs-common после размаскирования
+- name: Check if nfs-common service exists and is not masked
+  shell: "systemctl status nfs-common 2>&1 | grep -q 'masked'"
+  register: nfs_common_masked
+  failed_when: false
+  changed_when: false
+  
+# Только размаскируем, не пытаемся запустить, если служба замаскирована
+- name: Unmask nfs-common if masked
+  systemd:
+    name: nfs-common
+    masked: no
+  when: nfs_common_masked.rc == 0
   ignore_errors: yes
 
 # Проверка доступности NFS сервера
@@ -106,21 +98,6 @@
   debug:
     msg: "Remote NFS exports: {{ remote_exports.stdout_lines | default(['No exports visible']) }}"
 
-# Проверка доступных экспортов
-- name: Show available NFS exports
-  shell: "showmount -e {{ nfs_server_ip }} || echo 'No exports found'"
-  register: nfs_exports
-  changed_when: false
-  failed_when: false
-  retries: 3
-  delay: 2
-  until: nfs_exports.rc == 0
-  ignore_errors: yes
-
-- name: Display available exports
-  debug:
-    msg: "Available exports: {{ nfs_exports.stdout_lines | default(['No exports found or NFS server not responding']) }}"
-
 # Создание точек монтирования
 - name: Create mount points for NFS shares
   file:
@@ -132,7 +109,7 @@
   with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
-# Монтирование NFS с различными параметрами
+# Монтирование NFS с оптимальными параметрами
 - name: Mount NFS shares with version 3 parameters
   mount:
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
@@ -147,36 +124,6 @@
   until: nfs_mount_result is succeeded
   ignore_errors: yes
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
-
-# Ручное монтирование если первая попытка не удалась
-- name: Manual mount with version 3 if standard mount fails
-  shell: "mount -t nfs -o rw,soft,timeo=30,retrans=3,noatime,nolock,vers=3 {{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }}"
-  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
-  when: 
-    - hostvars[groups['nfs_server'][0]]['storage_disks'] is defined
-    - hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
-    - nfs_mount_result is failed or nfs_mount_result.failed is defined
-  ignore_errors: yes
-
-# Вторая попытка с версией 4
-- name: Second attempt with version 4 parameters
-  shell: "mount -t nfs -o rw,soft,timeo=30,retrans=3,noatime,nolock,vers=4 {{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }}"
-  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
-  when: 
-    - hostvars[groups['nfs_server'][0]]['storage_disks'] is defined
-    - hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
-    - nfs_mount_result is failed or nfs_mount_result.failed is defined
-  ignore_errors: yes
-
-# Последняя попытка с минимальными параметрами
-- name: Last attempt with minimal parameters
-  shell: "mount -t nfs {{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }}"
-  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
-  when: 
-    - hostvars[groups['nfs_server'][0]]['storage_disks'] is defined
-    - hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
-    - nfs_mount_result is failed or nfs_mount_result.failed is defined
-  ignore_errors: yes
 
 # Проверка успешности монтирования
 - name: Verify NFS mounts

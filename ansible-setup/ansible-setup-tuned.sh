@@ -61,7 +61,7 @@ if ! command -v sshpass >/dev/null 2>&1; then
 fi
 
 # Проверка и установка других необходимых пакетов
-required_packages="python3 python3-pip netcat-openbsd openssh-client openssh-server nfs-common portmap rpcbind"
+required_packages="python3 python3-pip netcat-openbsd openssh-client openssh-server nfs-common rpcbind iptables"
 for pkg in $required_packages; do
     if ! dpkg -l | grep -q "ii  $pkg"; then
         echo "Установка пакета $pkg..."
@@ -71,14 +71,7 @@ done
 
 # Установка необходимых модулей Python
 echo "Установка необходимых модулей Python..."
-
 apt-get install -y python3-paramiko python3-jinja2 python3-yaml
-
-# Заменить строку
-apt-get install -y nfs-common portmap rpcbind >/dev/null 2>&1
-
-# На следующие строки
-apt-get install -y nfs-common portmap rpcbind iptables >/dev/null 2>&1
 
 # Очистка кэша фактов
 echo "Очистка кэша фактов..."
@@ -142,10 +135,6 @@ for host in $(grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' inventory | awk '{print 
         fi
     fi
 done
-
-# Установка пакетов NFS
-echo "Установка необходимых пакетов NFS..."
-apt-get install -y nfs-common portmap rpcbind >/dev/null 2>&1
 
 # Включаем подсчет времени
 START_TIME=$(date +%s)
