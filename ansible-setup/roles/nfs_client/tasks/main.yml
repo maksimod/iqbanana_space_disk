@@ -40,6 +40,26 @@
     owner: root
     group: root
 
+# Очистка устаревших NFS монтирований
+- name: Clean stale NFS mounts
+  shell: "umount -f -l {{ nfs_mount_base }}/{{ item.mountpoint }} 2>/dev/null || true"
+  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
+  ignore_errors: yes
+  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
+
+# Проверка доступности экспортов
+- name: Wait for NFS exports to be available
+  shell: "showmount -e {{ nfs_server_ip }}"
+  register: remote_exports
+  retries: 5
+  delay: 5
+  until: remote_exports.rc == 0
+  ignore_errors: yes
+
+- name: Display remote exports
+  debug:
+    msg: "Remote NFS exports: {{ remote_exports.stdout_lines | default(['No exports visible']) }}"
+
 # Проверка доступных экспортов
 - name: Show available NFS exports
   shell: "showmount -e {{ nfs_server_ip }} || echo 'No exports found'"
@@ -72,15 +92,25 @@
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
     src: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}"
     fstype: nfs
-    opts: "{{ nfs_client_mount_opts | default('rw,soft,timeo=10,retrans=2,noatime') }}"
+    opts: "rw,soft,timeo=30,retrans=3,noatime,nolock"
     state: mounted
   with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   register: nfs_mount_result
   retries: "{{ nfs_mount_retries | default(5) }}"
-  delay: "{{ nfs_mount_delay | default(5) }}"
+  delay: "{{ nfs_mount_delay | default(10) }}"
   until: nfs_mount_result is succeeded
   ignore_errors: yes
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
+
+# Альтернативный метод монтирования для отладки
+- name: Manual mount if standard mount fails
+  shell: "mount -t nfs {{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }} -o rw,soft,timeo=30,retrans=3,noatime,nolock"
+  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
+  when: 
+    - hostvars[groups['nfs_server'][0]]['storage_disks'] is defined
+    - hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
+    - nfs_mount_result is failed or nfs_mount_result.failed is defined
+  ignore_errors: yes
 
 # Проверка успешности монтирования
 - name: Verify NFS mounts
@@ -92,3 +122,31 @@
 - name: Display mount verification results
   debug:
     msg: "NFS mounts: {{ mount_verification.stdout_lines | default(['No NFS mounts detected']) }}"
+
+# Проверка прав на запись (только если есть монтирования)
+- name: Test write permissions if mounted
+  shell: "touch {{ nfs_mount_base }}/{{ item.mountpoint }}/ansible_write_test_{{ ansible_date_time.epoch }}.txt && echo OK || echo FAILED"
+  register: write_test_results
+  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
+  ignore_errors: yes
+  when: 
+    - hostvars[groups['nfs_server'][0]]['storage_disks'] is defined
+    - hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0 
+    - mount_verification.rc == 0
+    - "'No NFS mounts detected' not in mount_verification.stdout"
+
+# Отображение результатов теста записи
+- name: Display write test results
+  debug:
+    msg: "Write test for {{ item.item.mountpoint }}: {{ item.stdout | default('Test not performed') }}"
+  with_items: "{{ write_test_results.results | default([]) }}"
+  when: write_test_results is defined and write_test_results.results is defined
+
+# Очистка временных файлов
+- name: Clean up test files
+  file:
+    path: "{{ nfs_mount_base }}/{{ item.item.mountpoint }}/ansible_write_test_{{ ansible_date_time.epoch }}.txt"
+    state: absent
+  with_items: "{{ write_test_results.results | default([]) }}"
+  ignore_errors: yes
+  when: write_test_results is defined and write_test_results.results is defined and item.stdout is defined and item.stdout == "OK"

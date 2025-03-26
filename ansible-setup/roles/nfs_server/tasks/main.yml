@@ -64,6 +64,13 @@
     name: nfs-kernel-server
     enabled: yes
 
+# Подождем 5 секунд, чтобы сервер NFS полностью запустился
+- name: Wait for NFS service to be fully up
+  wait_for:
+    timeout: 5
+  delegate_to: localhost
+  run_once: true
+  
 # Проверка прав доступа к экспортируемым каталогам
 - name: Ensure proper permissions on exported directories
   file:
@@ -73,6 +80,26 @@
     group: root
   with_items: "{{ storage_disks }}"
   when: storage_disks is defined and storage_disks | length > 0
+
+# Очистка устаревших NFS хендлов
+- name: Clean stale NFS handles
+  shell: "exportfs -f"
+  ignore_errors: yes
+
+# Принудительный повторный экспорт всех директорий
+- name: Force re-export all directories
+  shell: "exportfs -ra"
+
+# Проверка доступности экспортов локально
+- name: Verify NFS exports are available
+  shell: "showmount -e {{ ansible_default_ipv4.address }} || showmount -e 127.0.0.1 || true"
+  register: local_exports
+  changed_when: false
+  ignore_errors: yes  # Добавляем игнорирование ошибок
+  
+- name: Display exports verification
+  debug:
+    msg: "Local NFS exports: {{ local_exports.stdout_lines | default(['No exports configured']) }}"
 
 # Верификация экспортов
 - name: Verify NFS exports
