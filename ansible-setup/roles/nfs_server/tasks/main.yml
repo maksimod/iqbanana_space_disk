@@ -8,6 +8,7 @@
       - nfs-kernel-server
       - ntfs-3g
       - nfs-common
+      - portmap
     state: present
   register: nfs_server_install
 
@@ -15,19 +16,50 @@
   debug:
     msg: "{{ 'SUCCESS: NFS server installed' if nfs_server_install is succeeded else 'ERROR: Failed to install NFS server' }}"
 
-# Создаем базовую директорию для хранения данных
+# Убеждаемся, что службы не замаскированы
+- name: Ensure NFS services are not masked
+  systemd:
+    name: "{{ item }}"
+    masked: no
+  with_items:
+    - nfs-kernel-server
+    - rpcbind
+  ignore_errors: yes
+
+# Перезапуск сервисов NFS
+- name: Restart base services
+  systemd:
+    name: "{{ item }}"
+    state: restarted
+    enabled: yes
+  with_items:
+    - rpcbind
+  ignore_errors: yes
+
+# Создаем базовую директорию для хранения данных с правильными правами
 - name: Create base storage directory
   file:
     path: "{{ nfs_mount_base }}"
     state: directory
-    mode: '0755'
-    owner: root
-    group: root
+    mode: '0777'
+    owner: nobody
+    group: nogroup
 
 # Проверка, что storage_disks определен и не пуст
 - name: Check if storage_disks is defined
   debug:
     msg: "Storage disks: {{ storage_disks | default([]) }}"
+  when: storage_disks is defined and storage_disks | length > 0
+
+# Создание директорий под диски с правильными правами
+- name: Create directories for disks with proper permissions
+  file:
+    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
+    state: directory
+    mode: '0777'
+    owner: nobody
+    group: nogroup
+  with_items: "{{ storage_disks }}"
   when: storage_disks is defined and storage_disks | length > 0
 
 # Настройка NFS экспортов только если есть диски для экспорта
@@ -47,16 +79,34 @@
     msg: "NFS export configuration: {{ lookup('template', 'exports.j2') }}"
   when: storage_disks is defined and storage_disks | length > 0
 
+# Добавление правил в фаервол для NFS
+- name: Add firewall rules for NFS
+  shell: |
+    iptables -F
+    iptables -I INPUT -p tcp --dport 2049 -j ACCEPT
+    iptables -I INPUT -p udp --dport 2049 -j ACCEPT
+    iptables -I INPUT -p tcp --dport 111 -j ACCEPT
+    iptables -I INPUT -p udp --dport 111 -j ACCEPT
+    iptables -I INPUT -s {{ nfs_client_ip }} -j ACCEPT
+  ignore_errors: yes
+  when: storage_disks is defined and storage_disks | length > 0
+
 # Обновляем таблицу экспортов
 - name: Update NFS exports
   shell: "exportfs -ra"
   when: storage_disks is defined and storage_disks | length > 0
+
+# Очистка устаревших NFS хендлов
+- name: Clean stale NFS handles
+  shell: "exportfs -f"
+  ignore_errors: yes
 
 # Перезапускаем NFS
 - name: Restart NFS server
   systemd:
     name: nfs-kernel-server
     state: restarted
+    daemon_reload: yes
   when: storage_disks is defined and storage_disks | length > 0
 
 - name: Ensure NFS server is enabled to start at boot
@@ -64,10 +114,10 @@
     name: nfs-kernel-server
     enabled: yes
 
-# Подождем 5 секунд, чтобы сервер NFS полностью запустился
+# Подождем 10 секунд, чтобы сервер NFS полностью запустился
 - name: Wait for NFS service to be fully up
-  wait_for:
-    timeout: 5
+  pause:
+    seconds: 10
   delegate_to: localhost
   run_once: true
   
@@ -75,16 +125,12 @@
 - name: Ensure proper permissions on exported directories
   file:
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
-    mode: '0755'
-    owner: root
-    group: root
+    mode: '0777'
+    owner: nobody
+    group: nogroup
+    recurse: yes
   with_items: "{{ storage_disks }}"
   when: storage_disks is defined and storage_disks | length > 0
-
-# Очистка устаревших NFS хендлов
-- name: Clean stale NFS handles
-  shell: "exportfs -f"
-  ignore_errors: yes
 
 # Принудительный повторный экспорт всех директорий
 - name: Force re-export all directories
@@ -95,7 +141,7 @@
   shell: "showmount -e {{ ansible_default_ipv4.address }} || showmount -e 127.0.0.1 || true"
   register: local_exports
   changed_when: false
-  ignore_errors: yes  # Добавляем игнорирование ошибок
+  ignore_errors: yes
   
 - name: Display exports verification
   debug:

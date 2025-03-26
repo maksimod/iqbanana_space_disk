@@ -3,7 +3,7 @@
 
 {% if storage_disks and storage_disks | length > 0 %}
 {% for disk in storage_disks %}
-{{ nfs_mount_base }}/{{ disk.mountpoint }} {{ nfs_client_ip }}(rw,sync,no_subtree_check,no_root_squash,insecure)
+{{ nfs_mount_base }}/{{ disk.mountpoint }} {{ nfs_client_ip }}(rw,sync,no_subtree_check,no_root_squash,insecure,fsid={{ loop.index0 }})
 {% endfor %}
 {% else %}
 # No storage disks found to export

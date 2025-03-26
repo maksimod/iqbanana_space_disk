@@ -1,6 +1,33 @@
 ---
 # Playbook для автоматического определения и монтирования несистемных дисков через NFS
 
+# Предварительная подготовка системы на всех узлах
+- name: System preparation
+  hosts: all
+  become: yes
+  gather_facts: yes
+  tasks:
+    - name: Unmask any masked services
+      systemd:
+        name: "{{ item }}"
+        masked: no
+      loop:
+        - nfs-common
+        - rpcbind
+      ignore_errors: yes
+
+    - name: Ensure essential packages are installed
+      package:
+        name: 
+          - nfs-common
+          - rpcbind
+          - portmap
+        state: present
+      register: package_install
+      retries: 3
+      delay: 5
+      until: package_install is success
+
 # Проверка подключения и установка пакетов
 - name: Initial setup and verification
   hosts: all
@@ -43,7 +70,9 @@
       file:
         path: "{{ nfs_mount_base }}"
         state: directory
-        mode: '0755'
+        mode: '0777'
+        owner: nobody
+        group: nogroup
       when: nfs_mount_base is defined
 
     - name: Include disk detection role
@@ -81,6 +110,11 @@
     - name: Display NFS server status
       debug:
         msg: "NFS server is {{ 'ready' if nfs_ready is success else 'not ready' }}"
+
+    - name: Wait 15 seconds for NFS server to fully initialize
+      pause:
+        seconds: 15
+      when: nfs_ready is success
 
 - name: Configure NFS Client
   hosts: nfs_client

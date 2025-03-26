@@ -1,10 +1,23 @@
 ---
+# Настройка и монтирование NFS клиента
+
+# Предварительная проверка и размаскирование сервисов
+- name: Unmask NFS services if masked
+  systemd:
+    name: "{{ item }}"
+    masked: no
+  with_items:
+    - nfs-common
+    - rpcbind
+  ignore_errors: yes
+
 # Установка NFS клиента
 - name: Install NFS client packages
   package:
     name: 
       - nfs-common
       - ntfs-3g
+      - portmap
     state: present
   register: nfs_client_install
   retries: 3
@@ -14,6 +27,27 @@
 - name: Display NFS client installation status
   debug:
     msg: "{{ 'SUCCESS: NFS client installed' if nfs_client_install is succeeded else 'ERROR: Failed to install NFS client' }}"
+
+# Перезапуск клиентских сервисов для гарантии работы
+- name: Restart NFS client services
+  systemd:
+    name: "{{ item }}"
+    state: restarted
+    enabled: yes
+  with_items:
+    - rpcbind
+  ignore_errors: yes
+
+# Ручной запуск nfs-common, если служба замаскирована
+- name: Start NFS common manually if service is masked
+  shell: |
+    if systemctl is-enabled nfs-common | grep -q masked; then
+      systemctl unmask nfs-common
+      systemctl restart nfs-common
+    else
+      systemctl restart nfs-common || true
+    fi
+  ignore_errors: yes
 
 # Проверка доступности NFS сервера
 - name: Check network connectivity to NFS server
@@ -36,7 +70,7 @@
   file:
     path: "{{ nfs_mount_base }}"
     state: directory
-    mode: '0755'
+    mode: '0777'
     owner: root
     group: root
 
@@ -80,19 +114,19 @@
   file:
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
     state: directory
-    mode: '0755'
+    mode: '0777'
     owner: root
     group: root
   with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
-# Монтирование NFS
-- name: Mount NFS shares with optimized parameters
+# Монтирование NFS с различными параметрами
+- name: Mount NFS shares with version 3 parameters
   mount:
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
     src: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}"
     fstype: nfs
-    opts: "rw,soft,timeo=30,retrans=3,noatime,nolock"
+    opts: "rw,soft,timeo=30,retrans=3,noatime,nolock,vers=3"
     state: mounted
   with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   register: nfs_mount_result
@@ -102,9 +136,29 @@
   ignore_errors: yes
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
-# Альтернативный метод монтирования для отладки
-- name: Manual mount if standard mount fails
-  shell: "mount -t nfs {{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }} -o rw,soft,timeo=30,retrans=3,noatime,nolock"
+# Ручное монтирование если первая попытка не удалась
+- name: Manual mount with version 3 if standard mount fails
+  shell: "mount -t nfs -o rw,soft,timeo=30,retrans=3,noatime,nolock,vers=3 {{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }}"
+  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
+  when: 
+    - hostvars[groups['nfs_server'][0]]['storage_disks'] is defined
+    - hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
+    - nfs_mount_result is failed or nfs_mount_result.failed is defined
+  ignore_errors: yes
+
+# Вторая попытка с версией 4
+- name: Second attempt with version 4 parameters
+  shell: "mount -t nfs -o rw,soft,timeo=30,retrans=3,noatime,nolock,vers=4 {{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }}"
+  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
+  when: 
+    - hostvars[groups['nfs_server'][0]]['storage_disks'] is defined
+    - hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
+    - nfs_mount_result is failed or nfs_mount_result.failed is defined
+  ignore_errors: yes
+
+# Последняя попытка с минимальными параметрами
+- name: Last attempt with minimal parameters
+  shell: "mount -t nfs {{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }}"
   with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   when: 
     - hostvars[groups['nfs_server'][0]]['storage_disks'] is defined
