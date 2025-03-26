@@ -44,6 +44,35 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+# Проверка наличия и установка необходимых зависимостей
+echo "Проверка и установка необходимых зависимостей..."
+apt-get update -qq
+
+# Проверка и установка Ansible
+if ! command -v ansible >/dev/null 2>&1; then
+    echo "Установка Ansible..."
+    apt-get install -y ansible
+fi
+
+# Проверка и установка sshpass для работы с паролями в SSH
+if ! command -v sshpass >/dev/null 2>&1; then
+    echo "Установка sshpass для поддержки соединения по SSH с паролем..."
+    apt-get install -y sshpass
+fi
+
+# Проверка и установка других необходимых пакетов
+required_packages="python3 python3-pip netcat-openbsd openssh-client openssh-server nfs-common portmap rpcbind"
+for pkg in $required_packages; do
+    if ! dpkg -l | grep -q "ii  $pkg"; then
+        echo "Установка пакета $pkg..."
+        apt-get install -y $pkg
+    fi
+done
+
+# Установка необходимых модулей Python
+echo "Установка необходимых модулей Python..."
+pip3 install paramiko jinja2 PyYAML
+
 # Очистка кэша фактов
 echo "Очистка кэша фактов..."
 rm -rf /tmp/ansible_fact_cache
@@ -109,7 +138,6 @@ done
 
 # Установка пакетов NFS
 echo "Установка необходимых пакетов NFS..."
-apt-get update -qq
 apt-get install -y nfs-common portmap rpcbind >/dev/null 2>&1
 
 # Включаем подсчет времени
