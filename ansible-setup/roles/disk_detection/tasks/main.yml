@@ -89,28 +89,45 @@
     msg: "WARNING: No storage devices found!"
   when: storage_devices is not defined or storage_devices | length == 0
 
-# Проверяем файловые системы на устройствах
-- name: Check filesystem on devices
-  shell: "blkid -s TYPE -o value {{ item }} 2>/dev/null || echo 'none'"
-  register: fs_types
+# Размонтирование всех найденных несистемных дисков перед форматированием
+- name: Unmount any mounted storage devices
+  shell: "umount {{ item }} 2>/dev/null || true"
+  with_items: "{{ storage_devices | default([]) }}"
+  ignore_errors: yes
+  when: storage_devices is defined and storage_devices | length > 0
+
+# Очистка таблицы разделов на устройствах для полного форматирования
+- name: Wipe partition tables on storage devices
+  shell: "wipefs -a {{ item }} && sgdisk -Z {{ item }} 2>/dev/null || true"
+  with_items: "{{ storage_devices | default([]) }}"
+  ignore_errors: yes
+  when: storage_devices is defined and storage_devices | length > 0
+
+# Создание новой таблицы разделов GPT
+- name: Create new GPT partition tables
+  shell: "parted -s {{ item }} mklabel gpt && parted -s {{ item }} mkpart primary 0% 100% && sleep 2"
+  with_items: "{{ storage_devices | default([]) }}"
+  ignore_errors: yes
+  when: storage_devices is defined and storage_devices | length > 0
+
+# Получение информации о созданных разделах
+- name: Get new partition info
+  shell: "lsblk -no NAME,MOUNTPOINT {{ item }} | grep -v ' /' | grep -v ' [SWAP]' | grep -v ' /boot' | awk '{print $1}' | grep -v $(basename {{ item }})$ | head -1"
+  register: new_partitions
   with_items: "{{ storage_devices | default([]) }}"
   changed_when: false
   ignore_errors: yes
   when: storage_devices is defined and storage_devices | length > 0
 
-# Форматируем только диски без файловой системы
-- name: Format disks without filesystem
-  filesystem:
-    dev: "{{ item.0 }}"
-    fstype: ext4
-    force: no
-  with_together:
-    - "{{ storage_devices | default([]) }}"
-    - "{{ fs_types.results | default([]) }}"
-  when:
-    - storage_devices is defined and storage_devices | length > 0
-    - fs_types.results is defined
-    - item.1.stdout == 'none'
+# Форматирование новых разделов в XFS (оптимально для больших файлов)
+- name: Format new partitions with XFS
+  shell: "mkfs.xfs -f /dev/$(echo {{ item.stdout }}) 2>/dev/null || true"
+  with_items: "{{ new_partitions.results | default([]) }}"
+  when: 
+    - storage_devices is defined 
+    - storage_devices | length > 0
+    - item.stdout is defined
+    - item.stdout != ""
   ignore_errors: yes
 
 # Создаем каталоги для монтирования
@@ -118,27 +135,23 @@
   file:
     path: "{{ nfs_mount_base }}/{{ item | basename }}"
     state: directory
-    mode: '0755'
-    owner: root
-    group: root
+    mode: '0777'
+    owner: nobody
+    group: nogroup
   with_items: "{{ storage_devices | default([]) }}"
   when: storage_devices is defined and storage_devices | length > 0
 
-# Монтируем устройства
-- name: Mount storage devices
-  mount:
-    path: "{{ nfs_mount_base }}/{{ item.0 | basename }}"
-    src: "{{ item.0 }}"
-    fstype: "{{ item.1.stdout if item.1.stdout != 'none' else 'ext4' }}"
-    opts: "defaults,noatime,nofail"
-    state: mounted
+# Монтирование новых разделов
+- name: Mount new partitions
+  shell: "mount /dev/$(echo {{ item.0.stdout }}) {{ nfs_mount_base }}/{{ item.1 | basename }} 2>/dev/null || true"
   with_together:
+    - "{{ new_partitions.results | default([]) }}"
     - "{{ storage_devices | default([]) }}"
-    - "{{ fs_types.results | default([]) }}"
-  when:
-    - storage_devices is defined and storage_devices | length > 0
-    - fs_types.results is defined
-  register: mount_results
+  when: 
+    - storage_devices is defined 
+    - storage_devices | length > 0
+    - item.0.stdout is defined
+    - item.0.stdout != ""
   ignore_errors: yes
 
 # Создаем storage_disks для экспорта NFS
@@ -146,12 +159,42 @@
   set_fact:
     storage_disks: []
 
-- name: Update storage_disks with mounted devices
+# Обновляем storage_disks с информацией о новых разделах
+- name: Update storage_disks with new partitions
   set_fact:
-    storage_disks: "{{ storage_disks + [{'device': item.0, 'mountpoint': item.0 | basename, 'fstype': item.1.stdout if item.1.stdout != 'none' else 'ext4'}] }}"
+    storage_disks: "{{ storage_disks + [{'device': item.1, 'partition': '/dev/' + item.0.stdout, 'mountpoint': item.1 | basename, 'fstype': 'xfs'}] }}"
   with_together:
+    - "{{ new_partitions.results | default([]) }}"
     - "{{ storage_devices | default([]) }}"
-    - "{{ fs_types.results | default([]) }}"
-  when:
-    - storage_devices is defined and storage_devices | length > 0
-    - fs_types.results is defined
+  when: 
+    - storage_devices is defined 
+    - storage_devices | length > 0
+    - item.0.stdout is defined
+    - item.0.stdout != ""
+
+# Добавление записей в fstab для автоматического монтирования при загрузке
+- name: Add mount entries to fstab
+  lineinfile:
+    path: /etc/fstab
+    regexp: "^/dev/{{ item.0.stdout }}\\s+{{ nfs_mount_base }}/{{ item.1 | basename }}\\s+"
+    line: "/dev/{{ item.0.stdout }} {{ nfs_mount_base }}/{{ item.1 | basename }} xfs defaults,noatime,nodiratime,logbufs=8,logbsize=256k,largeio,inode64,swalloc,allocsize=1m,nobarrier 0 0"
+    create: yes
+  with_together:
+    - "{{ new_partitions.results | default([]) }}"
+    - "{{ storage_devices | default([]) }}"
+  when: 
+    - storage_devices is defined 
+    - storage_devices | length > 0
+    - item.0.stdout is defined
+    - item.0.stdout != ""
+
+# Показываем итоговую информацию о смонтированных дисках
+- name: Display mounted disks information
+  shell: "df -h | grep {{ nfs_mount_base }}"
+  register: mounted_disks_info
+  ignore_errors: yes
+  changed_when: false
+
+- name: Show mounted disks
+  debug:
+    msg: "{{ mounted_disks_info.stdout_lines | default(['No disks mounted']) }}"

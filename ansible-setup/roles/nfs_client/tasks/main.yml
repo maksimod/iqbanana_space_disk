@@ -64,13 +64,17 @@
     reload: yes
   with_items:
     - { key: "sunrpc.tcp_slot_table_entries", value: "128" }
-    - { key: "net.core.rmem_default", value: "262144" }
-    - { key: "net.core.wmem_default", value: "262144" }
+    - { key: "net.core.rmem_default", value: "4194304" }
+    - { key: "net.core.wmem_default", value: "4194304" }
     - { key: "net.core.rmem_max", value: "16777216" }
     - { key: "net.core.wmem_max", value: "16777216" }
     - { key: "vm.dirty_ratio", value: "80" }
     - { key: "vm.dirty_background_ratio", value: "5" }
     - { key: "vm.dirty_expire_centisecs", value: "12000" }
+    - { key: "net.ipv4.tcp_rmem", value: "4096 87380 16777216" }
+    - { key: "net.ipv4.tcp_wmem", value: "4096 65536 16777216" }
+    - { key: "net.ipv4.tcp_low_latency", value: "1" }
+    - { key: "net.core.netdev_max_backlog", value: "2500" }
   ignore_errors: yes
 
 # Проверка доступности NFS сервера
@@ -129,12 +133,13 @@
   with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
-- name: Mount NFS shares with optimized parameters for large files
+# Монтирование NFS с ультра-оптимизированными параметрами для больших файлов
+- name: Mount NFS shares with maximized throughput parameters for large files
   mount:
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
     src: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}"
     fstype: nfs
-    opts: "rw,soft,timeo=600,retrans=3,noatime,_netdev,rsize=1048576,wsize=1048576,nconnect=16,lookupcache=positive,fsc,actimeo=600,nolock,local_lock=none,tcp,bg,nofail"
+    opts: "rw,soft,tcp,noatime,nodiratime,rsize=1048576,wsize=1048576,timeo=600,retrans=2,noresvport,_netdev,bg,nofail,nconnect=16,fsc,actimeo=600,nocto,noac,lookupcache=positive,local_lock=none"
     state: mounted
   with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   register: nfs_mount_result
@@ -142,6 +147,16 @@
   delay: "{{ nfs_mount_delay | default(10) }}"
   until: nfs_mount_result is succeeded
   ignore_errors: yes
+  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
+
+# Добавление записей в fstab для автоматического монтирования при перезагрузке
+- name: Add mount entries to fstab
+  lineinfile:
+    path: /etc/fstab
+    regexp: "^{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}\\s+"
+    line: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }} nfs rw,soft,tcp,noatime,nodiratime,rsize=1048576,wsize=1048576,timeo=600,retrans=2,noresvport,_netdev,bg,nofail,nconnect=16,fsc,actimeo=600,nocto,noac,lookupcache=positive,local_lock=none 0 0"
+    create: yes
+  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
 # Проверка успешности монтирования
@@ -239,74 +254,53 @@
   ignore_errors: yes
   when: backend_config_path is defined
 
-- name: Execute update backend config script
-  shell: |
-    cat > /tmp/update-backend-config.sh << 'EOL'
-    #!/bin/bash
-    CONFIG_FILE="/home/user/iqbanana_space_disk/backend/config/config.js"
-    MOUNTED_DISKS=$(df -h | grep "/mnt/storage/" | awk '{print $1, $6}')
-    
-    echo "Обновление конфигурации backend..."
-    TMP_CONFIG=$(mktemp)
-    
-    cat > "$TMP_CONFIG" << 'EOF'
-    // Конфигурация приложения
-    const config = {
-      // Базовые настройки
-      server: {
-        port: process.env.PORT || 6005,
-        allowedOrigins: [
-          'http://46.35.241.37:6001', 
-          'http://localhost:6001',
-          'https://iqbanana.online',
-          'http://iqbanana.online'
-        ]
-      },
+# Создание скрипта для тестирования производительности NFS
+- name: Create performance testing script
+  copy:
+    dest: /tmp/test_nfs_performance.sh
+    content: |
+      #!/bin/bash
+      echo "Running NFS performance tests..."
       
-      // Версия API
-      apiVersion: 'v1',
+      # Проверяем все примонтированные NFS шары
+      MOUNTS=$(df -h | grep nfs | awk '{print $6}')
       
-      // Пути к смонтированным дискам на веб-сервере
-      disks: {
-    EOF
-    
-    while read -r line; do
-      if [[ $line =~ /mnt/storage/([a-zA-Z0-9]+) ]]; then
-        disk_name=${BASH_REMATCH[1]}
-        disk_path="/mnt/storage/$disk_name"
-        echo "    'disk_$disk_name': '$disk_path'," >> "$TMP_CONFIG"
+      if [ -z "$MOUNTS" ]; then
+        echo "No NFS mounts found!"
+        exit 1
       fi
-    done <<< "$MOUNTED_DISKS"
-    
-    cat >> "$TMP_CONFIG" << 'EOF'
-      },
       
-      // Настройки производительности для файловых операций
-      performance: {
-        chunkSize: 8 * 1024 * 1024,
-        concurrentUploads: 4,
-        maxFileSize: 10 * 1024 * 1024 * 1024
-      }
-    };
-    
-    module.exports = config;
-    EOF
-    
-    if [ -f "$CONFIG_FILE" ]; then
-      cp "$CONFIG_FILE" "${CONFIG_FILE}.backup.$(date +%s)"
-    fi
-    
-    cp "$TMP_CONFIG" "$CONFIG_FILE"
-    chmod 644 "$CONFIG_FILE"
-    rm "$TMP_CONFIG"
-    EOL
-    
-    chmod +x /tmp/update-backend-config.sh
-    /tmp/update-backend-config.sh
-  args:
-    executable: /bin/bash
-  register: update_script_result
-  
-- name: Display update script result
+      for MOUNT in $MOUNTS; do
+        echo "Testing performance on $MOUNT"
+        
+        # Создаем тестовый файл (1 ГБ)
+        echo "Creating 1GB test file..."
+        dd if=/dev/zero of=$MOUNT/testfile bs=1M count=1024 conv=fsync 2>&1
+        
+        # Проверяем скорость чтения
+        echo "Testing read speed..."
+        dd if=$MOUNT/testfile of=/dev/null bs=1M 2>&1
+        
+        # Проверяем скорость записи
+        echo "Testing write speed..."
+        dd if=/dev/zero of=$MOUNT/testfile2 bs=1M count=1024 conv=fsync 2>&1
+        
+        # Очистка
+        rm -f $MOUNT/testfile $MOUNT/testfile2
+      done
+      
+      echo "Performance tests completed!"
+    mode: '0755'
+  ignore_errors: yes
+
+# Выполнение скрипта тестирования производительности
+- name: Execute NFS performance test
+  shell: "/tmp/test_nfs_performance.sh"
+  register: performance_test
+  ignore_errors: yes
+  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
+
+- name: Display performance test results
   debug:
-    msg: "{{ update_script_result.stdout_lines }}"
+    msg: "{{ performance_test.stdout_lines | default(['Performance test not run']) }}"
+  when: performance_test is defined

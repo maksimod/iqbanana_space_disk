@@ -1,29 +1,29 @@
-# Файл конфигурации NFS для оптимальной производительности
+# Файл конфигурации NFS для максимальной производительности с большими файлами
 # Автоматически сгенерирован Ansible {{ ansible_date_time.iso8601 }}
 
 [general]
 pipefs-directory=/var/lib/nfs/rpc_pipefs
 
 [nfsd]
-# Увеличиваем число потоков NFS сервера для большей производительности
-threads=64
+# Увеличиваем число потоков NFS сервера для экстремальной производительности
+threads=128
 # Увеличиваем размер буфера для больших файлов
-tcp-buffer-size=16777216
-udp-buffer-size=16777216
+tcp-buffer-size=33554432
+udp-buffer-size=33554432
 # Используем ядро NFSv4 для более эффективной работы
 vers3=y
 vers4=y
 vers4.0=y
 vers4.1=y
 vers4.2=y
-# Отключение проверки delegations для повышения производительности
+# Включаем делегирование для повышения производительности
 delegate=y
-# Максимальное время жизни блокировок
-lease-time=60
+# Уменьшаем время жизни блокировок для быстрой реакции
+lease-time=30
 
 [mountd]
 # Обеспечиваем достаточное количество потоков для монтирования
-threads=16
+threads=32
 cache-use-retired-count=y
 
 [statd]
@@ -34,7 +34,7 @@ outgoing-port=32766
 port=32768
 udp-port=32768
 # Количество потоков для обработки блокировок
-nlm-grace-period=10
+nlm-grace-period=5
 # Кэширование блокировок
 nlm-udp-slot-table-entries=256
 nlm-tcp-slot-table-entries=256
@@ -44,18 +44,18 @@ outgoing-port=32769
 
 # Оптимизации для больших файлов и высокой нагрузки
 [nfs]
-server-threads=64
-nfs4-grace=30
+server-threads=128
+nfs4-grace=15
 udp=n
 tcp=y
 # Асинхронные операции I/O
-max-read-delegation-lifetime=30
+max-read-delegation-lifetime=15
 # Для больших файлов
 rdma=n
 # Кэширование данных на клиенте
-cache-max-size=16777216
+cache-max-size=67108864
 # Увеличиваем ограничения памяти для буферов
-mount-reserve=262144
+mount-reserve=1048576
 
 # Настройки клиента NFS
 [client-side]

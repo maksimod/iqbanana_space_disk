@@ -10,6 +10,7 @@
       - nfs-common
       - portmap
       - nfs4-acl-tools
+      - xfsprogs
     state: present
   register: nfs_server_install
 
@@ -29,13 +30,17 @@
     - { key: "fs.nfs.nlm_tcpport", value: "32768" }
     - { key: "fs.nfs.nlm_udpport", value: "32768" }
     - { key: "sunrpc.tcp_slot_table_entries", value: "128" }
-    - { key: "net.core.rmem_default", value: "262144" }
-    - { key: "net.core.wmem_default", value: "262144" }
+    - { key: "net.core.rmem_default", value: "4194304" }
+    - { key: "net.core.wmem_default", value: "4194304" }
     - { key: "net.core.rmem_max", value: "16777216" }
     - { key: "net.core.wmem_max", value: "16777216" }
     - { key: "vm.dirty_ratio", value: "80" }
     - { key: "vm.dirty_background_ratio", value: "5" }
     - { key: "vm.dirty_expire_centisecs", value: "12000" }
+    - { key: "net.ipv4.tcp_rmem", value: "4096 87380 16777216" }
+    - { key: "net.ipv4.tcp_wmem", value: "4096 65536 16777216" }
+    - { key: "net.ipv4.tcp_low_latency", value: "1" }
+    - { key: "net.core.netdev_max_backlog", value: "2500" }
   ignore_errors: yes
 
 # Убеждаемся, что службы не замаскированы
@@ -210,6 +215,16 @@
 - name: Display exports verification
   debug:
     msg: "Current NFS exports: {{ exports_verification.stdout_lines | default(['No exports configured']) }}"
+
+# Добавление записей в fstab на сервере для автоматического монтирования локальных дисков
+- name: Update fstab with entries for local disks
+  lineinfile:
+    path: /etc/fstab
+    regexp: "^{{ item.partition }}\\s+{{ nfs_mount_base }}/{{ item.mountpoint }}\\s+"
+    line: "{{ item.partition }} {{ nfs_mount_base }}/{{ item.mountpoint }} xfs defaults,noatime,nodiratime,logbufs=8,logbsize=256k,largeio,inode64,swalloc,allocsize=1m,nobarrier 0 0"
+    create: yes
+  with_items: "{{ storage_disks }}"
+  when: storage_disks is defined and storage_disks | length > 0
 
 # Проверяем, что NFS сервер правильно слушает порты
 - name: Check NFS server ports
