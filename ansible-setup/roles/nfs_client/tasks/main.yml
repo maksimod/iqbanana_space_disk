@@ -40,15 +40,9 @@
     owner: root
     group: root
 
-# Проверка, что storage_disks определен и не пуст
-- name: Check if storage_disks is defined
-  debug:
-    msg: "WARNING: No storage_disks defined! Nothing will be mounted."
-  when: storage_disks is not defined or storage_disks | length == 0
-
-# Получение доступных экспортов
+# Проверка доступных экспортов
 - name: Show available NFS exports
-  shell: "showmount -e {{ nfs_server_ip }}"
+  shell: "showmount -e {{ nfs_server_ip }} || echo 'No exports found'"
   register: nfs_exports
   changed_when: false
   failed_when: false
@@ -69,8 +63,8 @@
     mode: '0755'
     owner: root
     group: root
-  with_items: "{{ storage_disks | default([]) }}"
-  when: storage_disks is defined and storage_disks | length > 0
+  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
+  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
 # Монтирование NFS
 - name: Mount NFS shares with optimized parameters
@@ -78,19 +72,19 @@
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
     src: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}"
     fstype: nfs
-    opts: "{{ nfs_client_mount_opts | default('rw,soft,timeo=10,retrans=2,noatime,_netdev,rsize=262144,wsize=262144,nconnect=8') }}"
+    opts: "{{ nfs_client_mount_opts | default('rw,soft,timeo=10,retrans=2,noatime') }}"
     state: mounted
-  with_items: "{{ storage_disks | default([]) }}"
+  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   register: nfs_mount_result
-  retries: "{{ nfs_mount_retries | default(3) }}"
+  retries: "{{ nfs_mount_retries | default(5) }}"
   delay: "{{ nfs_mount_delay | default(5) }}"
   until: nfs_mount_result is succeeded
   ignore_errors: yes
-  when: storage_disks is defined and storage_disks | length > 0
+  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
 # Проверка успешности монтирования
 - name: Verify NFS mounts
-  shell: "df -h | grep {{ nfs_server_ip }}"
+  shell: "df -h | grep -E '{{ nfs_server_ip }}|nfs' || echo 'No NFS mounts detected'"
   register: mount_verification
   changed_when: false
   failed_when: false
@@ -99,19 +93,24 @@
   debug:
     msg: "NFS mounts: {{ mount_verification.stdout_lines | default(['No NFS mounts detected']) }}"
 
-# Проверка прав на запись
-- name: Test write permissions
+# Проверка прав на запись (только если есть монтирования)
+- name: Test write permissions if mounted
   shell: "touch {{ nfs_mount_base }}/{{ item.mountpoint }}/ansible_write_test_{{ ansible_date_time.epoch }}.txt && echo OK || echo FAILED"
   register: write_test_results
-  with_items: "{{ storage_disks | default([]) }}"
+  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   ignore_errors: yes
-  when: storage_disks is defined and storage_disks | length > 0 and mount_verification.rc == 0
+  when: 
+    - hostvars[groups['nfs_server'][0]]['storage_disks'] is defined
+    - hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0 
+    - mount_verification.rc == 0
+    - "'No NFS mounts detected' not in mount_verification.stdout"
 
+# Фикс для устранения ошибки с undefined variable
 - name: Display write test results
   debug:
-    msg: "Write test for {{ item.item.mountpoint }}: {{ item.stdout }}"
+    msg: "Write test for {{ item.item.mountpoint }}: {{ item.stdout | default('Test not performed') }}"
   with_items: "{{ write_test_results.results | default([]) }}"
-  when: write_test_results is defined
+  when: write_test_results is defined and write_test_results.results is defined
 
 # Очистка временных файлов
 - name: Clean up test files
@@ -120,26 +119,4 @@
     state: absent
   with_items: "{{ write_test_results.results | default([]) }}"
   ignore_errors: yes
-  when: write_test_results is defined and item.stdout == "OK"
-
-# Обновление конфигурации backend
-- name: Create backend config directory if not exists
-  file:
-    path: "{{ backend_config_path | default('/home/client/iqbanana_space_disk/backend/config') }}"
-    state: directory
-    mode: '0755'
-  ignore_errors: yes
-
-- name: Generate backend config
-  template:
-    src: backend_config.js.j2
-    dest: "{{ backend_config_path | default('/home/client/iqbanana_space_disk/backend/config') }}/config.js"
-    mode: '0644'
-  register: backend_config_update
-  ignore_errors: yes
-  when: storage_disks is defined and storage_disks | length > 0
-
-- name: Display backend configuration status
-  debug:
-    msg: "{{ 'SUCCESS: Backend configuration updated' if backend_config_update is succeeded else 'WARNING: Failed to update backend configuration' }}"
-  when: backend_config_update is defined
+  when: write_test_results is defined and write_test_results.results is defined and item.stdout is defined and item.stdout == "OK"

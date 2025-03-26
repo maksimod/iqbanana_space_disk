@@ -1,5 +1,5 @@
 ---
-# Максимально упрощенный отчет без каких-либо вычислений
+# Более детальный отчет с дополнительной диагностикой
 
 # Получение информации о дисках на сервере
 - name: Get server mounted disk information
@@ -10,33 +10,81 @@
   delegate_to: "{{ groups['nfs_server'][0] }}"
   ignore_errors: yes
 
+# Получение информации о несистемных дисках на сервере
+- name: Get server disk information
+  shell: "lsblk | grep disk | grep -v {{ ansible_devices[ansible_facts['devices'] | select('search', '.*d[a-z]') | list | first] }} || echo 'No additional disks found'"
+  register: disk_info_server
+  changed_when: false
+  failed_when: false
+  delegate_to: "{{ groups['nfs_server'][0] }}"
+  ignore_errors: yes
+
 # Получение информации о смонтированных NFS на клиенте
 - name: Get client mounted disk information
-  shell: "df -h | grep -E 'nfs' || echo 'No NFS mounts on client'"
+  shell: "df -h | grep -E 'nfs|{{ groups['nfs_server'][0] }}' || echo 'No NFS mounts on client'"
   register: mount_info_client
   changed_when: false
   failed_when: false
   ignore_errors: yes
 
-# Проверка доступа к дискам
-- name: Test disk access
-  shell: "ls -la {{ nfs_mount_base }} 2>/dev/null || echo 'Cannot access mount directory'"
-  register: disk_access
+# Проверка статуса NFS сервера
+- name: Check NFS server status
+  shell: "systemctl status nfs-kernel-server || echo 'NFS server not running'"
+  register: nfs_status
+  changed_when: false
+  failed_when: false
+  delegate_to: "{{ groups['nfs_server'][0] }}"
+  ignore_errors: yes
+
+# Проверка экспортированных файловых систем
+- name: Check NFS exports
+  shell: "exportfs -v || echo 'No NFS exports'"
+  register: nfs_exports
+  changed_when: false
+  failed_when: false
+  delegate_to: "{{ groups['nfs_server'][0] }}"
+  ignore_errors: yes
+
+# Проверка доступных экспортов с клиента
+- name: Check NFS mounts available from client
+  shell: "showmount -e {{ hostvars[groups['nfs_server'][0]]['ansible_default_ipv4']['address'] }} || echo 'Cannot get NFS exports'"
+  register: client_showmount
   changed_when: false
   failed_when: false
   ignore_errors: yes
 
-# Создаем очень простой отчет без вычислений
-- name: Create basic report content
+# Создаем подробный отчет
+- name: Create detailed report content
   set_fact:
     report_content: |
       =====================================================
       NFS MOUNTING OPERATION REPORT
       =====================================================
       
+      SERVER INFORMATION:
+      -----------------------------------------------------
+      NFS Service Status:
+      {% if nfs_status.stdout_lines is defined and nfs_status.stdout_lines | length > 0 %}
+      {% for line in nfs_status.stdout_lines | select('search', 'Active') %}
+      {{ line }}
+      {% endfor %}
+      {% else %}
+      Status information not available
+      {% endif %}
+      
+      SERVER DISKS:
+      -----------------------------------------------------
+      {% if disk_info_server.stdout_lines is defined and disk_info_server.stdout_lines | length > 0 and disk_info_server.stdout_lines[0] != 'No additional disks found' %}
+      {% for line in disk_info_server.stdout_lines %}
+      {{ line }}
+      {% endfor %}
+      {% else %}
+      No additional disks detected on server
+      {% endif %}
+      
       SERVER MOUNTED DISKS:
       -----------------------------------------------------
-      {% if mount_info_server.stdout_lines is defined and mount_info_server.stdout_lines | length > 0 %}
+      {% if mount_info_server.stdout_lines is defined and mount_info_server.stdout_lines | length > 0 and mount_info_server.stdout_lines[0] != 'No mounted disks on server' %}
       {% for line in mount_info_server.stdout_lines %}
       {{ line }}
       {% endfor %}
@@ -44,9 +92,29 @@
       No mounted disks on server
       {% endif %}
       
+      NFS EXPORTS:
+      -----------------------------------------------------
+      {% if nfs_exports.stdout_lines is defined and nfs_exports.stdout_lines | length > 0 and nfs_exports.stdout_lines[0] != 'No NFS exports' %}
+      {% for line in nfs_exports.stdout_lines %}
+      {{ line }}
+      {% endfor %}
+      {% else %}
+      No NFS exports configured
+      {% endif %}
+      
+      CLIENT VISIBLE NFS EXPORTS:
+      -----------------------------------------------------
+      {% if client_showmount.stdout_lines is defined and client_showmount.stdout_lines | length > 0 and client_showmount.stdout_lines[0] != 'Cannot get NFS exports' %}
+      {% for line in client_showmount.stdout_lines %}
+      {{ line }}
+      {% endfor %}
+      {% else %}
+      No NFS exports visible from client
+      {% endif %}
+      
       CLIENT MOUNTED NFS SHARES:
       -----------------------------------------------------
-      {% if mount_info_client.stdout_lines is defined and mount_info_client.stdout_lines | length > 0 %}
+      {% if mount_info_client.stdout_lines is defined and mount_info_client.stdout_lines | length > 0 and mount_info_client.stdout_lines[0] != 'No NFS mounts on client' %}
       {% for line in mount_info_client.stdout_lines %}
       {{ line }}
       {% endfor %}
@@ -54,6 +122,23 @@
       No NFS mounts on client
       {% endif %}
       
+      =====================================================
+      DIAGNOSIS:
+      {% if mount_info_server.stdout_lines is defined and mount_info_server.stdout_lines | length > 0 and mount_info_server.stdout_lines[0] == 'No mounted disks on server' %}
+      ISSUE: No disks mounted on server
+      SOLUTION: Check disk detection and system disk identification logic
+      {% elif nfs_exports.stdout_lines is defined and nfs_exports.stdout_lines | length > 0 and nfs_exports.stdout_lines[0] == 'No NFS exports' %}
+      ISSUE: No NFS exports configured
+      SOLUTION: Check NFS server configuration
+      {% elif client_showmount.stdout_lines is defined and client_showmount.stdout_lines | length > 0 and client_showmount.stdout_lines[0] == 'Cannot get NFS exports' %}
+      ISSUE: Client cannot see NFS exports
+      SOLUTION: Check NFS service and firewall settings
+      {% elif mount_info_client.stdout_lines is defined and mount_info_client.stdout_lines | length > 0 and mount_info_client.stdout_lines[0] == 'No NFS mounts on client' %}
+      ISSUE: Client cannot mount NFS exports
+      SOLUTION: Check mount options and NFS client settings
+      {% else %}
+      No issues detected
+      {% endif %}
       =====================================================
       END OF REPORT
       =====================================================

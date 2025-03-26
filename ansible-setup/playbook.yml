@@ -49,6 +49,12 @@
     - name: Include disk detection role
       include_role:
         name: disk_detection
+      
+    - name: Fail if no storage devices found
+      fail:
+        msg: "No storage devices found to export! Check if there are any non-system disks available."
+      when: storage_devices is not defined or storage_devices | length == 0
+      ignore_errors: yes
 
     - name: Include NFS server role
       include_role:
@@ -65,8 +71,8 @@
         port: 2049
         timeout: "{{ nfs_mount_timeout | default(60) }}"
       register: nfs_ready
-      retries: 3
-      delay: 5
+      retries: 5
+      delay: 10
       until: nfs_ready is success
       ignore_errors: yes
 
@@ -88,10 +94,11 @@
       set_fact:
         storage_disks: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
         cacheable: yes
-
+      
     - name: Include NFS client role
       include_role:
         name: nfs_client
+      when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
 - name: Verify NFS Setup and Generate Report
   hosts: nfs_client

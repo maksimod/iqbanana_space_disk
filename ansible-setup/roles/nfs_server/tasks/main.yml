@@ -21,14 +21,14 @@
     path: "{{ nfs_mount_base }}"
     state: directory
     mode: '0755'
-    owner: nobody
-    group: nogroup
+    owner: root
+    group: root
 
 # Проверка, что storage_disks определен и не пуст
 - name: Check if storage_disks is defined
   debug:
-    msg: "WARNING: No storage_disks defined! Nothing will be exported."
-  when: storage_disks is not defined or storage_disks | length == 0
+    msg: "Storage disks: {{ storage_disks | default([]) }}"
+  when: storage_disks is defined and storage_disks | length > 0
 
 # Настройка NFS экспортов только если есть диски для экспорта
 - name: Configure NFS exports
@@ -41,27 +41,38 @@
   register: nfs_exports_config
   when: storage_disks is defined and storage_disks | length > 0
 
-- name: Display NFS exports configuration status
+# Диагностика экспортов
+- name: Display exports configuration
   debug:
-    msg: "{{ 'SUCCESS: NFS exports configured' if nfs_exports_config is succeeded else 'WARNING: NFS exports not configured' }}"
-  when: nfs_exports_config is defined
+    msg: "NFS export configuration: {{ lookup('template', 'exports.j2') }}"
+  when: storage_disks is defined and storage_disks | length > 0
 
-# Обновляем таблицу экспортов только при изменениях
+# Обновляем таблицу экспортов
 - name: Update NFS exports
   shell: "exportfs -ra"
-  when: nfs_exports_config is defined and nfs_exports_config is changed
+  when: storage_disks is defined and storage_disks | length > 0
 
-# Перезапускаем NFS только если нужно
+# Перезапускаем NFS
 - name: Restart NFS server
   systemd:
     name: nfs-kernel-server
     state: restarted
-  when: nfs_exports_config is defined and (nfs_exports_config is changed or nfs_server_install is changed)
+  when: storage_disks is defined and storage_disks | length > 0
 
 - name: Ensure NFS server is enabled to start at boot
   systemd:
     name: nfs-kernel-server
     enabled: yes
+
+# Проверка прав доступа к экспортируемым каталогам
+- name: Ensure proper permissions on exported directories
+  file:
+    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
+    mode: '0755'
+    owner: root
+    group: root
+  with_items: "{{ storage_disks }}"
+  when: storage_disks is defined and storage_disks | length > 0
 
 # Верификация экспортов
 - name: Verify NFS exports
