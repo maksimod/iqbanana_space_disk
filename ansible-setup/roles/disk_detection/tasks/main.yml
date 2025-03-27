@@ -123,7 +123,7 @@
 
 # Получение информации о созданных разделах
 - name: Get new partition info
-  shell: "lsblk -no NAME,MOUNTPOINT {{ item }} | grep -v ' /' | grep -v ' [SWAP]' | grep -v ' /boot' | awk '{print $1}' | grep -v $(basename {{ item }})$ | head -1"
+  shell: "lsblk -no NAME,MOUNTPOINT {{ item }} | grep -v ' /' | grep -v ' [SWAP]' | grep -v ' /boot' | grep -v $(basename {{ item }})$ | awk '{print $1}' | sed 's/[^a-zA-Z0-9]//g' | head -1"
   register: new_partitions
   with_items: "{{ storage_devices | default([]) }}"
   changed_when: false
@@ -152,9 +152,8 @@
   with_items: "{{ storage_devices | default([]) }}"
   when: storage_devices is defined and storage_devices | length > 0
 
-# Монтирование новых разделов
 - name: Mount new partitions
-  shell: "mount /dev/$(echo {{ item.0.stdout }}) {{ nfs_mount_base }}/{{ item.1 | basename }} 2>/dev/null || true"
+  shell: "mkdir -p {{ nfs_mount_base }}/{{ item.1 | basename }} && mount /dev/{{ item.0.stdout }} {{ nfs_mount_base }}/{{ item.1 | basename }} && echo 'Mounted successfully'"
   with_together:
     - "{{ new_partitions.results | default([]) }}"
     - "{{ storage_devices | default([]) }}"
@@ -163,7 +162,22 @@
     - storage_devices | length > 0
     - item.0.stdout is defined
     - item.0.stdout != ""
+  register: mount_result
   ignore_errors: yes
+
+# Добавим проверку результата монтирования
+- name: Display mount results
+  debug:
+    msg: "Монтирование {{ item.item.1 | basename }}: {{ 'Успешно' if item.rc == 0 else 'Не удалось: ' + item.stderr }}"
+  with_items: "{{ mount_result.results | default([]) }}"
+  when: mount_result is defined and mount_result.results is defined
+
+# Добавим проверку результата монтирования
+- name: Verify mount results
+  debug:
+    msg: "Mounted {{ item.item.1 | basename }} as {{ item.item.0.stdout }}: {{ item.changed }}"
+  with_items: "{{ mount_result.results | default([]) }}"
+  when: mount_result is defined
 
 # Создаем storage_disks для экспорта NFS
 - name: Initialize storage_disks variable
