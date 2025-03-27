@@ -1,6 +1,17 @@
 ---
 # Улучшенный скрипт для надежного определения и монтирования несистемных разделов
 
+# Установка необходимых пакетов
+- name: Install necessary packages for disk management
+  package:
+    name:
+      - parted
+      - gdisk
+      - xfsprogs
+      - util-linux
+    state: present
+  ignore_errors: yes
+
 # Получаем информацию о системе
 - name: Gather facts
   setup:
@@ -163,22 +174,6 @@
 - name: Update storage_disks with new partitions
   set_fact:
     storage_disks: "{{ storage_disks + [{'device': item.1, 'partition': '/dev/' + item.0.stdout, 'mountpoint': item.1 | basename, 'fstype': 'xfs'}] }}"
-  with_together:
-    - "{{ new_partitions.results | default([]) }}"
-    - "{{ storage_devices | default([]) }}"
-  when: 
-    - storage_devices is defined 
-    - storage_devices | length > 0
-    - item.0.stdout is defined
-    - item.0.stdout != ""
-
-# Добавление записей в fstab для автоматического монтирования при загрузке
-- name: Add mount entries to fstab
-  lineinfile:
-    path: /etc/fstab
-    regexp: "^/dev/{{ item.0.stdout }}\\s+{{ nfs_mount_base }}/{{ item.1 | basename }}\\s+"
-    line: "/dev/{{ item.0.stdout }} {{ nfs_mount_base }}/{{ item.1 | basename }} xfs defaults,noatime,nodiratime,logbufs=8,logbsize=256k,largeio,inode64,swalloc,allocsize=1m,nobarrier 0 0"
-    create: yes
   with_together:
     - "{{ new_partitions.results | default([]) }}"
     - "{{ storage_devices | default([]) }}"

@@ -134,7 +134,7 @@
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
 # Монтирование NFS с ультра-оптимизированными параметрами для больших файлов
-- name: Mount NFS shares with maximized throughput parameters for large files
+- name: Mount NFS shares with optimized parameters for large files
   mount:
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
     src: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}"
@@ -147,16 +147,6 @@
   delay: "{{ nfs_mount_delay | default(10) }}"
   until: nfs_mount_result is succeeded
   ignore_errors: yes
-  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
-
-# Добавление записей в fstab для автоматического монтирования при перезагрузке
-- name: Add mount entries to fstab
-  lineinfile:
-    path: /etc/fstab
-    regexp: "^{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}\\s+"
-    line: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }} nfs rw,soft,tcp,noatime,nodiratime,rsize=1048576,wsize=1048576,timeo=600,retrans=2,noresvport,_netdev,bg,nofail,nconnect=16,fsc,actimeo=600,nocto,noac,lookupcache=positive,local_lock=none 0 0"
-    create: yes
-  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
 # Проверка успешности монтирования
@@ -290,17 +280,3 @@
       done
       
       echo "Performance tests completed!"
-    mode: '0755'
-  ignore_errors: yes
-
-# Выполнение скрипта тестирования производительности
-- name: Execute NFS performance test
-  shell: "/tmp/test_nfs_performance.sh"
-  register: performance_test
-  ignore_errors: yes
-  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
-
-- name: Display performance test results
-  debug:
-    msg: "{{ performance_test.stdout_lines | default(['Performance test not run']) }}"
-  when: performance_test is defined

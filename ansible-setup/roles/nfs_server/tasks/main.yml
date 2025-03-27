@@ -216,16 +216,6 @@
   debug:
     msg: "Current NFS exports: {{ exports_verification.stdout_lines | default(['No exports configured']) }}"
 
-# Добавление записей в fstab на сервере для автоматического монтирования локальных дисков
-- name: Update fstab with entries for local disks
-  lineinfile:
-    path: /etc/fstab
-    regexp: "^{{ item.partition }}\\s+{{ nfs_mount_base }}/{{ item.mountpoint }}\\s+"
-    line: "{{ item.partition }} {{ nfs_mount_base }}/{{ item.mountpoint }} xfs defaults,noatime,nodiratime,logbufs=8,logbsize=256k,largeio,inode64,swalloc,allocsize=1m,nobarrier 0 0"
-    create: yes
-  with_items: "{{ storage_disks }}"
-  when: storage_disks is defined and storage_disks | length > 0
-
 # Проверяем, что NFS сервер правильно слушает порты
 - name: Check NFS server ports
   shell: "rpcinfo -p | grep -E 'nfs|mountd'"
