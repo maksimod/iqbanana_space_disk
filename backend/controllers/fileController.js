@@ -1,18 +1,52 @@
 const fs = require('fs');
+const fsPromises = fs.promises;
 const path = require('path');
 const { exec } = require('child_process');
+const util = require('util');
 const archiver = require('archiver');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 
+const execPromise = util.promisify(exec);
+
+/**
+ * Middleware для проверки доступности диска перед выполнением операций
+ */
+const validateDiskAccess = (req, res, next) => {
+  const { disk } = req.params;
+  
+  if (!config.disks[disk]) {
+    logger.warn(`Попытка доступа к несуществующему диску: ${disk}`);
+    return res.status(404).json({ error: 'Диск не найден' });
+  }
+  
+  // Проверяем статус монтирования из глобального состояния
+  if (!global.mountedDisks[disk]) {
+    logger.error(`Попытка доступа к несмонтированному диску: ${disk}`);
+    return res.status(503).json({ 
+      error: 'Диск не смонтирован или недоступен', 
+      status: 'offline'
+    });
+  }
+  
+  next();
+};
+
 /**
  * Получение списка файлов в директории
  */
-// Найдите функцию getFiles и измените этот фрагмент кода:
-
 const getFiles = (req, res, next) => {
   const { disk } = req.params;
   const folderPath = req.query.path || '';
+  
+  // Проверка доступности диска сначала
+  if (!global.mountedDisks[disk]) {
+    logger.error(`Попытка получения файлов с несмонтированного диска: ${disk}`);
+    return res.status(503).json({ 
+      error: 'Диск не смонтирован или недоступен', 
+      status: 'offline'
+    });
+  }
   
   if (!config.disks[disk]) {
     logger.warn(`Попытка доступа к несуществующему диску: ${disk}`);
@@ -22,11 +56,22 @@ const getFiles = (req, res, next) => {
   const fullPath = path.join(config.disks[disk], folderPath);
   logger.info(`Запрос списка файлов: ${disk}:${folderPath} (полный путь: ${fullPath})`);
   
-  // Проверяем существование и доступность директории
+  // Дополнительная проверка доступа к директории
   fs.access(fullPath, fs.constants.F_OK | fs.constants.R_OK, (err) => {
     if (err) {
       logger.error(`Ошибка доступа к директории: ${fullPath}`, err);
-      return res.status(404).json({ error: 'Директория не найдена или нет прав на чтение' });
+      
+      // Если директория недоступна, проверяем состояние диска
+      execPromise(`df "${config.disks[disk]}" | grep "${config.disks[disk]}"`)
+        .catch(() => {
+          // Если произошла ошибка при проверке df, помечаем диск как недоступный
+          global.mountedDisks[disk] = false;
+        });
+      
+      return res.status(404).json({ 
+        error: 'Директория не найдена или нет прав на чтение',
+        path: folderPath
+      });
     }
     
     // Получаем список файлов

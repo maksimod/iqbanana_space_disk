@@ -1,23 +1,24 @@
 const { exec } = require('child_process');
 const util = require('util');
+const fs = require('fs');
+const path = require('path');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 
 const execPromise = util.promisify(exec);
+const fsPromises = fs.promises;
 
 /**
  * Получение списка дисков с информацией о пространстве
  */
-// Найдите функцию getFiles и измените этот фрагмент кода:
-
 const getDisks = async (req, res, next) => {
   try {
     logger.info('Запрос на получение списка дисков');
     
     const diskPromises = Object.entries(config.disks).map(async ([name, mountPoint]) => {
       try {
-        // Проверяем, смонтирован ли диск
-        const isMounted = await checkIfMounted(mountPoint);
+        // Используем глобальное состояние смонтированности дисков
+        const isMounted = global.mountedDisks[name] === true;
         
         if (!isMounted) {
           logger.warn(`Диск ${name} (${mountPoint}) не смонтирован или недоступен`);
@@ -27,7 +28,8 @@ const getDisks = async (req, res, next) => {
             error: 'Диск не смонтирован или недоступен',
             total: 0,
             free: 0,
-            used: 0
+            used: 0,
+            status: 'offline'
           };
         }
 
@@ -43,7 +45,8 @@ const getDisks = async (req, res, next) => {
             error: 'Не удалось получить информацию о диске',
             total: 0,
             free: 0,
-            used: 0
+            used: 0,
+            status: 'error'
           };
         }
 
@@ -69,22 +72,66 @@ const getDisks = async (req, res, next) => {
         logger.info(`Диск ${name} - фактический размер файлов: ${actualUsedKB}KB`);
         logger.info(`Диск ${name} - итого: total=${formatBytes(total)}, used=${formatBytes(used)}, free=${formatBytes(free)}`);
         
+        // Дополнительная проверка целостности
+        const testFile = path.join(mountPoint, `.disk_verify_${Date.now()}.tmp`);
+        const testContent = `Verification at ${new Date().toISOString()}`;
+        
+        try {
+          // Проверяем запись/чтение
+          await fsPromises.writeFile(testFile, testContent);
+          const readContent = await fsPromises.readFile(testFile, 'utf8');
+          await fsPromises.unlink(testFile);
+          
+          if (readContent !== testContent) {
+            logger.error(`Ошибка целостности диска ${name}: данные не совпадают`);
+            return {
+              name,
+              mountPoint,
+              error: 'Ошибка целостности диска',
+              total,
+              free,
+              used,
+              status: 'error'
+            };
+          }
+        } catch (ioError) {
+          logger.error(`Ошибка доступа к диску ${name} при проверке целостности`, ioError);
+          // Если произошла ошибка при проверке, отмечаем диск как недоступный
+          global.mountedDisks[name] = false;
+          
+          return {
+            name,
+            mountPoint,
+            error: 'Ошибка доступа к диску при проверке целостности',
+            total,
+            free,
+            used,
+            status: 'error'
+          };
+        }
+        
         return {
           name,
           mountPoint,
           total,
-          free: Math.max(0, total - used), // Вычисляем свободное место как total - used
-          used
+          free: Math.max(0, total - used),
+          used,
+          status: 'online'
         };
       } catch (error) {
         logger.error(`Ошибка при получении информации о диске ${name} (${mountPoint})`, error);
+        
+        // Отмечаем диск как недоступный при ошибке
+        global.mountedDisks[name] = false;
+        
         return {
           name,
           mountPoint,
           error: 'Не удалось получить информацию о диске: ' + error.message,
           total: 0,
           free: 0,
-          used: 0
+          used: 0,
+          status: 'error'
         };
       }
     });
@@ -112,39 +159,133 @@ function formatBytes(bytes, decimals = 2) {
 }
 
 /**
- * Проверка монтирования диска
+ * Проверка доступности диска - новый метод для внешнего API
  */
-async function checkIfMounted(mountPoint) {
+const checkDiskStatus = async (req, res, next) => {
   try {
-    const { stdout } = await execPromise(`df "${mountPoint}" | grep "${mountPoint}"`);
-    return !!stdout.trim();
+    const { disk } = req.params;
+    
+    if (!config.disks[disk]) {
+      return res.status(404).json({ error: 'Диск не найден' });
+    }
+    
+    const mountPoint = config.disks[disk];
+    const isMounted = global.mountedDisks[disk] === true;
+    
+    if (!isMounted) {
+      return res.json({
+        name: disk,
+        status: 'offline',
+        message: 'Диск не смонтирован или недоступен'
+      });
+    }
+    
+    // Дополнительная проверка доступности
+    const testFile = path.join(mountPoint, `.disk_check_${Date.now()}.tmp`);
+    const testContent = `Check at ${new Date().toISOString()}`;
+    
+    try {
+      await fsPromises.writeFile(testFile, testContent);
+      const readContent = await fsPromises.readFile(testFile, 'utf8');
+      await fsPromises.unlink(testFile);
+      
+      if (readContent !== testContent) {
+        logger.error(`Проверка диска ${disk}: данные не совпадают`);
+        return res.json({
+          name: disk,
+          status: 'error',
+          message: 'Ошибка целостности данных'
+        });
+      }
+      
+      return res.json({
+        name: disk,
+        status: 'online',
+        message: 'Диск доступен и работает корректно'
+      });
+    } catch (error) {
+      logger.error(`Ошибка при проверке диска ${disk}`, error);
+      
+      // Отмечаем диск как недоступный
+      global.mountedDisks[disk] = false;
+      
+      return res.json({
+        name: disk,
+        status: 'error',
+        message: 'Ошибка при проверке доступности диска'
+      });
+    }
   } catch (error) {
-    return false;
+    next(error);
   }
-}
+};
 
 /**
- * Преобразование человекочитаемого размера в байты
+ * Принудительное обновление статуса всех дисков
  */
-function convertToBytes(sizeStr) {
-  if (!sizeStr || typeof sizeStr !== 'string') return 0;
-  
-  // Находим число и единицу измерения (K, M, G, T)
-  const match = sizeStr.match(/^([\d.]+)([KMGT])?/i);
-  if (!match) return 0;
-  
-  const [, size, unit] = match;
-  const numSize = parseFloat(size); // Используем parseFloat вместо parseInt
-  
-  switch (unit && unit.toUpperCase()) {
-    case 'T': return numSize * 1024 * 1024 * 1024 * 1024;
-    case 'G': return numSize * 1024 * 1024 * 1024;
-    case 'M': return numSize * 1024 * 1024;
-    case 'K': return numSize * 1024;
-    default: return numSize;
+const refreshDisksStatus = async (req, res, next) => {
+  try {
+    logger.info('Запрос на обновление статуса всех дисков');
+    
+    const results = {};
+    
+    for (const [name, mountPoint] of Object.entries(config.disks)) {
+      try {
+        // Проверка через df
+        const dfCheck = await execPromise(`df "${mountPoint}" | grep "${mountPoint}"`)
+          .then(() => true)
+          .catch(() => false);
+        
+        // Проверка через findmnt
+        const findmntCheck = await execPromise(`findmnt -n "${mountPoint}"`)
+          .then(({stdout}) => !!stdout.trim())
+          .catch(() => false);
+        
+        // Проверка записи/чтения
+        let ioCheck = false;
+        if (dfCheck && findmntCheck) {
+          const testFile = path.join(mountPoint, `.refresh_${Date.now()}.tmp`);
+          const testContent = `Refresh check at ${new Date().toISOString()}`;
+          
+          try {
+            await fsPromises.writeFile(testFile, testContent);
+            const readContent = await fsPromises.readFile(testFile, 'utf8');
+            await fsPromises.unlink(testFile);
+            ioCheck = (readContent === testContent);
+          } catch (e) {
+            ioCheck = false;
+          }
+        }
+        
+        // Диск считается доступным только если все три проверки пройдены
+        const isMounted = dfCheck && findmntCheck && ioCheck;
+        
+        // Обновляем глобальное состояние
+        global.mountedDisks[name] = isMounted;
+        
+        results[name] = {
+          status: isMounted ? 'online' : 'offline',
+          checks: { dfCheck, findmntCheck, ioCheck }
+        };
+      } catch (error) {
+        logger.error(`Ошибка при обновлении статуса диска ${name}`, error);
+        global.mountedDisks[name] = false;
+        results[name] = { status: 'error', error: error.message };
+      }
+    }
+    
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      disks: results
+    });
+  } catch (error) {
+    next(error);
   }
-}
+};
 
 module.exports = {
-  getDisks
+  getDisks,
+  checkDiskStatus,
+  refreshDisksStatus
 };
