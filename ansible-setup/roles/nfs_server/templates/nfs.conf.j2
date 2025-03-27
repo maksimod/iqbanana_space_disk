@@ -1,15 +1,15 @@
-# Файл конфигурации NFS для максимальной производительности с большими файлами
+# Файл конфигурации NFS для оптимальной производительности
 # Автоматически сгенерирован Ansible {{ ansible_date_time.iso8601 }}
 
 [general]
 pipefs-directory=/var/lib/nfs/rpc_pipefs
 
 [nfsd]
-# Увеличиваем число потоков NFS сервера для экстремальной производительности
-threads=128
-# Увеличиваем размер буфера для больших файлов
-tcp-buffer-size=33554432
-udp-buffer-size=33554432
+# Потоки NFS сервера оптимизированы для системы с 1 ядром
+threads=8
+# Оптимальные размеры буфера для 1GB RAM
+tcp-buffer-size=8388608
+udp-buffer-size=8388608
 # Используем ядро NFSv4 для более эффективной работы
 vers3=y
 vers4=y
@@ -18,12 +18,12 @@ vers4.1=y
 vers4.2=y
 # Включаем делегирование для повышения производительности
 delegate=y
-# Уменьшаем время жизни блокировок для быстрой реакции
-lease-time=30
+# Оптимальное время жизни блокировок
+lease-time=90
 
 [mountd]
 # Обеспечиваем достаточное количество потоков для монтирования
-threads=32
+threads=4
 cache-use-retired-count=y
 
 [statd]
@@ -33,29 +33,23 @@ outgoing-port=32766
 [lockd]
 port=32768
 udp-port=32768
-# Количество потоков для обработки блокировок
-nlm-grace-period=5
-# Кэширование блокировок
-nlm-udp-slot-table-entries=256
-nlm-tcp-slot-table-entries=256
+# Оптимизировано для 1 ядра
+nlm-grace-period=30
+# Кэширование блокировок - оптимизировано для 1GB RAM
+nlm-udp-slot-table-entries=64
+nlm-tcp-slot-table-entries=64
 
 [sm-notify]
 outgoing-port=32769
 
-# Оптимизации для больших файлов и высокой нагрузки
+# Оптимизации для больших файлов и системы с ограниченными ресурсами
 [nfs]
-server-threads=128
-nfs4-grace=15
+server-threads=8
+nfs4-grace=30
 udp=n
 tcp=y
-# Асинхронные операции I/O
-max-read-delegation-lifetime=15
-# Для больших файлов
-rdma=n
-# Кэширование данных на клиенте
-cache-max-size=67108864
-# Увеличиваем ограничения памяти для буферов
-mount-reserve=1048576
+# Оптимальный размер кэша для 1GB RAM
+cache-max-size=33554432
 
 # Настройки клиента NFS
 [client-side]

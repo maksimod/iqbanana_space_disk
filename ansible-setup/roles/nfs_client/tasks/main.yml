@@ -134,6 +134,7 @@
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
 # Монтирование NFS с ультра-оптимизированными параметрами для больших файлов
+# Монтирование NFS с ультра-оптимизированными параметрами для больших файлов
 - name: Mount NFS shares with optimized parameters for large files
   mount:
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
@@ -147,6 +148,18 @@
   delay: "{{ nfs_mount_delay | default(10) }}"
   until: nfs_mount_result is succeeded
   ignore_errors: yes
+  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
+
+# НОВЫЙ БЛОК: Добавляем записи в fstab для автоматического монтирования при загрузке
+- name: Configure fstab for persistent NFS mounts with safe options
+  mount:
+    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
+    src: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}"
+    fstype: nfs
+    opts: "rw,soft,tcp,noatime,rsize=1048576,wsize=1048576,timeo=600,retrans=2,noresvport,nofail,bg,nconnect=8,fsc,actimeo=600,nocto"
+    state: present
+    backup: yes
+  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
 # Проверка успешности монтирования
