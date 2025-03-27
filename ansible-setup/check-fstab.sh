@@ -2,7 +2,7 @@
 
 # Проверка fstab на сервере
 echo "========== Проверка fstab на сервере =========="
-ssh root@192.168.0.108 "cat /etc/fstab | grep -v '^#'"
+ssh root@192.168.0.102 "cat /etc/fstab | grep -v '^#'"
 
 echo 
 echo "========== Проверка fstab на клиенте =========="
