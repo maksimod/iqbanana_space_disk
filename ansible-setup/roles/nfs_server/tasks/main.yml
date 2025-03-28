@@ -11,6 +11,7 @@
       - portmap
       - nfs4-acl-tools
       - xfsprogs
+      - uuid-runtime
     state: present
   register: nfs_server_install
 
@@ -37,6 +38,7 @@
     - { key: "vm.dirty_ratio", value: "80" }
     - { key: "vm.dirty_background_ratio", value: "5" }
     - { key: "vm.dirty_expire_centisecs", value: "12000" }
+    - { key: "net.ipv4.tcp_rmem", value: "4096 87380 16777216" }
     - { key: "net.ipv4.tcp_rmem", value: "4096 87380 16777216" }
     - { key: "net.ipv4.tcp_wmem", value: "4096 65536 16777216" }
     - { key: "net.ipv4.tcp_low_latency", value: "1" }
@@ -86,6 +88,108 @@
     mode: '0777'
     owner: nobody
     group: nogroup
+  with_items: "{{ storage_disks }}"
+  when: storage_disks is defined and storage_disks | length > 0
+
+# Создаем скрипт для монтирования дисков по UUID
+- name: Create script for mounting disks by UUID
+  copy:
+    dest: /usr/local/bin/mount-storage-disks.sh
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # Скрипт для монтирования дисков по UUID
+      BASE_DIR="{{ nfs_mount_base }}"
+      
+      # Функция для монтирования диска по UUID
+      mount_by_uuid() {
+        local uuid=$1
+        local mount_point=$2
+        
+        echo "Проверка диска с UUID: $uuid для монтирования в $mount_point"
+        
+        # Проверяем, существует ли UUID в системе
+        if blkid | grep -q "$uuid"; then
+          # Проверяем, смонтирован ли уже диск
+          if ! mountpoint -q "$mount_point"; then
+            echo "Монтирование $mount_point используя UUID $uuid"
+            mount -U "$uuid" "$mount_point"
+            
+            if [ $? -eq 0 ]; then
+              echo "Успешно смонтирован диск с UUID $uuid в $mount_point"
+              # Устанавливаем права
+              chmod 777 "$mount_point"
+              chown nobody:nogroup "$mount_point"
+              return 0
+            else
+              echo "Ошибка монтирования диска с UUID $uuid"
+              return 1
+            fi
+          else
+            echo "Точка монтирования $mount_point уже смонтирована"
+            return 0
+          fi
+        else
+          echo "UUID $uuid не найден в системе"
+          return 1
+        fi
+      }
+      
+      # Монтирование известных дисков по UUID
+      {% for disk in storage_disks %}
+      echo "Обработка диска {{ disk.mountpoint }}"
+      mkdir -p "{{ nfs_mount_base }}/{{ disk.mountpoint }}"
+      mount_by_uuid "{{ disk.uuid }}" "{{ nfs_mount_base }}/{{ disk.mountpoint }}"
+      {% endfor %}
+      
+      # Проверка результатов монтирования
+      echo "Статус монтирования дисков хранения:"
+      df -h | grep "{{ nfs_mount_base }}"
+      
+      exit 0
+  when: storage_disks is defined and storage_disks | length > 0
+
+# Создаем systemd сервис для автоматического монтирования
+- name: Create systemd service for auto-mounting disks by UUID
+  copy:
+    dest: /etc/systemd/system/storage-automount.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Auto-mount Storage Disks by UUID
+      After=local-fs.target
+      
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/mount-storage-disks.sh
+      RemainAfterExit=yes
+      
+      [Install]
+      WantedBy=multi-user.target
+  when: storage_disks is defined and storage_disks | length > 0
+
+# Активируем и запускаем сервис
+- name: Enable and start storage auto-mount service
+  systemd:
+    name: storage-automount
+    state: started
+    enabled: yes
+    daemon_reload: yes
+  ignore_errors: yes
+  when: storage_disks is defined and storage_disks | length > 0
+
+# Очищаем все записи в fstab, связанные с нашими дисками
+- name: Clean up old fstab entries
+  shell: "grep -v '{{ nfs_mount_base }}' /etc/fstab > /tmp/fstab.new && cp /tmp/fstab.new /etc/fstab"
+  ignore_errors: yes
+  when: storage_disks is defined and storage_disks | length > 0
+
+# Добавляем UUID-монтирование в fstab
+- name: Add UUID-based mounts to fstab
+  lineinfile:
+    path: /etc/fstab
+    line: "UUID={{ item.uuid }} {{ nfs_mount_base }}/{{ item.mountpoint }} xfs defaults,noatime,logbufs=8,logbsize=256k,nofail 0 0"
+    state: present
   with_items: "{{ storage_disks }}"
   when: storage_disks is defined and storage_disks | length > 0
 

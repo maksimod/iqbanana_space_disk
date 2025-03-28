@@ -9,6 +9,8 @@
       - gdisk
       - xfsprogs
       - util-linux
+      - uuid-runtime
+      - e2fsprogs
     state: present
   ignore_errors: yes
 
@@ -141,6 +143,18 @@
     - item.stdout != ""
   ignore_errors: yes
 
+# Получение UUID разделов
+- name: Get UUID for new partitions
+  shell: "blkid -s UUID -o value /dev/{{ item.stdout }}"
+  register: partition_uuids
+  with_items: "{{ new_partitions.results | default([]) }}"
+  when:
+    - storage_devices is defined
+    - storage_devices | length > 0
+    - item.stdout is defined
+    - item.stdout != ""
+  ignore_errors: yes
+
 # Создаем каталоги для монтирования
 - name: Create mount points
   file:
@@ -152,8 +166,9 @@
   with_items: "{{ storage_devices | default([]) }}"
   when: storage_devices is defined and storage_devices | length > 0
 
-- name: Mount new partitions
-  shell: "mkdir -p {{ nfs_mount_base }}/{{ item.1 | basename }} && mount /dev/{{ item.0.stdout }} {{ nfs_mount_base }}/{{ item.1 | basename }} && echo 'Mounted successfully'"
+# Монтируем новые разделы по UUID
+- name: Mount new partitions using UUID
+  shell: "mkdir -p {{ nfs_mount_base }}/{{ item.1 | basename }} && mount UUID=$(blkid -s UUID -o value /dev/{{ item.0.stdout }}) {{ nfs_mount_base }}/{{ item.1 | basename }} && echo 'Mounted successfully by UUID'"
   with_together:
     - "{{ new_partitions.results | default([]) }}"
     - "{{ storage_devices | default([]) }}"
@@ -173,20 +188,26 @@
     state: absent
   ignore_errors: yes
 
-- name: Add mounts to fstab for persistence with nofail option
+# Добавляем монтирование по UUID в fstab
+- name: Add mounts to fstab using UUID for persistent mounting
   lineinfile:
     path: /etc/fstab
-    regexp: "^/dev/{{ item.0.stdout }}\\s+{{ nfs_mount_base }}/{{ item.1 | basename }}"
-    line: "/dev/{{ item.0.stdout }} {{ nfs_mount_base }}/{{ item.1 | basename }} xfs defaults,noatime,logbufs=8,logbsize=256k,nofail 0 0"
+    regexp: ".*{{ nfs_mount_base }}/{{ item.1 | basename }}.*"
+    line: "UUID={{ partition_uuids.results[loop_index].stdout }} {{ nfs_mount_base }}/{{ item.1 | basename }} xfs defaults,noatime,logbufs=8,logbsize=256k,nofail 0 0"
     state: present
   with_together:
     - "{{ new_partitions.results | default([]) }}"
     - "{{ storage_devices | default([]) }}"
+  loop_control:
+    index_var: loop_index
   when: 
     - storage_devices is defined 
     - storage_devices | length > 0
     - item.0.stdout is defined
     - item.0.stdout != ""
+    - partition_uuids is defined
+    - partition_uuids.results is defined
+    - partition_uuids.results[loop_index].stdout is defined
   ignore_errors: yes
   
 # Добавим проверку результата монтирования
@@ -203,23 +224,28 @@
   with_items: "{{ mount_result.results | default([]) }}"
   when: mount_result is defined
 
-# Создаем storage_disks для экспорта NFS
+# Создаем storage_disks для экспорта NFS с UUID
 - name: Initialize storage_disks variable
   set_fact:
     storage_disks: []
 
-# Обновляем storage_disks с информацией о новых разделах
-- name: Update storage_disks with new partitions
+# Обновляем storage_disks с информацией о новых разделах и их UUID
+- name: Update storage_disks with new partitions and UUID
   set_fact:
-    storage_disks: "{{ storage_disks + [{'device': item.1, 'partition': '/dev/' + item.0.stdout, 'mountpoint': item.1 | basename, 'fstype': 'xfs'}] }}"
+    storage_disks: "{{ storage_disks + [{'device': item.1, 'partition': '/dev/' + item.0.stdout, 'mountpoint': item.1 | basename, 'fstype': 'xfs', 'uuid': partition_uuids.results[loop_index].stdout }] }}"
   with_together:
     - "{{ new_partitions.results | default([]) }}"
     - "{{ storage_devices | default([]) }}"
+  loop_control:
+    index_var: loop_index
   when: 
     - storage_devices is defined 
     - storage_devices | length > 0
     - item.0.stdout is defined
     - item.0.stdout != ""
+    - partition_uuids is defined
+    - partition_uuids.results is defined
+    - partition_uuids.results[loop_index].stdout is defined
 
 # Показываем итоговую информацию о смонтированных дисках
 - name: Display mounted disks information
@@ -231,3 +257,9 @@
 - name: Show mounted disks
   debug:
     msg: "{{ mounted_disks_info.stdout_lines | default(['No disks mounted']) }}"
+
+# Показываем UUID всех дисков для отладки
+- name: Display UUID information of all mounted disks
+  debug:
+    msg: "{{ storage_disks }}"
+  when: storage_disks is defined and storage_disks | length > 0

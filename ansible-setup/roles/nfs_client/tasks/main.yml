@@ -134,7 +134,6 @@
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
 # Монтирование NFS с ультра-оптимизированными параметрами для больших файлов
-# Монтирование NFS с ультра-оптимизированными параметрами для больших файлов
 - name: Mount NFS shares with optimized parameters for large files
   mount:
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
@@ -150,16 +149,106 @@
   ignore_errors: yes
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
-# НОВЫЙ БЛОК: Добавляем записи в fstab для автоматического монтирования при загрузке
-- name: Configure fstab for persistent NFS mounts with safe options
-  mount:
-    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
-    src: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}"
-    fstype: nfs
-    opts: "rw,soft,tcp,noatime,rsize=1048576,wsize=1048576,timeo=600,retrans=2,noresvport,nofail,bg,nconnect=8,fsc,actimeo=600,nocto"
+# Настраиваем fstab для NFS монтирований с использованием уникальных экспортных путей
+- name: Configure fstab for persistent NFS mounts with UUID identifiers
+  lineinfile:
+    path: /etc/fstab
+    regexp: ".*{{ nfs_mount_base }}/{{ item.mountpoint }}.*"
+    line: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }} nfs rw,soft,tcp,noatime,rsize=1048576,wsize=1048576,timeo=600,retrans=2,noresvport,nofail,bg,nconnect=8,fsc,actimeo=600,nocto 0 0"
     state: present
     backup: yes
   with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
+  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
+
+# Создаем конфигурационный файл для автоматического монтирования
+- name: Create auto-mount script for NFS shares with proper error handling
+  copy:
+    dest: /usr/local/bin/mount-nfs-shares.sh
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # Скрипт для автоматического монтирования NFS шар
+      
+      SERVER_IP="{{ nfs_server_ip }}"
+      BASE_DIR="{{ nfs_mount_base }}"
+      RETRY_COUNT=5
+      RETRY_DELAY=10
+      
+      # Проверяем доступность сервера NFS
+      check_server() {
+        for i in $(seq 1 $RETRY_COUNT); do
+          if nc -z -w 2 $SERVER_IP 2049; then
+            return 0
+          fi
+          echo "Сервер NFS ($SERVER_IP) недоступен, попытка $i из $RETRY_COUNT"
+          sleep $RETRY_DELAY
+        done
+        return 1
+      }
+      
+      # Монтируем шары из fstab
+      mount_shares() {
+        grep -E "$SERVER_IP:.*nfs" /etc/fstab | while read line; do
+          mount_point=$(echo $line | awk '{print $2}')
+          if ! mountpoint -q "$mount_point"; then
+            echo "Монтирование $mount_point..."
+            mount "$mount_point"
+            if [ $? -eq 0 ]; then
+              echo "Успешно смонтировано: $mount_point"
+            else
+              echo "Ошибка монтирования: $mount_point"
+            fi
+          else
+            echo "$mount_point уже смонтирован"
+          fi
+        done
+      }
+      
+      # Основная логика
+      echo "Проверка доступности сервера NFS..."
+      if check_server; then
+        echo "Сервер NFS доступен, монтирование шар..."
+        mount_shares
+      else
+        echo "ОШИБКА: Сервер NFS ($SERVER_IP) недоступен после $RETRY_COUNT попыток"
+        exit 1
+      fi
+      
+      # Вывод результатов
+      echo "Статус монтирования NFS:"
+      df -h | grep -E 'nfs|$SERVER_IP'
+      
+      exit 0
+  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
+
+# Создаем systemd сервис для автоматического монтирования
+- name: Create systemd service for auto-mounting NFS shares
+  copy:
+    dest: /etc/systemd/system/nfs-automount.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Auto-mount NFS Shares
+      After=network-online.target
+      Wants=network-online.target
+      
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/mount-nfs-shares.sh
+      RemainAfterExit=yes
+      
+      [Install]
+      WantedBy=multi-user.target
+  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
+
+# Активируем и запускаем сервис автоматического монтирования
+- name: Enable and start NFS auto-mount service
+  systemd:
+    name: nfs-automount
+    state: started
+    enabled: yes
+    daemon_reload: yes
+  ignore_errors: yes
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
 # Проверка успешности монтирования
@@ -216,16 +305,6 @@
   ignore_errors: yes
   when: write_test_results is defined and write_test_results.results is defined and item.stdout is defined and item.stdout == "OK"
 
-# Создание полной директории для конфигурации backend, включая родительские каталоги
-- name: Ensure backend config directory exists with parents
-  file:
-    path: "{{ backend_config_path | dirname }}/config"
-    state: directory
-    mode: '0755'
-    recurse: yes
-  ignore_errors: yes
-  when: backend_config_path is defined
-
 # Генерация и установка нового config.js на основе смонтированных дисков
 - name: Generate and install backend config
   template:
@@ -244,52 +323,3 @@
   debug:
     msg: "Backend configuration {{ 'updated successfully' if config_updated is succeeded else 'failed to update' }}"
   when: backend_config_path is defined
-
-# Дополнительно: убедимся, что backend модуль может быть запущен с правильными правами
-- name: Ensure backend has proper permissions
-  file:
-    path: "{{ backend_config_path | dirname }}"
-    state: directory
-    mode: '0755'
-    recurse: yes
-    owner: "{{ 'client' if ansible_user == 'client' else ansible_user }}"
-    group: "{{ 'client' if ansible_user == 'client' else ansible_user }}"
-  ignore_errors: yes
-  when: backend_config_path is defined
-
-# Создание скрипта для тестирования производительности NFS
-- name: Create performance testing script
-  copy:
-    dest: /tmp/test_nfs_performance.sh
-    content: |
-      #!/bin/bash
-      echo "Running NFS performance tests..."
-      
-      # Проверяем все примонтированные NFS шары
-      MOUNTS=$(df -h | grep nfs | awk '{print $6}')
-      
-      if [ -z "$MOUNTS" ]; then
-        echo "No NFS mounts found!"
-        exit 1
-      fi
-      
-      for MOUNT in $MOUNTS; do
-        echo "Testing performance on $MOUNT"
-        
-        # Создаем тестовый файл (1 ГБ)
-        echo "Creating 1GB test file..."
-        dd if=/dev/zero of=$MOUNT/testfile bs=1M count=1024 conv=fsync 2>&1
-        
-        # Проверяем скорость чтения
-        echo "Testing read speed..."
-        dd if=$MOUNT/testfile of=/dev/null bs=1M 2>&1
-        
-        # Проверяем скорость записи
-        echo "Testing write speed..."
-        dd if=/dev/zero of=$MOUNT/testfile2 bs=1M count=1024 conv=fsync 2>&1
-        
-        # Очистка
-        rm -f $MOUNT/testfile $MOUNT/testfile2
-      done
-      
-      echo "Performance tests completed!"
