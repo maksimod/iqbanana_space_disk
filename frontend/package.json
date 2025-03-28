@@ -14,7 +14,7 @@
     "web-vitals": "^2.1.4"
   },
   "scripts": {
-    "start": "DANGEROUSLY_DISABLE_HOST_CHECK=true HOST=0.0.0.0 PORT=6001 react-scripts start",
+    "start": "DANGEROUSLY_DISABLE_HOST_CHECK=true HOST=iqbanana.online PORT=6001 react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
