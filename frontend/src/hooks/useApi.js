@@ -148,8 +148,7 @@ const useApi = () => {
    * Загрузка файла с прогрессом и оптимизацией для больших файлов
    */
   const uploadFile = useCallback((disk, path, file, onProgress, onComplete, onError) => {
-    // Для всех файлов используем более надежный и оптимизированный метод загрузки
-    console.log(`Загрузка файла: ${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`);
+    console.log(`Подготовка к загрузке файла: ${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`);
     
     // ID загрузки для отслеживания
     const uploadId = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
@@ -187,15 +186,14 @@ const useApi = () => {
         fileName: file.name,
         fileSize: file.size,
         startTime: Date.now(),
-        status: 'starting'
+        status: 'preparing'
       };
       sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
     } catch (e) {
       console.warn('Не удалось сохранить информацию о загрузке в sessionStorage:', e);
     }
     
-    // Функция периодической проверки статуса загрузки
-    // Будет использоваться если клиент перезагрузил страницу
+    // Функция проверки статуса загрузки на сервере
     const checkUploadStatus = async () => {
       try {
         const response = await fetch(getApiUrl(`/disks/${disk}/upload-status?path=${encodeURIComponent(path)}`));
@@ -230,18 +228,41 @@ const useApi = () => {
       }
     };
     
-    // Специальная обработка для очень маленьких файлов
-    const isSmallFile = file.size < 512 * 1024; // Файлы меньше 512KB
-    if (isSmallFile) {
-      console.log('Обнаружен маленький файл, применяем специальную обработку');
+    // Определяем, большой ли файл
+    const isLargeFile = file.size > 50 * 1024 * 1024; // файлы больше 50MB 
+    const isVeryLargeFile = file.size > 500 * 1024 * 1024; // файлы больше 500MB
+    const isSmallFile = file.size < 2 * 1024 * 1024; // файлы меньше 2MB
+    
+    // Настраиваем размер чанка в зависимости от размера файла
+    const chunkSize = isVeryLargeFile ? 5 * 1024 * 1024 : // 5MB для очень больших файлов
+                     isLargeFile ? 2 * 1024 * 1024 : // 2MB для больших файлов
+                     1 * 1024 * 1024; // 1MB для обычных файлов
+    
+    // Для малых файлов не используем чанки
+    const useChunks = !isSmallFile;
+    
+    // Логируем информацию о стратегии загрузки
+    if (isVeryLargeFile) {
+      console.log(`Очень большой файл (${(file.size / (1024 * 1024)).toFixed(2)} MB): используем чанки по ${chunkSize / (1024 * 1024)}MB`);
+    } else if (isLargeFile) {
+      console.log(`Большой файл (${(file.size / (1024 * 1024)).toFixed(2)} MB): используем чанки по ${chunkSize / (1024 * 1024)}MB`);
+    } else if (useChunks) {
+      console.log(`Средний файл (${(file.size / (1024 * 1024)).toFixed(2)} MB): используем чанки по ${chunkSize / (1024 * 1024)}MB`);
+    } else {
+      console.log(`Малый файл (${(file.size / (1024 * 1024)).toFixed(2)} MB): загружаем одним запросом`);
     }
-    
-    const xhr = new XMLHttpRequest();
+
+    // Запоминаем, если загрузка была отменена
     let requestAborted = false;
-    let uploadStarted = false;
     let statusCheckInterval = null;
+    let progressUpdateInterval = null;
+    let lastProgress = 0;
     
-    // Запускаем проверку статуса сразу
+    // Настройка частоты обновления UI
+    const statusCheckFrequency = isLargeFile ? 2000 : 3000; // Проверка статуса каждые 2 или 3 секунды
+    const simulatedProgressFrequency = 3000; // Обновление симулированного прогресса каждые 3 секунды
+    
+    // Запускаем интервал проверки статуса загрузки
     statusCheckInterval = setInterval(async () => {
       if (requestAborted) {
         clearInterval(statusCheckInterval);
@@ -254,40 +275,242 @@ const useApi = () => {
         if (!requestAborted) {
           onComplete(status.upload);
         }
+      } else if (status.upload && status.upload.progress) {
+        // Обновляем прогресс из статуса сервера
+        onProgress(status.upload.progress);
       }
-    }, 5000); // Проверка каждые 5 секунд
+    }, statusCheckFrequency);
     
-    // Событие начала загрузки
-    xhr.upload.addEventListener('loadstart', () => {
-      console.log(`Начало загрузки файла: ${file.name}`);
-      uploadStarted = true;
+    // Для больших файлов добавляем интервал обновления прогресса (симуляция)
+    if (isLargeFile) {
+      progressUpdateInterval = setInterval(() => {
+        if (requestAborted || lastProgress >= 100) {
+          clearInterval(progressUpdateInterval);
+          return;
+        }
+        
+        if (lastProgress < 95) {
+          const newProgress = lastProgress + 0.2;
+          onProgress(newProgress);
+          lastProgress = newProgress;
+          
+          // Обновляем статус в sessionStorage
+          try {
+            const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
+            if (activeUploads[uploadId]) {
+              activeUploads[uploadId].progress = newProgress;
+              sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
+            }
+          } catch (e) {
+            // Игнорируем ошибки sessionStorage
+          }
+        }
+      }, simulatedProgressFrequency);
+    }
+    
+    // Функция для загрузки файла без чанков (для маленьких файлов)
+    const uploadStandard = () => {
+      const xhr = new XMLHttpRequest();
       
-      // Обновляем статус в sessionStorage
+      // Событие начала загрузки
+      xhr.upload.addEventListener('loadstart', () => {
+        console.log(`Начало загрузки файла: ${file.name}`);
+        
+        // Обновляем статус в sessionStorage
+        try {
+          const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
+          if (activeUploads[uploadId]) {
+            activeUploads[uploadId].status = 'uploading';
+            sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
+          }
+        } catch (e) {
+          console.warn('Не удалось обновить информацию о загрузке в sessionStorage:', e);
+        }
+        
+        // Показываем начальный прогресс
+        onProgress(5);
+        lastProgress = 5;
+      });
+      
+      // Обработка прогресса загрузки
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable && !requestAborted) {
+          const progress = Math.round((event.loaded / event.total) * 100);
+          lastProgress = progress;
+          
+          // Обновляем статус в sessionStorage
+          try {
+            const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
+            if (activeUploads[uploadId]) {
+              activeUploads[uploadId].progress = progress;
+              sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
+            }
+          } catch (e) {
+            // Игнорируем ошибки sessionStorage
+          }
+          
+          onProgress(progress);
+          console.log(`Прогресс загрузки: ${progress}%`);
+        }
+      });
+      
+      // Событие успешного завершения загрузки
+      xhr.upload.addEventListener('load', () => {
+        console.log(`Загрузка файла ${file.name} завершена, ожидание ответа сервера`);
+        onProgress(95);
+        lastProgress = 95;
+      });
+      
+      // Добавляем обработчики ошибок
+      xhr.onerror = () => {
+        console.error(`Сетевая ошибка при загрузке файла ${file.name}`);
+        
+        if (statusCheckInterval) clearInterval(statusCheckInterval);
+        if (progressUpdateInterval) clearInterval(progressUpdateInterval);
+        
+        onError(`Сетевая ошибка при загрузке файла. Проверьте соединение.`);
+      };
+      
+      xhr.ontimeout = () => {
+        console.error(`Таймаут соединения при загрузке файла ${file.name}`);
+        
+        if (statusCheckInterval) clearInterval(statusCheckInterval);
+        if (progressUpdateInterval) clearInterval(progressUpdateInterval);
+        
+        onError(`Превышено время ожидания ответа от сервера.`);
+      };
+      
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const response = JSON.parse(xhr.responseText);
+              console.log(`Файл ${file.name} успешно загружен`);
+              onProgress(100);
+              lastProgress = 100;
+              onComplete(response);
+            } catch (e) {
+              console.error('Ошибка при обработке ответа сервера:', e);
+              onError('Ошибка при обработке ответа сервера');
+            }
+          } else {
+            onError(`Ошибка загрузки: ${xhr.status}`);
+          }
+        }
+      };
+      
+      try {
+        xhr.open('POST', getApiUrl(`/disks/${disk}/upload?path=${encodeURIComponent(path)}`), true);
+        xhr.timeout = 600000; // 10 минут
+        
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        xhr.send(formData);
+      } catch (error) {
+        console.error('Ошибка при инициализации загрузки файла:', error);
+        onError('Ошибка при инициализации загрузки файла');
+      }
+      
+      return () => {
+        requestAborted = true;
+        xhr.abort();
+        
+        if (statusCheckInterval) clearInterval(statusCheckInterval);
+        if (progressUpdateInterval) clearInterval(progressUpdateInterval);
+        
+        // Очищаем запись в sessionStorage
+        try {
+          const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
+          if (activeUploads[uploadId]) {
+            delete activeUploads[uploadId];
+            sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
+          }
+        } catch (e) {
+          // Игнорируем ошибки
+        }
+      };
+    };
+    
+    // Функция для загрузки файла по частям (чанкам)
+    const uploadWithChunks = () => {
+      // Общее количество чанков
+      const totalChunks = Math.ceil(file.size / chunkSize);
+      console.log(`Файл будет загружен в ${totalChunks} частях`);
+      
+      let currentChunk = 0;
+      let aborted = false;
+      
+      // Обновляем информацию в sessionStorage
       try {
         const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
         if (activeUploads[uploadId]) {
-          activeUploads[uploadId].status = 'uploading';
+          activeUploads[uploadId].status = 'chunked_upload';
+          activeUploads[uploadId].totalChunks = totalChunks;
+          activeUploads[uploadId].currentChunk = 0;
           sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
         }
       } catch (e) {
         console.warn('Не удалось обновить информацию о загрузке в sessionStorage:', e);
       }
       
-      // Если файл маленький, сразу показываем прогресс 10%
-      if (isSmallFile) {
-        onProgress(10);
-      }
-    });
-    
-    // Обработка прогресса загрузки
-    xhr.upload.addEventListener('progress', (event) => {
-      if (event.lengthComputable && !requestAborted) {
-        const progress = Math.round((event.loaded / event.total) * 100);
+      // Функция для загрузки следующего чанка
+      const uploadNextChunk = () => {
+        if (aborted) {
+          console.log('Загрузка отменена, прекращаем загрузку чанков');
+          return;
+        }
         
-        // Обновляем статус в sessionStorage
+        if (currentChunk >= totalChunks) {
+          console.log('Все чанки загружены, завершаем');
+          
+          // По завершении загрузки всех чанков, проверяем статус на сервере
+          checkUploadStatus().then(status => {
+            if (status.completed) {
+              onProgress(100);
+              lastProgress = 100;
+              onComplete(status.upload);
+            } else {
+              // Если статус не завершен, но все чанки загружены,
+              // считаем загрузку успешной и ждем подтверждения
+              onProgress(99);
+              lastProgress = 99;
+              
+              // Сохраняем в sessionStorage для отслеживания
+              try {
+                const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
+                if (activeUploads[uploadId]) {
+                  activeUploads[uploadId].status = 'finalizing';
+                  activeUploads[uploadId].progress = 99;
+                  sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
+                }
+              } catch (e) {
+                // Игнорируем ошибки sessionStorage
+              }
+            }
+          });
+          return;
+        }
+        
+        const start = currentChunk * chunkSize;
+        const end = Math.min(file.size, start + chunkSize);
+        const chunk = file.slice(start, end);
+        
+        // Используем более короткий и уникальный идентификатор для чанка
+        const chunkId = `${uploadId}_chunk${currentChunk}`;
+        
+        console.log(`Загрузка чанка ${currentChunk + 1}/${totalChunks} (${(start / (1024 * 1024)).toFixed(2)}-${(end / (1024 * 1024)).toFixed(2)} MB)`);
+        
+        // Обновляем прогресс
+        const progress = Math.round((currentChunk / totalChunks) * 95); // оставляем 5% на финализацию
+        onProgress(progress);
+        lastProgress = progress;
+        
+        // Обновляем информацию о текущем чанке в sessionStorage
         try {
           const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
           if (activeUploads[uploadId]) {
+            activeUploads[uploadId].currentChunk = currentChunk;
             activeUploads[uploadId].progress = progress;
             sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
           }
@@ -295,263 +518,91 @@ const useApi = () => {
           // Игнорируем ошибки sessionStorage
         }
         
-        // Ограничиваем частоту обновлений для маленьких файлов
-        if (isSmallFile) {
-          // Для маленьких файлов показываем только основные этапы
-          if (progress > 0 && progress <= 25) onProgress(25);
-          else if (progress > 25 && progress <= 75) onProgress(75);
-          else if (progress > 75) onProgress(90); // Оставляем 100% для успешного завершения
-        } else {
-          onProgress(progress);
-        }
+        const xhr = new XMLHttpRequest();
         
-        // Более редкий вывод логов для снижения нагрузки на UI
-        if (progress % 25 === 0 || progress === 100) {
-          console.log(`Прогресс загрузки: ${progress}% (${(event.loaded / (1024 * 1024)).toFixed(2)}/${(event.total / (1024 * 1024)).toFixed(2)} MB)`);
-        }
-      }
-    });
-    
-    // Событие успешного завершения загрузки
-    xhr.upload.addEventListener('load', () => {
-      console.log(`Загрузка файла ${file.name} завершена, ожидание ответа сервера`);
-      
-      // Обновляем статус в sessionStorage
-      try {
-        const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
-        if (activeUploads[uploadId]) {
-          activeUploads[uploadId].status = 'waiting_response';
-          sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
-        }
-      } catch (e) {
-        // Игнорируем ошибки sessionStorage
-      }
-      
-      if (isSmallFile) {
-        onProgress(95); // Показываем почти завершено, финальные 100% при получении ответа
-        
-        // Создаем таймаут для автозавершения, если ответ от сервера не пришел в течение 2 секунд
-        const autoCompleteTimeout = setTimeout(async () => {
-          console.log(`Автозавершение загрузки файла ${file.name} после таймаута`);
-          
-          // Проверяем статус загрузки на сервере
-          const status = await checkUploadStatus();
-          if (status.completed || status.upload?.status === 'completing') {
-            onComplete({
-              success: true,
-              message: 'Файл успешно загружен',
-              file: {
-                name: file.name,
-                size: file.size,
-                path: path ? `${path}/${file.name}` : file.name
-              }
-            });
-          } else {
-            // Если на сервере нет информации, считаем что загрузка успешна
-            onComplete({
-              success: true,
-              message: 'Файл, вероятно, был успешно загружен',
-              file: {
-                name: file.name,
-                size: file.size,
-                path: path ? `${path}/${file.name}` : file.name
-              }
-            });
-          }
-          
-          // Удаляем запись из sessionStorage
-          try {
-            const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
-            if (activeUploads[uploadId]) {
-              delete activeUploads[uploadId];
-              sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
-            }
-          } catch (e) {
-            // Игнорируем ошибки sessionStorage
-          }
-          
-          // Очищаем интервал проверки
-          if (statusCheckInterval) {
-            clearInterval(statusCheckInterval);
-          }
-        }, 2000);
-        
-        // Сохраняем таймаут, чтобы очистить его, если ответ придет раньше
-        xhr._autoCompleteTimeout = autoCompleteTimeout;
-      }
-    });
-    
-    // Настраиваем таймауты, зависящие от размера файла
-    const fileSize = file.size / (1024 * 1024); // размер в МБ
-    // Минимум 60 секунд, плюс 10 секунд на каждый МБ, но не больше часа
-    const timeout = Math.min(60000 + fileSize * 10000, 3600000);
-    xhr.timeout = timeout;
-    
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState === 4 && !requestAborted) {
-        console.log(`XHR завершен со статусом: ${xhr.status}`);
-        
-        // Очищаем интервал проверки
-        if (statusCheckInterval) {
-          clearInterval(statusCheckInterval);
-        }
-        
-        // Очищаем таймаут автозавершения, если он установлен
-        if (xhr._autoCompleteTimeout) {
-          clearTimeout(xhr._autoCompleteTimeout);
-          delete xhr._autoCompleteTimeout;
-        }
-        
-        if (xhr.status >= 200 && xhr.status < 300) {
-          try {
-            const response = JSON.parse(xhr.responseText);
-            console.log('Файл успешно загружен:', response);
-            
-            // Обновляем статус в sessionStorage
-            try {
-              const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
-              if (activeUploads[uploadId]) {
-                delete activeUploads[uploadId];
-                sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
-              }
-            } catch (e) {
-              // Игнорируем ошибки sessionStorage
-            }
-            
-            onComplete(response);
-          } catch (e) {
-            console.error('Ошибка при обработке ответа сервера:', e);
-            
-            // Проверяем статус загрузки на сервере
-            checkUploadStatus().then(status => {
-              if (status.completed || (status.upload && status.upload.status !== 'error')) {
-                onComplete({
-                  success: true,
-                  message: 'Файл успешно загружен, но возникла ошибка при обработке ответа',
-                  file: {
-                    name: file.name,
-                    size: file.size,
-                    path: path ? `${path}/${file.name}` : file.name
-                  }
-                });
-              } else {
+        xhr.onreadystatechange = function() {
+          if (xhr.readyState === 4) {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                // Увеличиваем счетчик чанков и загружаем следующий
+                currentChunk++;
+                
+                // Используем setTimeout для предотвращения переполнения стека вызовов
+                // и разгрузки основного потока
+                setTimeout(uploadNextChunk, 100);
+              } catch (e) {
+                console.error('Ошибка при обработке ответа сервера для чанка:', e);
                 onError('Ошибка при обработке ответа сервера');
               }
-              
-              // Удаляем запись из sessionStorage
-              try {
-                const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
-                if (activeUploads[uploadId]) {
-                  delete activeUploads[uploadId];
-                  sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
-                }
-              } catch (e) {
-                // Игнорируем ошибки sessionStorage
-              }
-            });
-          }
-        } else if (xhr.status === 0) {
-          if (uploadStarted) {
-            // Если загрузка началась, но соединение оборвалось
-            console.error('Соединение было прервано во время загрузки');
-            
-            // Проверяем статус загрузки на сервере
-            checkUploadStatus().then(status => {
-              if (status.completed || (status.upload && status.upload.status !== 'error')) {
-                // Даже если соединение оборвалось, но файл успешно загружен на сервер
-                onComplete({
-                  success: true,
-                  message: 'Файл успешно загружен, несмотря на разрыв соединения',
-                  file: {
-                    name: file.name,
-                    size: file.size,
-                    path: path ? `${path}/${file.name}` : file.name
-                  }
-                });
-              } else {
-                onError('Потеряно соединение с сервером');
-              }
-              
-              // Удаляем запись из sessionStorage
-              try {
-                const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
-                if (activeUploads[uploadId]) {
-                  delete activeUploads[uploadId];
-                  sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
-                }
-              } catch (e) {
-                // Игнорируем ошибки sessionStorage
-              }
-            });
-          } else {
-            // Если запрос был отменен до начала загрузки
-            console.log('Запрос был отменен до начала загрузки');
-            
-            // Удаляем запись из sessionStorage
-            try {
-              const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
-              if (activeUploads[uploadId]) {
-                delete activeUploads[uploadId];
-                sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
-              }
-            } catch (e) {
-              // Игнорируем ошибки sessionStorage
-            }
-          }
-        } else {
-          console.error(`Ошибка HTTP при загрузке файла: ${xhr.status}`, xhr.responseText);
-          
-          // Проверяем статус загрузки на сервере
-          checkUploadStatus().then(status => {
-            if (status.completed || (status.upload && status.upload.status !== 'error')) {
-              // Если файл успешно загружен на сервер, несмотря на ошибку HTTP
-              onComplete({
-                success: true,
-                message: 'Файл успешно загружен, несмотря на ошибку HTTP',
-                file: {
-                  name: file.name,
-                  size: file.size,
-                  path: path ? `${path}/${file.name}` : file.name
-                }
-              });
             } else {
-              onError(`Ошибка загрузки: ${xhr.status}`);
-            }
-            
-            // Удаляем запись из sessionStorage
-            try {
-              const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
-              if (activeUploads[uploadId]) {
-                delete activeUploads[uploadId];
-                sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
+              console.error(`Ошибка при загрузке чанка ${currentChunk + 1}: ${xhr.status}`);
+              
+              // При ошибке пробуем повторить этот же чанк до 3-х раз
+              const retriesKey = `${chunkId}_retries`;
+              const retries = parseInt(sessionStorage.getItem(retriesKey) || '0');
+              
+              if (retries < 3) {
+                console.log(`Повторная попытка загрузки чанка ${currentChunk + 1} (попытка ${retries + 1})`);
+                sessionStorage.setItem(retriesKey, (retries + 1).toString());
+                
+                // Повторяем через небольшую задержку
+                setTimeout(uploadNextChunk, 1000);
+              } else {
+                onError(`Ошибка загрузки чанка ${currentChunk + 1}: ${xhr.status}`);
               }
-            } catch (e) {
-              // Игнорируем ошибки sessionStorage
             }
-          });
+          }
+        };
+        
+        xhr.onerror = () => {
+          console.error(`Ошибка сети при загрузке чанка ${currentChunk + 1}`);
+          
+          // При ошибке сети пробуем повторить этот же чанк до 3-х раз
+          const retriesKey = `${chunkId}_retries`;
+          const retries = parseInt(sessionStorage.getItem(retriesKey) || '0');
+          
+          if (retries < 3) {
+            console.log(`Повторная попытка загрузки чанка ${currentChunk + 1} (попытка ${retries + 1})`);
+            sessionStorage.setItem(retriesKey, (retries + 1).toString());
+            
+            // Повторяем через небольшую задержку
+            setTimeout(uploadNextChunk, 2000);
+          } else {
+            onError(`Сетевая ошибка при загрузке чанка ${currentChunk + 1}`);
+          }
+        };
+        
+        try {
+          xhr.open('POST', getApiUrl(`/disks/${disk}/upload-chunk?path=${encodeURIComponent(path)}&chunk=${currentChunk}&totalChunks=${totalChunks}&filename=${encodeURIComponent(file.name)}`), true);
+          xhr.timeout = 300000; // 5 минут на чанк
+          
+          const formData = new FormData();
+          formData.append('chunk', chunk, `${file.name}.part${currentChunk}`);
+          formData.append('chunkIndex', currentChunk.toString());
+          formData.append('totalChunks', totalChunks.toString());
+          formData.append('filename', file.name);
+          formData.append('fileSize', file.size.toString());
+          formData.append('uploadId', uploadId);
+          
+          xhr.send(formData);
+        } catch (error) {
+          console.error(`Ошибка при инициализации загрузки чанка ${currentChunk + 1}:`, error);
+          onError('Ошибка при инициализации загрузки чанка');
         }
-      }
-    };
-    
-    xhr.ontimeout = function() {
-      console.error('Превышен таймаут загрузки файла');
+      };
       
-      // Проверяем статус загрузки на сервере
-      checkUploadStatus().then(status => {
-        if (status.completed || (status.upload && status.upload.status !== 'error')) {
-          // Если файл успешно загружен на сервер, несмотря на таймаут
-          onComplete({
-            success: true,
-            message: 'Файл успешно загружен, несмотря на таймаут',
-            file: {
-              name: file.name,
-              size: file.size,
-              path: path ? `${path}/${file.name}` : file.name
-            }
-          });
-        } else {
-          onError('Превышен таймаут загрузки файла');
-        }
+      // Начинаем загрузку с первого чанка
+      uploadNextChunk();
+      
+      // Возвращаем функцию для отмены загрузки
+      return () => {
+        console.log('Отмена чанковой загрузки');
+        aborted = true;
+        requestAborted = true;
+        
+        // Очищаем интервалы
+        if (statusCheckInterval) clearInterval(statusCheckInterval);
+        if (progressUpdateInterval) clearInterval(progressUpdateInterval);
         
         // Удаляем запись из sessionStorage
         try {
@@ -563,108 +614,19 @@ const useApi = () => {
         } catch (e) {
           // Игнорируем ошибки sessionStorage
         }
-      });
-      
-      // Очищаем интервал проверки
-      if (statusCheckInterval) {
-        clearInterval(statusCheckInterval);
-      }
+      };
     };
     
-    xhr.onerror = function() {
-      if (!requestAborted) {
-        console.error('Ошибка сети при загрузке файла');
-        
-        // Проверяем статус загрузки на сервере
-        checkUploadStatus().then(status => {
-          if (status.completed || (status.upload && status.upload.status !== 'error')) {
-            // Если файл успешно загружен на сервер, несмотря на ошибку сети
-            onComplete({
-              success: true,
-              message: 'Файл успешно загружен, несмотря на ошибку сети',
-              file: {
-                name: file.name,
-                size: file.size,
-                path: path ? `${path}/${file.name}` : file.name
-              }
-            });
-          } else {
-            onError('Ошибка сети при загрузке файла');
-          }
-          
-          // Удаляем запись из sessionStorage
-          try {
-            const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
-            if (activeUploads[uploadId]) {
-              delete activeUploads[uploadId];
-              sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
-            }
-          } catch (e) {
-            // Игнорируем ошибки sessionStorage
-          }
-        });
-        
-        // Очищаем интервал проверки
-        if (statusCheckInterval) {
-          clearInterval(statusCheckInterval);
-        }
-      }
-    };
+    // Показываем начальный прогресс
+    onProgress(1);
+    lastProgress = 1;
     
-    try {
-      console.log(`Открытие соединения для загрузки файла: ${file.name}`);
-      xhr.open('POST', getApiUrl(`/disks/${disk}/upload?path=${encodeURIComponent(path)}`), true);
-      
-      const formData = new FormData();
-      formData.append('file', file);
-      
-      console.log(`Отправка файла: ${file.name}`);
-      xhr.send(formData);
-    } catch (error) {
-      console.error('Ошибка при инициализации загрузки файла:', error);
-      
-      // Удаляем запись из sessionStorage
-      try {
-        const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
-        if (activeUploads[uploadId]) {
-          delete activeUploads[uploadId];
-          sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
-        }
-      } catch (e) {
-        // Игнорируем ошибки sessionStorage
-      }
-      
-      // Очищаем интервал проверки
-      if (statusCheckInterval) {
-        clearInterval(statusCheckInterval);
-      }
-      
-      onError('Ошибка при инициализации загрузки файла');
-      return () => {};
+    // Выбираем метод загрузки в зависимости от размера файла
+    if (useChunks) {
+      return uploadWithChunks();
+    } else {
+      return uploadStandard();
     }
-    
-    // Функция для отмены загрузки
-    return () => {
-      console.log('Отмена загрузки файла');
-      requestAborted = true;
-      xhr.abort();
-      
-      // Очищаем интервал проверки
-      if (statusCheckInterval) {
-        clearInterval(statusCheckInterval);
-      }
-      
-      // Удаляем запись из sessionStorage
-      try {
-        const activeUploads = JSON.parse(sessionStorage.getItem('activeUploads') || '{}');
-        if (activeUploads[uploadId]) {
-          delete activeUploads[uploadId];
-          sessionStorage.setItem('activeUploads', JSON.stringify(activeUploads));
-        }
-      } catch (e) {
-        // Игнорируем ошибки sessionStorage
-      }
-    };
   }, [getApiUrl]);
 
   // Возвращаем API-методы

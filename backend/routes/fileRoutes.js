@@ -40,7 +40,7 @@ router.get('/:disk/upload-status', (req, res) => {
   const { disk } = req.params;
   const folderPath = req.query.path || '';
   
-  const diskUploads = Array.from(activeUploads.entries())
+  const diskUploads = Array.from(global.activeUploads.entries())
     .filter(([key]) => key.startsWith(`${disk}:${folderPath}:`))
     .map(([key, value]) => ({
       filename: key.split(':')[2],
@@ -48,6 +48,11 @@ router.get('/:disk/upload-status', (req, res) => {
       progress: value.progress,
       startedAt: value.startedAt
     }));
+  
+  // Устанавливаем заголовки для предотвращения кэширования
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   
   res.json({ uploads: diskUploads });
 });
@@ -315,6 +320,240 @@ router.post('/:disk/clear-folder-uploads', (req, res) => {
   return res.json({ 
     success: true, 
     message: `Очищено ${count} активных загрузок` 
+  });
+});
+
+// Маршрут для загрузки чанков файла
+router.post('/:disk/upload-chunk', (req, res) => {
+  const { disk } = req.params;
+  const folderPath = req.query.path || '';
+  const chunkIndex = parseInt(req.query.chunk || '0');
+  const totalChunks = parseInt(req.query.totalChunks || '1');
+  const filename = req.query.filename;
+  
+  if (!filename) {
+    return res.status(400).json({ error: 'Имя файла не указано' });
+  }
+  
+  // Проверка подключения диска
+  if (!global.mountedDisks[disk]) {
+    logger.error(`Попытка загрузки чанка на несмонтированный диск: ${disk}`);
+    return res.status(503).json({ 
+      error: 'Диск не смонтирован или недоступен', 
+      status: 'offline'
+    });
+  }
+  
+  const fullPath = path.join(config.disks[disk], folderPath);
+  const tempDir = path.join(fullPath, '.tmp_chunks', filename.replace(/[^a-zA-Z0-9_.-]/g, '_'));
+  
+  // Создаем директорию для хранения чанков, если она не существует
+  try {
+    fs.mkdirSync(tempDir, { recursive: true });
+    logger.info(`Создана временная директория для чанков: ${tempDir}`);
+  } catch (error) {
+    logger.error(`Ошибка при создании временной директории: ${tempDir}`, error);
+    return res.status(500).json({ error: 'Не удалось создать временную директорию для чанков' });
+  }
+  
+  // Настройка хранилища для multer
+  const storage = multer.diskStorage({
+    destination: function(req, file, cb) {
+      cb(null, tempDir);
+    },
+    filename: function(req, file, cb) {
+      // Каждый чанк сохраняем с уникальным именем
+      cb(null, `chunk.${chunkIndex}`);
+    }
+  });
+  
+  // Настраиваем multer с большим лимитом для чанков
+  const upload = multer({ 
+    storage,
+    limits: { 
+      fileSize: config.performance.chunkSize || 10 * 1024 * 1024 // 10MB по умолчанию
+    }
+  }).single('chunk');
+  
+  // Устанавливаем увеличенные таймауты
+  req.setTimeout(600000); // 10 минут на загрузку чанка
+  res.setTimeout(600000);
+  
+  // Выполняем загрузку чанка
+  upload(req, res, async function(err) {
+    if (err) {
+      logger.error(`Ошибка при загрузке чанка ${chunkIndex} для файла ${filename}:`, err);
+      return res.status(400).json({ 
+        error: `Ошибка при загрузке чанка: ${err.message}`,
+        chunkIndex: chunkIndex
+      });
+    }
+    
+    if (!req.file) {
+      logger.error(`Чанк ${chunkIndex} для файла ${filename} не был получен`);
+      return res.status(400).json({ 
+        error: 'Чанк не был загружен',
+        chunkIndex: chunkIndex
+      });
+    }
+    
+    logger.info(`Чанк ${chunkIndex}/${totalChunks} для файла ${filename} успешно загружен`);
+    
+    // Обновляем информацию в глобальном трекере загрузок
+    const uploadKey = `${disk}:${folderPath}:${filename}`;
+    const uploadInfo = global.activeUploads.get(uploadKey) || {
+      status: 'chunked_upload',
+      startedAt: new Date(),
+      totalChunks: totalChunks,
+      receivedChunks: [],
+      progress: 0
+    };
+    
+    // Добавляем чанк в список полученных
+    uploadInfo.receivedChunks = uploadInfo.receivedChunks || [];
+    if (!uploadInfo.receivedChunks.includes(chunkIndex)) {
+      uploadInfo.receivedChunks.push(chunkIndex);
+    }
+    
+    // Рассчитываем прогресс
+    uploadInfo.progress = Math.round((uploadInfo.receivedChunks.length / totalChunks) * 100);
+    
+    // Если все чанки получены, объединяем их в финальный файл
+    if (uploadInfo.receivedChunks.length === totalChunks) {
+      // Устанавливаем статус финализации
+      uploadInfo.status = 'finalizing';
+      global.activeUploads.set(uploadKey, uploadInfo);
+      
+      // Отправляем ответ клиенту, не дожидаясь объединения файлов
+      res.json({
+        success: true,
+        message: `Получен последний чанк ${chunkIndex}/${totalChunks} для файла ${filename}. Начинаем объединение.`,
+        chunkIndex: chunkIndex,
+        progress: uploadInfo.progress
+      });
+      
+      // Запускаем объединение чанков в отдельном процессе
+      try {
+        const finalFilePath = path.join(fullPath, filename);
+        const outputStream = fs.createWriteStream(finalFilePath);
+        
+        outputStream.on('error', (error) => {
+          logger.error(`Ошибка при записи объединенного файла ${filename}:`, error);
+          uploadInfo.status = 'error';
+          uploadInfo.error = `Ошибка при записи объединенного файла: ${error.message}`;
+          global.activeUploads.set(uploadKey, uploadInfo);
+        });
+        
+        outputStream.on('finish', () => {
+          logger.info(`Файл ${filename} успешно объединен из ${totalChunks} чанков`);
+          
+          // Проверяем наличие файла
+          fs.access(finalFilePath, fs.constants.F_OK, (accessErr) => {
+            if (accessErr) {
+              logger.error(`Объединенный файл не был найден: ${finalFilePath}`, accessErr);
+              uploadInfo.status = 'error';
+              uploadInfo.error = 'Объединенный файл не был найден';
+            } else {
+              // Получаем размер файла
+              fs.stat(finalFilePath, (statErr, stats) => {
+                if (statErr) {
+                  logger.error(`Ошибка при получении информации о файле: ${finalFilePath}`, statErr);
+                } else {
+                  uploadInfo.fileSize = stats.size;
+                }
+                
+                // Устанавливаем статус завершения
+                uploadInfo.status = 'completed';
+                uploadInfo.progress = 100;
+                uploadInfo.completedAt = new Date();
+                global.activeUploads.set(uploadKey, uploadInfo);
+                
+                // Очищаем временную директорию с чанками
+                try {
+                  fs.rm(tempDir, { recursive: true, force: true }, (rmErr) => {
+                    if (rmErr) {
+                      logger.warn(`Не удалось удалить временную директорию: ${tempDir}`, rmErr);
+                    } else {
+                      logger.info(`Временная директория удалена: ${tempDir}`);
+                    }
+                  });
+                } catch (rmError) {
+                  logger.warn(`Ошибка при удалении временной директории: ${tempDir}`, rmError);
+                }
+                
+                // Удаляем запись о загрузке через 30 секунд
+                setTimeout(() => {
+                  const currentUpload = global.activeUploads.get(uploadKey);
+                  if (currentUpload && currentUpload.status === 'completed') {
+                    global.activeUploads.delete(uploadKey);
+                    logger.info(`Удалена запись о загрузке из трекера: ${uploadKey}`);
+                  }
+                }, 30000);
+              });
+            }
+          });
+        });
+        
+        // Читаем и объединяем чанки последовательно
+        const combineChunks = async () => {
+          for (let i = 0; i < totalChunks; i++) {
+            try {
+              const chunkPath = path.join(tempDir, `chunk.${i}`);
+              await new Promise((resolve, reject) => {
+                const chunkStream = fs.createReadStream(chunkPath);
+                chunkStream.on('error', (error) => {
+                  logger.error(`Ошибка при чтении чанка ${i}: ${chunkPath}`, error);
+                  reject(error);
+                });
+                
+                chunkStream.pipe(outputStream, { end: false });
+                chunkStream.on('end', resolve);
+              });
+              
+              // Обновляем прогресс финализации
+              uploadInfo.progress = Math.round(95 + ((i + 1) / totalChunks) * 5); // От 95% до 100%
+              global.activeUploads.set(uploadKey, uploadInfo);
+              
+              logger.info(`Чанк ${i} добавлен к файлу ${filename}`);
+            } catch (error) {
+              logger.error(`Ошибка при объединении чанка ${i} для файла ${filename}:`, error);
+              throw error;
+            }
+          }
+          
+          // Закрываем поток записи после всех чанков
+          outputStream.end();
+        };
+        
+        // Запускаем объединение
+        combineChunks().catch((error) => {
+          logger.error(`Критическая ошибка при объединении чанков для файла ${filename}:`, error);
+          uploadInfo.status = 'error';
+          uploadInfo.error = `Критическая ошибка при объединении чанков: ${error.message}`;
+          global.activeUploads.set(uploadKey, uploadInfo);
+          
+          // Закрываем поток записи в случае ошибки
+          outputStream.end();
+        });
+      } catch (error) {
+        logger.error(`Ошибка при начале объединения чанков для файла ${filename}:`, error);
+        uploadInfo.status = 'error';
+        uploadInfo.error = `Ошибка при объединении чанков: ${error.message}`;
+        global.activeUploads.set(uploadKey, uploadInfo);
+      }
+    } else {
+      // Если это не последний чанк, обновляем статус в трекере
+      uploadInfo.status = 'chunked_upload';
+      global.activeUploads.set(uploadKey, uploadInfo);
+      
+      // Отвечаем клиенту
+      res.json({
+        success: true,
+        message: `Чанк ${chunkIndex}/${totalChunks} для файла ${filename} успешно загружен`,
+        chunkIndex: chunkIndex,
+        progress: uploadInfo.progress
+      });
+    }
   });
 });
 
