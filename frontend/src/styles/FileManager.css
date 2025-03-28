@@ -1,0 +1,160 @@
+/* Стили для файлов в процессе загрузки */
+.file-item.uploading {
+  background-color: rgba(0, 123, 255, 0.05);
+  border: 1px dashed #0d6efd;
+}
+
+.upload-progress {
+  position: relative;
+  height: 6px;
+  width: 100%;
+  background-color: #e9ecef;
+  border-radius: 3px;
+  margin-top: 5px;
+  overflow: hidden;
+}
+
+.upload-progress-bar {
+  position: absolute;
+  height: 100%;
+  background-color: #0d6efd;
+  transition: width 0.3s ease;
+}
+
+.upload-status {
+  font-size: 11px;
+  color: #6c757d;
+  display: block;
+  margin-top: 4px;
+}
+
+.file-actions {
+  display: flex;
+  align-items: center;
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.file-item:hover .file-actions {
+  opacity: 1;
+}
+
+.cancel-upload-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #dc3545;
+  padding: 5px;
+  font-size: 14px;
+  transition: color 0.2s ease;
+}
+
+.cancel-upload-button:hover {
+  color: #bd2130;
+}
+
+/* Показываем кнопку отмены всегда на мобильных устройствах */
+@media (max-width: 768px) {
+  .file-actions {
+    opacity: 1;
+  }
+}
+
+/* Стили для FileUploader в FileManager */
+.file-uploader-container {
+  margin-bottom: 20px;
+  border-bottom: 1px solid #e9ecef;
+  padding-bottom: 20px;
+}
+
+.upload-progress-container {
+  margin-top: 15px;
+}
+
+.upload-progress-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.upload-filename {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
+.upload-progress-info {
+  flex: 1;
+  margin-right: 15px;
+}
+
+.upload-progress-bar-container {
+  height: 6px;
+  background-color: #e9ecef;
+  border-radius: 3px;
+  margin-top: 5px;
+  position: relative;
+  overflow: hidden;
+}
+
+.upload-progress-bar {
+  height: 100%;
+  position: absolute;
+  left: 0;
+  top: 0;
+  background-color: #0d6efd;
+  transition: width 0.3s ease;
+}
+
+.upload-progress-bar.complete {
+  background-color: #28a745;
+}
+
+.upload-progress-bar.error {
+  background-color: #dc3545;
+}
+
+.upload-progress-bar.cancelled {
+  background-color: #6c757d;
+}
+
+.upload-progress-text {
+  font-size: 11px;
+  color: #6c757d;
+  display: block;
+  margin-top: 4px;
+}
+
+.upload-action-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #6c757d;
+  padding: 5px;
+  font-size: 14px;
+}
+
+.success-icon {
+  color: #28a745;
+}
+
+.error-icon {
+  color: #dc3545;
+}
+
+.upload-error-message {
+  color: #dc3545;
+  font-size: 11px;
+  max-width: 250px;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+} 

@@ -7,6 +7,34 @@ const multer = require('multer');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 
+// Настройка multer для обработки чанков
+const chunkStorage = multer.diskStorage({
+  destination: function(req, file, cb) {
+    // Временная директория для загрузки файлов
+    const tempDir = path.join(__dirname, '..', 'temp');
+    
+    // Создаем временную директорию, если она не существует
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    
+    cb(null, tempDir);
+  },
+  filename: function(req, file, cb) {
+    // Генерируем уникальное имя для временного файла
+    const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1E9)}`;
+    cb(null, uniqueName);
+  }
+});
+
+// Создаем экземпляр multer для чанковой загрузки
+const chunkUpload = multer({ 
+  storage: chunkStorage,
+  limits: { 
+    fileSize: config.performance?.chunkSize || 10 * 1024 * 1024 // 10MB по умолчанию для каждого чанка
+  }
+});
+
 // Глобальный трекер активных загрузок
 const activeUploads = new Map();
 
@@ -56,6 +84,34 @@ router.get('/:disk/upload-status', (req, res) => {
   
   res.json({ uploads: diskUploads });
 });
+
+// Функция для безопасного перемещения файла между разными файловыми системами
+const moveFile = async (source, destination) => {
+  const readStream = fs.createReadStream(source);
+  const writeStream = fs.createWriteStream(destination);
+  
+  return new Promise((resolve, reject) => {
+    readStream.on('error', err => {
+      reject(err);
+    });
+    
+    writeStream.on('error', err => {
+      reject(err);
+    });
+    
+    writeStream.on('finish', () => {
+      // После успешного копирования удаляем исходный файл
+      fs.unlink(source, unlinkErr => {
+        if (unlinkErr) {
+          logger.warn(`Не удалось удалить исходный файл после копирования: ${source}`, unlinkErr);
+        }
+        resolve();
+      });
+    });
+    
+    readStream.pipe(writeStream);
+  });
+};
 
 // Прямая и быстрая загрузка файлов
 router.post('/:disk/upload', (req, res) => {
@@ -323,13 +379,132 @@ router.post('/:disk/clear-folder-uploads', (req, res) => {
   });
 });
 
-// Маршрут для загрузки чанков файла
-router.post('/:disk/upload-chunk', (req, res) => {
+// Маршрут для загрузки файлов по частям (чанкам)
+router.post('/:disk/upload-chunk', chunkUpload.single('chunk'), async (req, res) => {
+  try {
+    const { disk } = req.params;
+    const { 
+      index, 
+      totalChunks, 
+      filename, 
+      path: folderPath, 
+      uploadId,
+      fileSize
+    } = req.body;
+    
+    // Проверки входных данных
+    if (!filename) {
+      return res.status(400).json({ error: 'Имя файла не указано' });
+    }
+    
+    if (index === undefined || totalChunks === undefined) {
+      return res.status(400).json({ error: 'Индекс чанка или общее количество чанков не указаны' });
+    }
+    
+    if (!req.file) {
+      return res.status(400).json({ error: 'Чанк файла не передан' });
+    }
+    
+    // Проверка подключения диска
+    if (!global.mountedDisks[disk]) {
+      logger.error(`Попытка загрузки на несмонтированный диск: ${disk}`);
+      return res.status(503).json({ 
+        error: 'Диск не смонтирован или недоступен', 
+        status: 'offline'
+      });
+    }
+    
+    // Создаем полный путь к директории
+    const fullPath = path.join(config.disks[disk], folderPath || '');
+    
+    // Создаём директорию для хранения чанков, если она не существует
+    const tempDir = path.join(fullPath, '.tmp_chunks', filename.replace(/[^a-zA-Z0-9_.-]/g, '_'));
+    
+    try {
+      await fs.promises.mkdir(tempDir, { recursive: true });
+    } catch (mkdirError) {
+      logger.error(`Не удалось создать временную директорию для чанков: ${tempDir}`, mkdirError);
+      return res.status(500).json({ error: 'Не удалось создать временную директорию для чанков' });
+    }
+    
+    // Путь для сохранения чанка
+    const chunkPath = path.join(tempDir, `chunk.${index}`);
+    
+    try {
+      // На безопасное копирование:
+      await moveFile(req.file.path, chunkPath);
+      
+      // Обновляем или создаем запись о загрузке в глобальном трекере
+      const uploadKey = `${disk}:${folderPath || ''}:${filename}`;
+      let uploadInfo = global.activeUploads.get(uploadKey);
+      
+      if (!uploadInfo) {
+        // Создаем новую запись о загрузке
+        uploadInfo = {
+          id: uploadId || Date.now().toString(),
+          filename,
+          disk,
+          path: folderPath || '',
+          startedAt: new Date(),
+          status: 'chunked_upload',
+          totalChunks: parseInt(totalChunks, 10),
+          uploadedChunks: new Set(),
+          fileSize: parseInt(fileSize, 10) || 0,
+          progress: 0
+        };
+      }
+      
+      // Добавляем чанк в список загруженных
+      uploadInfo.uploadedChunks.add(parseInt(index, 10));
+      
+      // Обновляем прогресс
+      const uploadedChunksCount = uploadInfo.uploadedChunks.size;
+      uploadInfo.progress = Math.round((uploadedChunksCount / parseInt(totalChunks, 10)) * 95); // Только до 95%, оставляем 5% на финализацию
+      
+      // Обновляем дату последней активности
+      uploadInfo.lastActivity = new Date();
+      
+      // Сохраняем информацию о загрузке
+      global.activeUploads.set(uploadKey, uploadInfo);
+      
+      logger.info(`Чанк ${index}/${totalChunks} для файла ${filename} успешно загружен на диск ${disk}`);
+      
+      // Если это последний чанк, возвращаем специальный флаг
+      const isLastChunk = parseInt(index, 10) === parseInt(totalChunks, 10) - 1;
+      
+      return res.json({
+        success: true,
+        message: `Чанк ${index}/${totalChunks} успешно загружен`,
+        isLastChunk,
+        uploadInfo: {
+          id: uploadInfo.id,
+          filename,
+          disk,
+          path: folderPath || '',
+          progress: uploadInfo.progress,
+          uploadedChunks: uploadedChunksCount,
+          totalChunks: parseInt(totalChunks, 10),
+          status: uploadInfo.status
+        }
+      });
+    } catch (error) {
+      logger.error(`Ошибка при перемещении чанка ${index} для файла ${filename}:`, error);
+      return res.status(500).json({
+        error: `Ошибка при сохранении чанка: ${error.message}`
+      });
+    }
+  } catch (error) {
+    logger.error('Критическая ошибка при загрузке чанка:', error);
+    return res.status(500).json({
+      error: `Критическая ошибка при загрузке чанка: ${error.message}`
+    });
+  }
+});
+
+// Маршрут для финализации загрузки по чанкам
+router.post('/:disk/finalize-upload', (req, res) => {
   const { disk } = req.params;
-  const folderPath = req.query.path || '';
-  const chunkIndex = parseInt(req.query.chunk || '0');
-  const totalChunks = parseInt(req.query.totalChunks || '1');
-  const filename = req.query.filename;
+  const { filename, path: folderPath, totalChunks, uploadId } = req.body;
   
   if (!filename) {
     return res.status(400).json({ error: 'Имя файла не указано' });
@@ -337,104 +512,90 @@ router.post('/:disk/upload-chunk', (req, res) => {
   
   // Проверка подключения диска
   if (!global.mountedDisks[disk]) {
-    logger.error(`Попытка загрузки чанка на несмонтированный диск: ${disk}`);
+    logger.error(`Попытка финализации загрузки на несмонтированный диск: ${disk}`);
     return res.status(503).json({ 
       error: 'Диск не смонтирован или недоступен', 
       status: 'offline'
     });
   }
   
-  const fullPath = path.join(config.disks[disk], folderPath);
+  const fullPath = path.join(config.disks[disk], folderPath || '');
   const tempDir = path.join(fullPath, '.tmp_chunks', filename.replace(/[^a-zA-Z0-9_.-]/g, '_'));
+  const finalFilePath = path.join(fullPath, filename);
   
-  // Создаем директорию для хранения чанков, если она не существует
-  try {
-    fs.mkdirSync(tempDir, { recursive: true });
-    logger.info(`Создана временная директория для чанков: ${tempDir}`);
-  } catch (error) {
-    logger.error(`Ошибка при создании временной директории: ${tempDir}`, error);
-    return res.status(500).json({ error: 'Не удалось создать временную директорию для чанков' });
-  }
-  
-  // Настройка хранилища для multer
-  const storage = multer.diskStorage({
-    destination: function(req, file, cb) {
-      cb(null, tempDir);
-    },
-    filename: function(req, file, cb) {
-      // Каждый чанк сохраняем с уникальным именем
-      cb(null, `chunk.${chunkIndex}`);
-    }
-  });
-  
-  // Настраиваем multer с большим лимитом для чанков
-  const upload = multer({ 
-    storage,
-    limits: { 
-      fileSize: config.performance.chunkSize || 10 * 1024 * 1024 // 10MB по умолчанию
-    }
-  }).single('chunk');
-  
-  // Устанавливаем увеличенные таймауты
-  req.setTimeout(600000); // 10 минут на загрузку чанка
-  res.setTimeout(600000);
-  
-  // Выполняем загрузку чанка
-  upload(req, res, async function(err) {
-    if (err) {
-      logger.error(`Ошибка при загрузке чанка ${chunkIndex} для файла ${filename}:`, err);
-      return res.status(400).json({ 
-        error: `Ошибка при загрузке чанка: ${err.message}`,
-        chunkIndex: chunkIndex
-      });
-    }
-    
-    if (!req.file) {
-      logger.error(`Чанк ${chunkIndex} для файла ${filename} не был получен`);
-      return res.status(400).json({ 
-        error: 'Чанк не был загружен',
-        chunkIndex: chunkIndex
-      });
-    }
-    
-    logger.info(`Чанк ${chunkIndex}/${totalChunks} для файла ${filename} успешно загружен`);
-    
-    // Обновляем информацию в глобальном трекере загрузок
-    const uploadKey = `${disk}:${folderPath}:${filename}`;
-    const uploadInfo = global.activeUploads.get(uploadKey) || {
-      status: 'chunked_upload',
-      startedAt: new Date(),
-      totalChunks: totalChunks,
-      receivedChunks: [],
-      progress: 0
-    };
-    
-    // Добавляем чанк в список полученных
-    uploadInfo.receivedChunks = uploadInfo.receivedChunks || [];
-    if (!uploadInfo.receivedChunks.includes(chunkIndex)) {
-      uploadInfo.receivedChunks.push(chunkIndex);
-    }
-    
-    // Рассчитываем прогресс
-    uploadInfo.progress = Math.round((uploadInfo.receivedChunks.length / totalChunks) * 100);
-    
-    // Если все чанки получены, объединяем их в финальный файл
-    if (uploadInfo.receivedChunks.length === totalChunks) {
-      // Устанавливаем статус финализации
-      uploadInfo.status = 'finalizing';
+  // Проверяем, был ли файл уже создан
+  fs.access(finalFilePath, fs.constants.F_OK, (accessErr) => {
+    if (!accessErr) {
+      logger.info(`Файл ${filename} уже существует, финализация не требуется`);
+      
+      // Обновляем статус в глобальном трекере загрузок
+      const uploadKey = `${disk}:${folderPath || ''}:${filename}`;
+      const uploadInfo = global.activeUploads.get(uploadKey) || {
+        status: 'completing',
+        startedAt: new Date(),
+        progress: 95
+      };
+      
+      uploadInfo.status = 'completed';
+      uploadInfo.progress = 100;
+      uploadInfo.completedAt = new Date();
       global.activeUploads.set(uploadKey, uploadInfo);
       
-      // Отправляем ответ клиенту, не дожидаясь объединения файлов
+      // Пытаемся очистить временную директорию
+      try {
+        fs.rm(tempDir, { recursive: true, force: true }, (rmErr) => {
+          if (rmErr) {
+            logger.warn(`Не удалось удалить временную директорию: ${tempDir}`, rmErr);
+          } else {
+            logger.info(`Временная директория удалена: ${tempDir}`);
+          }
+        });
+      } catch (rmError) {
+        logger.warn(`Ошибка при удалении временной директории: ${tempDir}`, rmError);
+      }
+      
+      return res.json({ 
+        success: true, 
+        message: 'Финализация не требуется, файл уже существует',
+        file: {
+          name: filename,
+          path: folderPath ? `${folderPath}/${filename}` : filename
+        }
+      });
+    }
+    
+    // Проверяем, существует ли временная директория
+    fs.access(tempDir, fs.constants.F_OK, async (tempDirErr) => {
+      if (tempDirErr) {
+        logger.error(`Временная директория не найдена: ${tempDir}`, tempDirErr);
+        return res.status(404).json({ 
+          error: 'Временная директория с чанками не найдена',
+          message: 'Возможно, загрузка была прервана или чанки были автоматически очищены'
+        });
+      }
+      
+      // Устанавливаем статус финализации в глобальном трекере
+      const uploadKey = `${disk}:${folderPath || ''}:${filename}`;
+      const uploadInfo = global.activeUploads.get(uploadKey) || {
+        status: 'finalizing',
+        startedAt: new Date(),
+        totalChunks: totalChunks,
+        progress: 95
+      };
+      
+      uploadInfo.status = 'finalizing';
+      uploadInfo.progress = 95;
+      global.activeUploads.set(uploadKey, uploadInfo);
+      
+      // Отправляем ответ клиенту, что начали финализацию
       res.json({
         success: true,
-        message: `Получен последний чанк ${chunkIndex}/${totalChunks} для файла ${filename}. Начинаем объединение.`,
-        chunkIndex: chunkIndex,
-        progress: uploadInfo.progress
+        message: 'Начинаем финализацию загрузки, объединение чанков',
+        status: 'finalizing'
       });
       
-      // Запускаем объединение чанков в отдельном процессе
+      // Запускаем процесс объединения чанков в отдельном потоке
       try {
-        const finalFilePath = path.join(fullPath, filename);
         const outputStream = fs.createWriteStream(finalFilePath);
         
         outputStream.on('error', (error) => {
@@ -447,12 +608,13 @@ router.post('/:disk/upload-chunk', (req, res) => {
         outputStream.on('finish', () => {
           logger.info(`Файл ${filename} успешно объединен из ${totalChunks} чанков`);
           
-          // Проверяем наличие файла
-          fs.access(finalFilePath, fs.constants.F_OK, (accessErr) => {
-            if (accessErr) {
-              logger.error(`Объединенный файл не был найден: ${finalFilePath}`, accessErr);
+          // Проверяем успешность создания файла
+          fs.access(finalFilePath, fs.constants.F_OK, (finalFileErr) => {
+            if (finalFileErr) {
+              logger.error(`Объединенный файл не был найден: ${finalFilePath}`, finalFileErr);
               uploadInfo.status = 'error';
               uploadInfo.error = 'Объединенный файл не был найден';
+              global.activeUploads.set(uploadKey, uploadInfo);
             } else {
               // Получаем размер файла
               fs.stat(finalFilePath, (statErr, stats) => {
@@ -481,14 +643,14 @@ router.post('/:disk/upload-chunk', (req, res) => {
                   logger.warn(`Ошибка при удалении временной директории: ${tempDir}`, rmError);
                 }
                 
-                // Удаляем запись о загрузке через 30 секунд
+                // Удаляем запись о загрузке через 30 минут
                 setTimeout(() => {
                   const currentUpload = global.activeUploads.get(uploadKey);
                   if (currentUpload && currentUpload.status === 'completed') {
                     global.activeUploads.delete(uploadKey);
                     logger.info(`Удалена запись о загрузке из трекера: ${uploadKey}`);
                   }
-                }, 30000);
+                }, 30 * 60 * 1000); // 30 минут
               });
             }
           });
@@ -499,6 +661,13 @@ router.post('/:disk/upload-chunk', (req, res) => {
           for (let i = 0; i < totalChunks; i++) {
             try {
               const chunkPath = path.join(tempDir, `chunk.${i}`);
+              
+              // Проверяем наличие чанка
+              if (!fs.existsSync(chunkPath)) {
+                logger.error(`Чанк ${i} не найден по пути: ${chunkPath}`);
+                throw new Error(`Чанк ${i} не найден`);
+              }
+              
               await new Promise((resolve, reject) => {
                 const chunkStream = fs.createReadStream(chunkPath);
                 chunkStream.on('error', (error) => {
@@ -537,24 +706,102 @@ router.post('/:disk/upload-chunk', (req, res) => {
         });
       } catch (error) {
         logger.error(`Ошибка при начале объединения чанков для файла ${filename}:`, error);
+        const uploadInfo = global.activeUploads.get(uploadKey) || { status: 'error' };
         uploadInfo.status = 'error';
         uploadInfo.error = `Ошибка при объединении чанков: ${error.message}`;
         global.activeUploads.set(uploadKey, uploadInfo);
       }
-    } else {
-      // Если это не последний чанк, обновляем статус в трекере
-      uploadInfo.status = 'chunked_upload';
+    });
+  });
+});
+
+// Маршрут для отмены загрузки
+router.post('/:disk/cancel-upload', (req, res) => {
+  const { disk } = req.params;
+  const { filename, path: folderPath, uploadId } = req.body;
+  
+  if (!filename && !uploadId) {
+    return res.status(400).json({ error: 'Имя файла или ID загрузки не указаны' });
+  }
+  
+  try {
+    // Проверка подключения диска
+    if (!global.mountedDisks[disk]) {
+      logger.warn(`Попытка отмены загрузки на несмонтированный диск: ${disk}`);
+      // Не возвращаем ошибку, просто логируем
+    }
+    
+    // Находим ключ загрузки
+    const uploadKey = filename ? 
+      `${disk}:${folderPath || ''}:${filename}` : 
+      Object.keys(global.activeUploads).find(key => key.includes(uploadId));
+    
+    if (uploadKey && global.activeUploads.has(uploadKey)) {
+      // Получаем информацию о загрузке
+      const uploadInfo = global.activeUploads.get(uploadKey);
+      
+      // Проверяем статус загрузки
+      if (uploadInfo.status === 'completed' || uploadInfo.status === 'error') {
+        logger.info(`Загрузка ${uploadKey} уже завершена или имеет ошибку`);
+        global.activeUploads.delete(uploadKey);
+        return res.json({ 
+          success: true,
+          message: `Загрузка ${uploadKey} уже завершена или имеет ошибку, запись удалена` 
+        });
+      }
+      
+      // Обновляем статус загрузки
+      uploadInfo.status = 'cancelled';
+      uploadInfo.cancelledAt = new Date();
       global.activeUploads.set(uploadKey, uploadInfo);
       
-      // Отвечаем клиенту
-      res.json({
+      // Очищаем временные файлы, если это загрузка по частям
+      if (uploadInfo.status === 'chunked_upload' || uploadInfo.status === 'finalizing') {
+        const fullPath = path.join(config.disks[disk], folderPath || '');
+        const tempDir = path.join(fullPath, '.tmp_chunks', filename.replace(/[^a-zA-Z0-9_.-]/g, '_'));
+        
+        // Проверяем, существует ли временная директория
+        fs.access(tempDir, fs.constants.F_OK, (err) => {
+          if (!err) {
+            // Удаляем временную директорию
+            fs.rm(tempDir, { recursive: true, force: true }, (rmErr) => {
+              if (rmErr) {
+                logger.warn(`Не удалось удалить временную директорию при отмене загрузки: ${tempDir}`, rmErr);
+              } else {
+                logger.info(`Временная директория удалена при отмене загрузки: ${tempDir}`);
+              }
+            });
+          }
+        });
+      }
+      
+      // Удаляем запись о загрузке через 5 минут
+      setTimeout(() => {
+        if (global.activeUploads.has(uploadKey)) {
+          global.activeUploads.delete(uploadKey);
+          logger.info(`Удалена запись об отмененной загрузке: ${uploadKey}`);
+        }
+      }, 5 * 60 * 1000); // 5 минут
+      
+      logger.info(`Загрузка ${uploadKey} отменена`);
+      return res.json({ 
         success: true,
-        message: `Чанк ${chunkIndex}/${totalChunks} для файла ${filename} успешно загружен`,
-        chunkIndex: chunkIndex,
-        progress: uploadInfo.progress
+        message: `Загрузка ${uploadKey} отменена` 
+      });
+    } else {
+      logger.warn(`Загрузка ${uploadKey || 'неизвестная'} не найдена для отмены`);
+      return res.json({ 
+        success: false,
+        message: 'Загрузка не найдена' 
       });
     }
-  });
+  } catch (error) {
+    logger.error(`Ошибка при отмене загрузки:`, error);
+    return res.status(500).json({
+      success: false,
+      error: `Ошибка при отмене загрузки: ${error.message}`
+    });
+  }
 });
 
 module.exports = router;

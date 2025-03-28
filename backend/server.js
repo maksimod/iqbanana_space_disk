@@ -11,6 +11,9 @@ const diskRoutes = require('./routes/diskRoutes');
 const fileRoutes = require('./routes/fileRoutes');
 const systemRoutes = require('./routes/systemRoutes');
 const logger = require('./utils/logger');
+const cors = require('cors');
+const morgan = require('morgan');
+const multer = require('multer');
 
 const execPromise = util.promisify(exec);
 
@@ -24,14 +27,42 @@ app.use(corsMiddleware);
 app.use(express.json());
 app.use(logger.requestLogger);
 
+// Инициализация глобального трекера активных загрузок
+global.activeUploads = new Map();
+
+// Настройка для загрузки файлов
+const storage = multer.diskStorage({
+  destination: function(req, file, cb) {
+    // Временная директория для загрузки файлов
+    const tempDir = path.join(__dirname, 'temp');
+    
+    // Создаем временную директорию, если она не существует
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    
+    cb(null, tempDir);
+  },
+  filename: function(req, file, cb) {
+    // Генерируем уникальное имя для временного файла
+    const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1E9)}`;
+    cb(null, uniqueName);
+  }
+});
+
+// Настройка multer для чанковой загрузки
+const upload = multer({ 
+  storage,
+  limits: { 
+    fileSize: config.performance?.chunkSize || 10 * 1024 * 1024 // 10MB по умолчанию для каждого чанка
+  }
+});
+
+// Делаем multer доступным глобально для маршрутов
+global.upload = upload;
+
 // Глобальное состояние для хранения статуса смонтированности дисков
 global.mountedDisks = {};
-
-// Инициализация глобального объекта для отслеживания активных загрузок
-if (!global.activeUploads || !(global.activeUploads instanceof Map)) {
-    global.activeUploads = new Map();
-    logger.info('Инициализирован новый глобальный объект для отслеживания активных загрузок');
-}
 
 // Функция для проверки реального монтирования диска
 // Использует несколько методов для повышения надежности проверки
