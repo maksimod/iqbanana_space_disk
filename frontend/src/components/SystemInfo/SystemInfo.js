@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { FaServer, FaMemory, FaInfoCircle, FaHdd } from 'react-icons/fa';
 import { formatFileSize } from '../../utils/formatters';
+import { useAuth } from '../../context/AuthContext';
 import './systemInfo.css';
 
 const SystemInfo = () => {
@@ -8,11 +9,16 @@ const SystemInfo = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [expanded, setExpanded] = useState(false);
+  const { getAuthHeaders } = useAuth();
   
   useEffect(() => {
     const fetchSystemInfo = async () => {
       try {
-        const response = await fetch('/api/v1/system/info');
+        const response = await fetch('/api/v1/system/info', {
+          headers: {
+            ...getAuthHeaders()
+          }
+        });
         if (!response.ok) {
           throw new Error('Не удалось получить информацию о системе');
         }
@@ -27,7 +33,7 @@ const SystemInfo = () => {
     };
     
     fetchSystemInfo();
-  }, []);
+  }, [getAuthHeaders]);
   
   const toggleExpanded = () => {
     setExpanded(!expanded);

@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useToast } from '../context/ToastContext';
 import syncService from '../services/syncService';
+import { useAuth } from '../context/AuthContext';
 
 // Базовый URL для API запросов
 export const API_URL = '/api';
@@ -14,6 +15,7 @@ const useApi = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const toast = useToast();
+  const { getAuthHeaders } = useAuth();
 
   // Формирование базового URL с версией API
   const getApiUrl = useCallback((endpoint) => {
@@ -28,7 +30,12 @@ const useApi = () => {
     setError('');
     
     try {
-      const response = await fetch(getApiUrl(endpoint), options);
+      const response = await fetch(getApiUrl(endpoint), {
+        headers: {
+          ...getAuthHeaders()
+        },
+        ...options
+      });
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -44,21 +51,29 @@ const useApi = () => {
     } finally {
       setLoading(false);
     }
-  }, [getApiUrl]);
+  }, [getApiUrl, getAuthHeaders]);
 
   /**
    * Получение списка дисков
    */
   const fetchDisks = useCallback(async () => {
-    return await fetchData('/disks');
-  }, [fetchData]);
+    return await fetchData('/disks', {
+      headers: {
+        ...getAuthHeaders()
+      }
+    });
+  }, [fetchData, getAuthHeaders]);
 
   /**
    * Получение списка файлов в директории
    */
   const fetchFiles = useCallback(async (disk, path = '') => {
-    return await fetchData(`/disks/${disk}/files?path=${encodeURIComponent(path)}`);
-  }, [fetchData]);
+    return await fetchData(`/disks/${disk}/files?path=${encodeURIComponent(path)}`, {
+      headers: {
+        ...getAuthHeaders()
+      }
+    });
+  }, [fetchData, getAuthHeaders]);
 
   /**
    * Удаление файла или директории
@@ -68,10 +83,11 @@ const useApi = () => {
       method: 'DELETE',
       headers: {
         'Content-Type': 'application/json',
+        ...getAuthHeaders()
       },
       body: JSON.stringify({ filePath }),
     });
-  }, [fetchData]);
+  }, [fetchData, getAuthHeaders]);
 
   /**
    * Создание новой папки
@@ -87,6 +103,7 @@ const useApi = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...getAuthHeaders()
         },
         body: JSON.stringify({ folderPath, folderName }),
       });
@@ -95,26 +112,74 @@ const useApi = () => {
       setError('Не удалось создать папку: ' + (error.message || 'Неизвестная ошибка'));
       return null;
     }
-  }, [fetchData, getApiUrl, setError]);
+  }, [fetchData, getApiUrl, getAuthHeaders, setError]);
 
   /**
    * Получение URL для скачивания файла
    */
   const getDownloadUrl = useCallback((disk, filePath) => {
-    return `${getApiUrl(`/disks/${disk}/download`)}?path=${encodeURIComponent(filePath)}`;
+    // Добавляем токен в URL в качестве параметра запроса
+    const token = localStorage.getItem('token');
+    const baseUrl = `${getApiUrl(`/disks/${disk}/download`)}?path=${encodeURIComponent(filePath)}`;
+    return token ? `${baseUrl}&auth_token=${token}` : baseUrl;
   }, [getApiUrl]);
+
+  /**
+   * Скачивание файла с авторизацией
+   */
+  const downloadFile = useCallback(async (disk, filePath, fileName) => {
+    try {
+      // Используем fetch с авторизацией
+      const response = await fetch(`${getApiUrl(`/disks/${disk}/download`)}?path=${encodeURIComponent(filePath)}`, {
+        headers: {
+          ...getAuthHeaders()
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Ошибка при скачивании файла: ${response.status}`);
+      }
+      
+      // Получаем blob из ответа
+      const blob = await response.blob();
+      
+      // Создаем ссылку для скачивания
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      
+      // Очищаем ресурсы
+      setTimeout(() => {
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(link);
+      }, 100);
+      
+      return true;
+    } catch (error) {
+      console.error('Ошибка при скачивании файла:', error);
+      setError(`Не удалось скачать файл: ${error.message}`);
+      return false;
+    }
+  }, [getApiUrl, getAuthHeaders, setError]);
 
   /**
    * Получение списка активных загрузок
    */
   const getActiveUploads = useCallback(async (disk, path = '') => {
     try {
-      return await fetchData(`/disks/${disk}/upload-status?path=${encodeURIComponent(path)}`);
+      return await fetchData(`/disks/${disk}/upload-status?path=${encodeURIComponent(path)}`, {
+        headers: {
+          ...getAuthHeaders()
+        }
+      });
     } catch (error) {
       console.error('Ошибка при получении статуса загрузок:', error);
       return { uploads: [] };
     }
-  }, [fetchData]);
+  }, [fetchData, getAuthHeaders]);
 
   /**
    * Очистка всех активных загрузок на сервере
@@ -129,6 +194,7 @@ const useApi = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...getAuthHeaders()
         }
       });
       
@@ -143,7 +209,7 @@ const useApi = () => {
       console.error('Ошибка при очистке активных загрузок:', error);
       return { success: false, error: error.message || 'Не удалось очистить загрузки' };
     }
-  }, [fetchData]);
+  }, [fetchData, getAuthHeaders]);
 
   /**
    * Загрузка файла с прогрессом
@@ -202,7 +268,7 @@ const useApi = () => {
           // Отправляем запрос на отмену текущей загрузки на сервере
           fetch(getApiUrl(`/disks/${disk}/cancel-upload`), {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ 
               filename: file.name,
               path: path
@@ -300,7 +366,10 @@ const useApi = () => {
             const response = await fetch(getApiUrl(`/disks/${disk}/upload-chunk`), {
               method: 'POST',
               body: formData,
-              signal: abortController.signal
+              signal: abortController.signal,
+              headers: {
+                ...getAuthHeaders()
+              }
             });
             
             if (!response.ok) {
@@ -329,7 +398,10 @@ const useApi = () => {
                   const retryResponse = await fetch(getApiUrl(`/disks/${disk}/upload-chunk`), {
                     method: 'POST',
                     body: formData,
-                    signal: abortController.signal
+                    signal: abortController.signal,
+                    headers: {
+                      ...getAuthHeaders()
+                    }
                   });
                   
                   if (retryResponse.ok) {
@@ -430,7 +502,8 @@ const useApi = () => {
             const finalizeResponse = await fetch(getApiUrl(`/disks/${disk}/finalize-upload`), {
               method: 'POST',
               headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                ...getAuthHeaders()
               },
               body: JSON.stringify({
                 uploadId,
@@ -490,7 +563,11 @@ const useApi = () => {
             // Пробуем проверить, появился ли файл в директории
             const checkFileExists = async () => {
               try {
-                const filesResponse = await fetch(getApiUrl(`/disks/${disk}/files?path=${encodeURIComponent(path || '')}`));
+                const filesResponse = await fetch(getApiUrl(`/disks/${disk}/files?path=${encodeURIComponent(path || '')}`), {
+                  headers: {
+                    ...getAuthHeaders()
+                  }
+                });
                 
                 if (filesResponse.ok) {
                   const filesData = await filesResponse.json();
@@ -640,7 +717,7 @@ const useApi = () => {
       // Отправляем запрос на отмену загрузки на сервере
       fetch(getApiUrl(`/disks/${disk}/cancel-upload`), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           filename: file.name,
           path: path,
@@ -648,7 +725,7 @@ const useApi = () => {
         })
       }).catch(e => console.warn('Не удалось отправить запрос на отмену загрузки:', e));
     };
-  }, [getApiUrl, toast]);
+  }, [getApiUrl, getAuthHeaders, toast]);
 
   // Получение активных загрузок из localStorage для текущего пути
   const getLocalUploads = useCallback((disk, path = '') => {
@@ -690,6 +767,7 @@ const useApi = () => {
     deleteFile,
     createFolder,
     getDownloadUrl,
+    downloadFile,
     uploadFile,
     getActiveUploads,
     clearActiveUploads,

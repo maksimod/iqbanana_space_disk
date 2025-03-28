@@ -27,7 +27,7 @@ const FilesView = () => {
     loadDisks 
   } = useAppContext();
   
-  const { deleteFile, createFolder, getDownloadUrl, uploadFile, getActiveUploads, clearActiveUploads } = useApi();
+  const { deleteFile, createFolder, getDownloadUrl, downloadFile, uploadFile, getActiveUploads, clearActiveUploads } = useApi();
   const toast = useToast();
 
   // Определяем, какие файлы отображать - результаты поиска или все файлы
@@ -414,16 +414,13 @@ const FilesView = () => {
   };
 
   // Скачивание файла или папки
-  const handleDownload = (file) => {
+  const handleDownload = async (file) => {
     toast.showInfo(`Скачивание файла: ${file.name}`);
-    const downloadUrl = getDownloadUrl(currentDisk, file.path);
+    const success = await downloadFile(currentDisk, file.path, file.name);
     
-    const link = document.createElement('a');
-    link.href = downloadUrl;
-    link.download = file.name;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    if (!success) {
+      toast.showError(`Не удалось скачать файл: ${file.name}`);
+    }
   };
 
   // Обработка результатов поиска

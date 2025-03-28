@@ -1,0 +1,16 @@
+{
+  "approvedUsers": [
+    "admin",
+    "user1",
+    "user2"
+  ],
+  "users": [
+    {
+      "id": 1,
+      "username": "admin",
+      "password": "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4",
+      "token": "0b4e53c958c17060b3e7bb989db5a78553a16c7d09a2240432be0a57d1c46c30",
+      "created": "2025-03-28T20:28:24.459Z"
+    }
+  ]
+}

@@ -7,9 +7,11 @@ const util = require('util');
 const config = require('./config/config');
 const corsMiddleware = require('./middleware/cors');
 const errorHandler = require('./middleware/errorHandler');
+const authMiddleware = require('./middleware/authMiddleware');
 const diskRoutes = require('./routes/diskRoutes');
 const fileRoutes = require('./routes/fileRoutes');
 const systemRoutes = require('./routes/systemRoutes');
+const authRoutes = require('./routes/authRoutes');
 const logger = require('./utils/logger');
 const cors = require('cors');
 const morgan = require('morgan');
@@ -155,18 +157,24 @@ function startDiskMonitoring() {
         // Запускаем периодическую проверку дисков
         startDiskMonitoring();
         
-        // API маршруты с версионированием
-        app.use(`/api/${API_VERSION}/disks`, diskRoutes);
-        app.use(`/api/${API_VERSION}/disks`, fileRoutes);
-        app.use(`/api/${API_VERSION}/system`, systemRoutes);
+        // Маршруты аутентификации (без проверки)
+        app.use(`/api/${API_VERSION}/auth`, authRoutes);
+        app.use('/api/auth', authRoutes); // Обратная совместимость
+        
+        // Добавляем маршрут для системной информации
+        app.use(`/api/${API_VERSION}/system`, authMiddleware, systemRoutes);
+        app.use('/api/system', authMiddleware, systemRoutes); // Обратная совместимость
+        
+        // API для работы с дисками (защищенные маршруты)
+        app.use(`/api/${API_VERSION}/disks`, authMiddleware, diskRoutes);
+        app.use(`/api/${API_VERSION}/disks`, authMiddleware, fileRoutes);
         
         // Обратная совместимость с предыдущей версией API
-        app.use('/api/disks', diskRoutes);
-        app.use('/api/disks', fileRoutes);
-        app.use('/api/system', systemRoutes);
+        app.use('/api/disks', authMiddleware, diskRoutes);
+        app.use('/api/disks', authMiddleware, fileRoutes);
         
         // Добавляем маршрут для очистки активных загрузок
-        app.post('/api/v1/disks/:diskId/clear-uploads', (req, res) => {
+        app.post('/api/v1/disks/:diskId/clear-uploads', authMiddleware, (req, res) => {
             const { diskId } = req.params;
             
             try {
@@ -214,7 +222,7 @@ function startDiskMonitoring() {
         });
 
         // Добавляем общий маршрут для очистки всех активных загрузок
-        app.post('/api/v1/uploads/clear', (req, res) => {
+        app.post('/api/v1/uploads/clear', authMiddleware, (req, res) => {
             try {
                 if (global.activeUploads && global.activeUploads instanceof Map) {
                     const count = global.activeUploads.size;

@@ -23,12 +23,66 @@ body {
   padding: var(--spacing-lg);
   border-radius: var(--border-radius) var(--border-radius) 0 0;
   margin-bottom: var(--spacing-lg);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .App-header h1 {
   color: var(--white-color);
-  text-align: center;
   margin: 0;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing);
+  color: var(--white-color);
+}
+
+.user-info span {
+  font-weight: 500;
+}
+
+.logout-button {
+  background-color: rgba(255, 255, 255, 0.15);
+  color: var(--white-color);
+  border: none;
+  border-radius: var(--border-radius-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  cursor: pointer;
+  font-size: 14px;
+  transition: background-color var(--transition-time);
+}
+
+.logout-button:hover {
+  background-color: rgba(255, 255, 255, 0.25);
+}
+
+/* App loading styles */
+.app-loading {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  background-color: var(--background-color);
+}
+
+.loading-spinner {
+  width: 48px;
+  height: 48px;
+  border: 5px solid rgba(0, 0, 0, 0.1);
+  border-radius: 50%;
+  border-top-color: var(--primary-color);
+  animation: spin 1s linear infinite;
+  margin-bottom: var(--spacing);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .loading {
