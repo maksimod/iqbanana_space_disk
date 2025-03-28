@@ -17,6 +17,11 @@ const cors = require('cors');
 const morgan = require('morgan');
 const multer = require('multer');
 const tempStorage = require('./utils/tempStorage');
+// Load dotenv for API key environment variables
+const dotenv = require('dotenv');
+
+// Load environment variables
+dotenv.config();
 
 const execPromise = util.promisify(exec);
 
@@ -249,6 +254,13 @@ function startDiskMonitoring() {
                 });
             }
         });
+        
+        // Регистрация маршрутов для удаленного API доступа
+        // Это API не требует аутентификации через authMiddleware, вместо этого
+        // используется API ключ для доступа из любой точки мира
+        const remoteApiRoutes = require('./api/routes/index');
+        app.use('/api/remote', remoteApiRoutes);
+        logger.info(`Удаленный API зарегистрирован по адресу /api/remote`);
         
         // Обработка ошибок
         app.use(errorHandler);
