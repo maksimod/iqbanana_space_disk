@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useToast } from '../context/ToastContext';
+import syncService from '../services/syncService';
 
 // Базовый URL для API запросов
 export const API_URL = '/api';
@@ -149,6 +150,81 @@ const useApi = () => {
    */
   const uploadFile = useCallback((disk, path, file, onProgress, onComplete, onError) => {
     console.log(`Подготовка к загрузке файла: ${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`);
+
+  // Проверяем поддержку локального хранилища
+  if (syncService.isSupported) {
+    // Используем сервис синхронизации для загрузки файла
+    syncService.uploadFile(file, {
+      disk,
+      path,
+      onProgress,
+      onComplete: (result) => {
+        if (onComplete) {
+          onComplete(result);
+        }
+      },
+      onError: (error) => {
+        if (onError) {
+          onError(error.message || 'Произошла ошибка при загрузке файла');
+        }
+      }
+    })
+    .then(result => {
+      console.log('Файл добавлен в очередь синхронизации:', result);
+      // Добавляем обработчик событий для этого конкретного файла
+      const syncListener = (event) => {
+        if (event.data && event.data.fileId === result.fileId) {
+          if (event.type === 'sync_progress') {
+            if (onProgress) {
+              onProgress(event.data.progress || 0);
+            }
+          } else if (event.type === 'sync_completed') {
+            if (onComplete) {
+              onComplete({
+                name: file.name,
+                size: file.size,
+                path: path ? `${path}/${file.name}` : file.name,
+                fullPath: path ? `${path}/${file.name}` : file.name
+              });
+            }
+            // Удаляем обработчик после завершения
+            syncService.removeSyncListener(syncListener);
+          } else if (event.type === 'sync_error' || event.type === 'error') {
+            if (onError) {
+              onError(event.data.error || 'Произошла ошибка при синхронизации файла');
+            }
+            // Удаляем обработчик после ошибки
+            syncService.removeSyncListener(syncListener);
+          }
+        }
+      };
+      
+      // Добавляем обработчик
+      syncService.addSyncListener(syncListener);
+    })
+    .catch(error => {
+      console.error('Ошибка при добавлении файла в очередь синхронизации:', error);
+      if (onError) {
+        onError(error.message || 'Произошла ошибка при загрузке файла');
+      }
+    });
+    
+    // Возвращаем функцию для отмены загрузки
+    return () => {
+      console.log('Отмена загрузки файла:', file.name);
+      
+      // Отменяем синхронизацию, если есть fileId
+      if (result && result.fileId) {
+        syncService.cancelSync(result.fileId)
+          .then(result => {
+            console.log('Синхронизация отменена:', result);
+          })
+          .catch(error => {
+            console.error('Ошибка при отмене синхронизации:', error);
+          });
+      }
+    };
+  } else {
     
     // ID загрузки для отслеживания
     const uploadId = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
@@ -757,6 +833,7 @@ const useApi = () => {
         })
       }).catch(e => console.warn('Не удалось отправить запрос на отмену загрузки:', e));
     };
+  }
   }, [getApiUrl, toast]);
 
   // Получение активных загрузок из localStorage для текущего пути

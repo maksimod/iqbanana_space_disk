@@ -804,4 +804,15 @@ router.post('/:disk/cancel-upload', (req, res) => {
   }
 });
 
+// Добавить эти маршруты в существующий файл
+
+// Маршрут для синхронизации файла от клиента к серверу
+router.post('/:disk/sync', upload.single('file'), fileController.synchronizeFile);
+
+// Маршрут для проверки статуса синхронизации
+router.get('/sync/:fileId/status', fileController.getSyncStatus);
+
+// Маршрут для отмены синхронизации
+router.post('/sync/:fileId/cancel', fileController.cancelSync);
+
 module.exports = router;

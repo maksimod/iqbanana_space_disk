@@ -4,6 +4,20 @@ import './index.css';
 import App from './App';
 import reportWebVitals from './reportWebVitals';
 
+// Добавить в начало файла:
+// Регистрация Service Worker для фоновой синхронизации
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/serviceWorker.js')
+      .then(registration => {
+        console.log('Service Worker зарегистрирован:', registration);
+      })
+      .catch(error => {
+        console.error('Ошибка при регистрации Service Worker:', error);
+      });
+  });
+}
+
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
   <React.StrictMode>

@@ -6,6 +6,7 @@ const util = require('util');
 const archiver = require('archiver');
 const config = require('../config/config');
 const logger = require('../utils/logger');
+const tempStorage = require('../utils/tempStorage');
 
 const execPromise = util.promisify(exec);
 
@@ -403,11 +404,290 @@ const clearFileUploadStatus = (req, res) => {
   }
 };
 
+// Новый API endpoint для синхронизации файлов с клиента на сервер
+const synchronizeFile = async (req, res, next) => {
+  try {
+    const { disk } = req.params;
+    const { fileId, originalName, size, lastModified, folderPath } = req.body;
+    
+    if (!fileId || !originalName) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Отсутствуют необходимые параметры: fileId и originalName' 
+      });
+    }
+    
+    // Проверяем доступность диска
+    if (!config.disks[disk]) {
+      logger.warn(`Попытка синхронизации с несуществующим диском: ${disk}`);
+      return res.status(404).json({ error: 'Диск не найден' });
+    }
+    
+    if (!global.mountedDisks[disk]) {
+      logger.error(`Попытка синхронизации с несмонтированным диском: ${disk}`);
+      return res.status(503).json({ 
+        success: false,
+        error: 'Диск не смонтирован или недоступен', 
+        status: 'offline'
+      });
+    }
+    
+    // Проверяем наличие данных файла в запросе
+    if (!req.file) {
+      logger.warn('Попытка синхронизации без файла');
+      return res.status(400).json({ 
+        success: false,
+        error: 'Файл не был загружен' 
+      });
+    }
+    
+    // Формируем путь для сохранения файла
+    const targetPath = path.join(
+      config.disks[disk], 
+      folderPath || '',
+      originalName
+    );
+    
+    // Отправляем немедленный ответ клиенту, что запрос принят
+    res.json({
+      success: true,
+      message: 'Файл принят для синхронизации',
+      syncStatus: 'in_progress',
+      fileId,
+      file: {
+        name: originalName,
+        size: req.file.size,
+        path: path.join(folderPath || '', originalName),
+        syncStarted: new Date().toISOString()
+      }
+    });
+    
+    // Добавляем задачу синхронизации в глобальный трекер
+    if (!global.syncTasks) {
+      global.syncTasks = new Map();
+    }
+    
+    // Регистрируем задачу
+    const syncTask = {
+      fileId,
+      disk,
+      sourcePath: req.file.path,
+      targetPath,
+      folderPath: folderPath || '',
+      originalName,
+      size: req.file.size,
+      startTime: Date.now(),
+      status: 'copying',
+      progress: 0
+    };
+    
+    global.syncTasks.set(fileId, syncTask);
+    
+    // Выполняем копирование файла из временной директории в целевую
+    try {
+      // Создаем директорию назначения, если она не существует
+      const targetDir = path.dirname(targetPath);
+      if (!fs.existsSync(targetDir)) {
+        await fsPromises.mkdir(targetDir, { recursive: true });
+      }
+      
+      // Выполняем копирование файла
+      await fsPromises.copyFile(req.file.path, targetPath);
+      
+      // Обновляем статус задачи
+      syncTask.status = 'completed';
+      syncTask.progress = 100;
+      syncTask.completedAt = Date.now();
+      global.syncTasks.set(fileId, syncTask);
+      
+      logger.info(`Синхронизация файла успешно завершена: ${fileId} -> ${targetPath}`);
+      
+      // Удаляем временный файл
+      fs.unlink(req.file.path, (unlinkErr) => {
+        if (unlinkErr) {
+          logger.warn(`Не удалось удалить временный файл: ${req.file.path}`, unlinkErr);
+        }
+      });
+      
+      // Удаляем задачу через некоторое время
+      setTimeout(() => {
+        if (global.syncTasks.has(fileId)) {
+          global.syncTasks.delete(fileId);
+        }
+      }, 30 * 60 * 1000); // 30 минут
+      
+    } catch (error) {
+      logger.error(`Ошибка при синхронизации файла: ${fileId}`, error);
+      
+      // Обновляем статус задачи
+      syncTask.status = 'error';
+      syncTask.error = error.message;
+      syncTask.failedAt = Date.now();
+      global.syncTasks.set(fileId, syncTask);
+    }
+    
+  } catch (error) {
+    logger.error('Критическая ошибка при синхронизации файла:', error);
+    // Если ответ еще не отправлен, отправляем ошибку
+    if (!res.headersSent) {
+      next(error);
+    }
+  }
+};
+
+// API для проверки статуса синхронизации
+const getSyncStatus = (req, res) => {
+  try {
+    const { fileId } = req.params;
+    
+    if (!fileId) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Не указан ID файла' 
+      });
+    }
+    
+    if (!global.syncTasks) {
+      global.syncTasks = new Map();
+    }
+    
+    // Проверяем наличие задачи в трекере
+    if (global.syncTasks.has(fileId)) {
+      const task = global.syncTasks.get(fileId);
+      
+      return res.json({
+        success: true,
+        sync: {
+          fileId,
+          status: task.status,
+          progress: task.progress,
+          startTime: task.startTime,
+          completedAt: task.completedAt,
+          error: task.error
+        }
+      });
+    } else {
+      // Если задача не найдена, проверяем существование файла
+      const { disk, path: filePath } = req.query;
+      
+      if (disk && filePath && config.disks[disk]) {
+        const fullPath = path.join(config.disks[disk], filePath);
+        
+        fs.access(fullPath, fs.constants.F_OK, (err) => {
+          if (err) {
+            return res.json({
+              success: true,
+              sync: {
+                fileId,
+                status: 'not_found',
+                error: 'Файл не найден или синхронизация не выполнялась'
+              }
+            });
+          } else {
+            // Файл существует, значит синхронизация была успешной
+            return res.json({
+              success: true,
+              sync: {
+                fileId,
+                status: 'completed',
+                progress: 100,
+                message: 'Файл успешно синхронизирован'
+              }
+            });
+          }
+        });
+      } else {
+        return res.json({
+          success: true,
+          sync: {
+            fileId,
+            status: 'unknown',
+            message: 'Синхронизация не найдена или завершена'
+          }
+        });
+      }
+    }
+  } catch (error) {
+    logger.error('Ошибка при получении статуса синхронизации:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Ошибка при получении статуса синхронизации' 
+    });
+  }
+};
+
+// API для отмены синхронизации
+const cancelSync = (req, res) => {
+  try {
+    const { fileId } = req.params;
+    
+    if (!fileId) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Не указан ID файла' 
+      });
+    }
+    
+    if (!global.syncTasks) {
+      global.syncTasks = new Map();
+    }
+    
+    // Проверяем наличие задачи в трекере
+    if (global.syncTasks.has(fileId)) {
+      const task = global.syncTasks.get(fileId);
+      
+      // Проверяем, можно ли отменить синхронизацию
+      if (task.status === 'completed' || task.status === 'error') {
+        return res.json({
+          success: true,
+          message: `Синхронизация уже ${task.status === 'completed' ? 'завершена' : 'завершилась с ошибкой'}`
+        });
+      }
+      
+      // Отмечаем задачу как отмененную
+      task.status = 'cancelled';
+      task.cancelledAt = Date.now();
+      global.syncTasks.set(fileId, task);
+      
+      // Удаляем целевой файл, если он существует
+      if (task.targetPath && fs.existsSync(task.targetPath)) {
+        fs.unlink(task.targetPath, (err) => {
+          if (err) {
+            logger.warn(`Не удалось удалить целевой файл при отмене синхронизации: ${task.targetPath}`, err);
+          }
+        });
+      }
+      
+      logger.info(`Синхронизация отменена: ${fileId}`);
+      
+      return res.json({
+        success: true,
+        message: 'Синхронизация успешно отменена'
+      });
+    } else {
+      return res.json({
+        success: true,
+        message: 'Синхронизация не найдена или уже завершена'
+      });
+    }
+  } catch (error) {
+    logger.error('Ошибка при отмене синхронизации:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Ошибка при отмене синхронизации' 
+    });
+  }
+};
+
+
 module.exports = {
   getFiles,
   uploadFile,
   deleteFile,
   createFolder,
   downloadFile,
-  clearFileUploadStatus
+  clearFileUploadStatus,
+  synchronizeFile,
+  getSyncStatus,
+  cancelSync
 };

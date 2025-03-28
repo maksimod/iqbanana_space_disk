@@ -14,6 +14,7 @@ const logger = require('./utils/logger');
 const cors = require('cors');
 const morgan = require('morgan');
 const multer = require('multer');
+const tempStorage = require('./utils/tempStorage');
 
 const execPromise = util.promisify(exec);
 
@@ -142,6 +143,13 @@ function startDiskMonitoring() {
 // Проверяем доступность всех дисков перед запуском сервера
 (async function() {
     try {
+        // Инициализация временного хранилища
+        await tempStorage.initTempStorage();
+        logger.info(`Временное хранилище инициализировано: ${tempStorage.TEMP_DIR}`);
+        
+        // Инициализация трекера задач синхронизации
+        global.syncTasks = new Map();
+        
         await checkDisksAvailability();
         
         // Запускаем периодическую проверку дисков
