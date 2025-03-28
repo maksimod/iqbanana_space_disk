@@ -8,11 +8,18 @@ const DB_NAME = 'DiskManagerFilesDB';
 const STORE_NAME = 'files';
 const DB_VERSION = 1;
 
+let dbConnection = null;
+
 // Максимальный размер хранимых данных (5GB)
 const MAX_STORAGE_SIZE = 5 * 1024 * 1024 * 1024;
 
 // Функция для открытия соединения с БД
 const openDB = () => {
+  // Если у нас уже есть соединение, возвращаем его
+  if (dbConnection) {
+    return Promise.resolve(dbConnection);
+  }
+  
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
@@ -40,8 +47,46 @@ const openDB = () => {
 
     request.onsuccess = (event) => {
       const db = event.target.result;
+      
+      // Сохраняем соединение
+      dbConnection = db;
+      
+      // Обработчик для закрытия соединения при ошибке
+      db.onclose = () => {
+        console.log('Соединение с IndexedDB закрыто');
+        dbConnection = null;
+      };
+      
+      // Обработчик для обработки ошибок версии
+      db.onversionchange = () => {
+        db.close();
+        console.log('Обнаружено изменение версии БД, перезагрузка требуется');
+        dbConnection = null;
+      };
+      
       resolve(db);
     };
+  });
+};
+
+// Функция для обертывания операций в соединение и транзакцию
+const withTransaction = async (storeName, mode, callback) => {
+  const db = await openDB();
+  
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(storeName, mode);
+    const store = transaction.objectStore(storeName);
+    
+    transaction.oncomplete = () => {
+      resolve();
+    };
+    
+    transaction.onerror = (event) => {
+      reject(event.target.error);
+    };
+    
+    // Вызываем предоставленный колбэк с хранилищем и транзакцией
+    callback(store, transaction, resolve, reject);
   });
 };
 
@@ -62,31 +107,33 @@ const saveFile = async (file, metadata = {}) => {
     // Открываем соединение с БД
     const db = await openDB();
     
-    // Создаем транзакцию
-    const transaction = db.transaction([STORE_NAME], 'readwrite');
-    const store = transaction.objectStore(STORE_NAME);
-    
     // Проверяем размер хранилища перед добавлением нового файла
+    // Выполняем это ДО создания транзакции записи
     await checkStorageSize(db, file.size);
     
-    // Подготавливаем данные для сохранения
-    const fileData = {
-      fileId,
-      filename: file.name,
-      data: arrayBuffer,
-      size: file.size,
-      type: file.type,
-      lastModified: file.lastModified,
-      timestamp: Date.now(),
-      status: 'stored',
-      metadata: {
-        ...metadata,
-        originalName: file.name
-      }
-    };
-    
-    // Сохраняем файл
+    // ПОСЛЕ завершения checkStorageSize создаем новую транзакцию
     return new Promise((resolve, reject) => {
+      // Создаем НОВУЮ транзакцию для добавления файла
+      const transaction = db.transaction([STORE_NAME], 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      
+      // Подготавливаем данные для сохранения
+      const fileData = {
+        fileId,
+        filename: file.name,
+        data: arrayBuffer,
+        size: file.size,
+        type: file.type,
+        lastModified: file.lastModified,
+        timestamp: Date.now(),
+        status: 'stored',
+        metadata: {
+          ...metadata,
+          originalName: file.name
+        }
+      };
+      
+      // Сохраняем файл
       const request = store.add(fileData);
       
       request.onsuccess = () => {
@@ -98,7 +145,18 @@ const saveFile = async (file, metadata = {}) => {
         console.error('Ошибка при сохранении файла в IndexedDB:', event.target.error);
         reject(event.target.error);
       };
+      
+      // Добавляем обработчик события завершения транзакции
+      transaction.oncomplete = () => {
+        console.log(`Транзакция для сохранения файла "${file.name}" успешно завершена`);
+      };
+      
+      transaction.onerror = (event) => {
+        console.error('Ошибка транзакции при сохранении файла:', event.target.error);
+        reject(event.target.error);
+      };
     });
+    
   } catch (error) {
     console.error('Ошибка при сохранении файла:', error);
     throw error;
@@ -112,6 +170,7 @@ const saveFile = async (file, metadata = {}) => {
  */
 const checkStorageSize = async (db, newFileSize) => {
   return new Promise((resolve, reject) => {
+    // Создаем отдельную транзакцию только для чтения
     const transaction = db.transaction([STORE_NAME], 'readonly');
     const store = transaction.objectStore(STORE_NAME);
     
@@ -123,60 +182,82 @@ const checkStorageSize = async (db, newFileSize) => {
     const filesToDelete = [];
     
     request.onsuccess = (event) => {
-        const cursor = event.target.result;
+      const cursor = event.target.result;
       
-        if (cursor) {
-          totalSize += cursor.value.size;
-          
-          // Добавляем старые файлы в список на удаление
-          if (totalSize + newFileSize > MAX_STORAGE_SIZE) {
-            filesToDelete.push(cursor.value.fileId);
-          }
-          
-          cursor.continue();
-        } else {
-          // Если нужно освободить место, удаляем старые файлы
-          if (filesToDelete.length > 0) {
-            console.log(`Требуется очистка хранилища. Удаление ${filesToDelete.length} старых файлов...`);
-            
-            // Создаем транзакцию для удаления
+      if (cursor) {
+        totalSize += cursor.value.size;
+        
+        // Добавляем старые файлы в список на удаление
+        if (totalSize + newFileSize > MAX_STORAGE_SIZE) {
+          filesToDelete.push(cursor.value.fileId);
+        }
+        
+        cursor.continue();
+      } else {
+        // Если нет файлов для удаления, завершаем
+        if (filesToDelete.length === 0) {
+          console.log('Достаточно места в хранилище, очистка не требуется.');
+          resolve();
+          return;
+        }
+        
+        console.log(`Требуется очистка хранилища. Удаление ${filesToDelete.length} старых файлов...`);
+        
+        // Функция для последовательного удаления файлов
+        const deleteFiles = async () => {
+          try {
+            // Создаем новую транзакцию для удаления файлов
             const deleteTransaction = db.transaction([STORE_NAME], 'readwrite');
             const deleteStore = deleteTransaction.objectStore(STORE_NAME);
             
-            // Удаляем файлы последовательно
-            const deleteNext = (index) => {
-              if (index >= filesToDelete.length) {
-                console.log('Очистка хранилища завершена');
-                resolve();
-                return;
-              }
-              
-              const request = deleteStore.delete(filesToDelete[index]);
-              
-              request.onsuccess = () => {
-                deleteNext(index + 1);
-              };
-              
-              request.onerror = (event) => {
-                console.error('Ошибка при удалении файла из IndexedDB:', event.target.error);
-                // Продолжаем удаление других файлов
-                deleteNext(index + 1);
-              };
+            // Используем Promise для обработки всех удалений внутри одной транзакции
+            await Promise.all(filesToDelete.map(fileId => {
+              return new Promise((resolveDelete, rejectDelete) => {
+                const deleteRequest = deleteStore.delete(fileId);
+                
+                deleteRequest.onsuccess = () => {
+                  console.log(`Файл ${fileId} удален для освобождения места.`);
+                  resolveDelete();
+                };
+                
+                deleteRequest.onerror = (event) => {
+                  console.error(`Ошибка при удалении файла ${fileId}:`, event.target.error);
+                  rejectDelete(event.target.error);
+                };
+              });
+            }));
+            
+            // Добавляем обработчик завершения транзакции
+            deleteTransaction.oncomplete = () => {
+              console.log('Очистка хранилища успешно завершена.');
+              resolve();
             };
             
-            deleteNext(0);
-          } else {
+            deleteTransaction.onerror = (event) => {
+              console.error('Ошибка при очистке хранилища:', event.target.error);
+              // Даже при ошибке продолжаем выполнение основной логики
+              resolve();
+            };
+          } catch (error) {
+            console.error('Ошибка при удалении старых файлов:', error);
+            // Даже при ошибке продолжаем выполнение основной логики
             resolve();
           }
-        }
-      };
-      
-      request.onerror = (event) => {
-        console.error('Ошибка при проверке размера хранилища:', event.target.error);
-        reject(event.target.error);
-      };
-    });
-  };
+        };
+        
+        // Запускаем удаление после завершения текущей транзакции
+        transaction.oncomplete = () => {
+          deleteFiles();
+        };
+      }
+    };
+    
+    request.onerror = (event) => {
+      console.error('Ошибка при проверке размера хранилища:', event.target.error);
+      reject(event.target.error);
+    };
+  });
+};
   
   /**
    * Получение файла из локального хранилища

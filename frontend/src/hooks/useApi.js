@@ -289,7 +289,7 @@ const useApi = () => {
     }
     
     // Определяем, большой ли файл
-    const isLargeFile = file.size > 50 * 1024 * 1024; // файлы больше 50MB 
+    const isLargeFile = false; // файлы больше 50MB 
     const isVeryLargeFile = file.size > 500 * 1024 * 1024; // файлы больше 500MB
     
     // Настраиваем размер чанка в зависимости от размера файла

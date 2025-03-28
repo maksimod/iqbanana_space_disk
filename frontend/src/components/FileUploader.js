@@ -152,6 +152,8 @@ const FileUploader = ({ onFileUploadComplete, currentPath, selectedDisk }) => {
           ...prev,
           [tempKey]: progress
         }));
+          // Добавьте дополнительное логирование, чтобы видеть, вызывается ли этот метод
+        console.log(`Прогресс загрузки ${file.name}: ${progress}%`);
       };
       
       // Функция вызывается при успешном завершении загрузки

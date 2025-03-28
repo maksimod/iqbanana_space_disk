@@ -7,6 +7,32 @@ const multer = require('multer');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 
+
+// Добавьте этот код перед маршрутами, например, сразу после импортов
+const defaultStorage = multer.diskStorage({
+  destination: function(req, file, cb) {
+    const fullPath = path.join(config.disks[req.params.disk], req.query.path || '');
+    
+    fs.access(fullPath, fs.constants.F_OK | fs.constants.W_OK, (err) => {
+      if (err) {
+        logger.error(`Ошибка доступа к директории для загрузки: ${fullPath}`, err);
+        return cb(new Error('Директория не существует или нет прав на запись'));
+      }
+      cb(null, fullPath);
+    });
+  },
+  filename: function(req, file, cb) {
+    cb(null, file.originalname);
+  }
+});
+
+const upload = multer({ 
+  storage: defaultStorage,
+  limits: { 
+    fileSize: config.performance.maxFileSize || 20 * 1024 * 1024 * 1024
+  }
+});
+
 // Настройка multer для обработки чанков
 const chunkStorage = multer.diskStorage({
   destination: function(req, file, cb) {
@@ -184,13 +210,13 @@ router.post('/:disk/upload', (req, res) => {
     }
   });
   
-  // Настраиваем multer
-  const upload = multer({ 
-    storage,
-    limits: { 
-      fileSize: config.performance.maxFileSize || 20 * 1024 * 1024 * 1024
-    }
-  }).single('file');
+  // // Настраиваем multer
+  // const upload = multer({ 
+  //   storage,
+  //   limits: { 
+  //     fileSize: config.performance.maxFileSize || 20 * 1024 * 1024 * 1024
+  //   }
+  // }).single('file');
   
   // Устанавливаем увеличенные таймауты
   req.setTimeout(3600000);
@@ -310,6 +336,7 @@ router.post('/:disk/upload', (req, res) => {
       }
     });
   });
+  console.log('Multer завершил обработку загрузки');
 });
 
 // Модифицируем маршрут удаления для проверки активных загрузок
