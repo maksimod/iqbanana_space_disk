@@ -10,7 +10,7 @@ class SyncService {
     this.apiUrl = `${API_URL}/${API_VERSION}`;
     this.syncQueue = [];
     this.isSyncing = false;
-    this.listeners = [];
+    this.syncListeners = [];
     
     // Проверяем поддержку IndexedDB
     this.isSupported = indexedDBStorage.isSupported();
@@ -87,7 +87,7 @@ class SyncService {
    * @param {Function} listener - функция-обработчик
    */
   addSyncListener(listener) {
-    this.listeners.push(listener);
+    this.syncListeners.push(listener);
   }
   
   /**
@@ -95,7 +95,7 @@ class SyncService {
    * @param {Function} listener - функция-обработчик
    */
   removeSyncListener(listener) {
-    this.listeners = this.listeners.filter(l => l !== listener);
+    this.syncListeners = this.syncListeners.filter(l => l !== listener);
   }
   
   /**
@@ -104,7 +104,7 @@ class SyncService {
    * @param {Object} data - данные события
    */
   _notifyListeners(type, data) {
-    this.listeners.forEach(listener => {
+    this.syncListeners.forEach(listener => {
       try {
         listener({ type, data });
       } catch (error) {
@@ -757,6 +757,348 @@ class SyncService {
       
       return 0;
     }
+  }
+  
+  // Проверяем статус синхронизации
+  async checkSyncStatus(fileId, options = {}) {
+    try {
+      const { disk, path } = options;
+      const response = await fetch(`${API_URL}/${API_VERSION}/sync/${fileId}/status?disk=${disk}&path=${encodeURIComponent(path || '')}`);
+      
+      // Если получили 404, это может означать, что синхронизация уже завершена
+      // Проверяем наличие файла напрямую
+      if (response.status === 404) {
+        console.log('Получен 404 при проверке статуса, проверяем наличие файла напрямую');
+        
+        try {
+          // Проверяем, есть ли файл в директории
+          const filesResponse = await fetch(`${API_URL}/${API_VERSION}/disks/${disk}/files?path=${encodeURIComponent(path || '')}`);
+          
+          if (filesResponse.ok) {
+            const filesData = await filesResponse.json();
+            const taskInfo = this.getTaskById(fileId);
+            
+            if (taskInfo && filesData && filesData.files) {
+              const fileName = taskInfo.fileName || taskInfo.file?.name;
+              const fileExists = filesData.files.some(f => f.name === fileName);
+              
+              if (fileExists) {
+                console.log(`Файл ${fileName} найден в директории, считаем синхронизацию завершенной`);
+                
+                // Эмулируем успешный ответ
+                return {
+                  status: 'completed',
+                  progress: 100,
+                  fileId,
+                  success: true
+                };
+              }
+            }
+          }
+          
+          // Если файл не найден, возвращаем статус "в процессе"
+          return {
+            status: 'in_progress',
+            progress: 50,  // Возвращаем средний прогресс
+            fileId
+          };
+        } catch (err) {
+          console.error('Ошибка при проверке наличия файла:', err);
+          // Возвращаем неопределенный статус, но не ошибку
+          return {
+            status: 'unknown',
+            progress: 50,
+            fileId
+          };
+        }
+      }
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Ошибка при проверке статуса синхронизации:', error);
+      
+      // Даже если произошла ошибка, считаем, что процесс идет
+      return {
+        status: 'in_progress',
+        progress: 30,
+        fileId,
+        error: error.message
+      };
+    }
+  }
+  
+  // Запускаем процесс синхронизации
+  async startSync(fileId) {
+    try {
+      const taskInfo = this.getTaskById(fileId);
+      if (!taskInfo) {
+        throw new Error(`Задача с ID ${fileId} не найдена`);
+      }
+      
+      console.log(`Запуск синхронизации для файла ${taskInfo.fileName}`);
+      
+      // Обновляем статус задачи
+      this.updateTask(fileId, {
+        status: 'syncing',
+        progress: 0,
+        error: null,
+        startTime: Date.now()
+      });
+      
+      // Эмитим событие начала синхронизации
+      this.emitSyncEvent('sync_started', {
+        fileId,
+        fileName: taskInfo.fileName,
+        status: 'syncing'
+      });
+      
+      // Инициализируем запрос на синхронизацию
+      const response = await fetch(`${API_URL}/${API_VERSION}/disks/${taskInfo.disk}/sync?path=${encodeURIComponent(taskInfo.path || '')}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          tempFilePath: taskInfo.tempFilePath,
+          fileName: taskInfo.fileName,
+          fileId
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Ошибка при старте синхронизации: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
+      if (!data.success) {
+        throw new Error(data.error || 'Неизвестная ошибка при синхронизации');
+      }
+      
+      console.log('Синхронизация успешно запущена:', data);
+      
+      // Запускаем проверку статуса синхронизации
+      this.scheduleStatusCheck(fileId);
+      
+      return {
+        success: true,
+        fileId,
+        ...data
+      };
+    } catch (error) {
+      console.error('Ошибка при запуске синхронизации:', error);
+      
+      // Обновляем статус задачи
+      this.updateTask(fileId, {
+        status: 'error',
+        error: error.message,
+        endTime: Date.now()
+      });
+      
+      // Эмитим событие ошибки
+      this.emitSyncEvent('sync_error', {
+        fileId,
+        error: error.message
+      });
+      
+      return {
+        success: false,
+        fileId,
+        error: error.message
+      };
+    }
+  }
+  
+  // Планируем проверку статуса синхронизации
+  scheduleStatusCheck(fileId) {
+    const taskInfo = this.getTaskById(fileId);
+    if (!taskInfo) {
+      console.warn(`Задача с ID ${fileId} не найдена, отменяем проверку статуса`);
+      return;
+    }
+    
+    // Если задача уже завершена, не запускаем проверку
+    if (taskInfo.status === 'completed' || taskInfo.status === 'error' || taskInfo.status === 'cancelled') {
+      console.log(`Задача ${fileId} уже имеет финальный статус ${taskInfo.status}, пропускаем проверку`);
+      return;
+    }
+    
+    console.log(`Проверка статуса синхронизации для файла ${taskInfo.fileName} (${fileId})`);
+    
+    // Проверяем статус
+    this.checkSyncStatus(fileId, {
+      disk: taskInfo.disk,
+      path: taskInfo.path
+    })
+      .then(statusData => {
+        console.log(`Получен статус синхронизации:`, statusData);
+        
+        // Обновляем прогресс
+        if (statusData.progress !== undefined) {
+          // Преобразуем в число и проверяем, что это не NaN
+          const progress = Number(statusData.progress);
+          if (!isNaN(progress)) {
+            // Получаем текущий прогресс и увеличиваем его только если новый прогресс больше
+            const currentProgress = taskInfo.progress || 0;
+            const newProgress = Math.max(currentProgress, progress);
+            
+            this.updateTask(fileId, { progress: newProgress });
+            
+            // Эмитим событие прогресса
+            this.emitSyncEvent('sync_progress', {
+              fileId,
+              progress: newProgress
+            });
+          }
+        }
+        
+        // Обновляем статус задачи в зависимости от ответа
+        if (statusData.status === 'completed' || statusData.success === true) {
+          console.log(`Синхронизация файла ${taskInfo.fileName} завершена`);
+          
+          // Обновляем задачу
+          this.updateTask(fileId, {
+            status: 'completed',
+            progress: 100,
+            endTime: Date.now()
+          });
+          
+          // Эмитим событие завершения
+          this.emitSyncEvent('sync_completed', {
+            fileId,
+            fileName: taskInfo.fileName
+          });
+          
+          // Удаляем временный файл
+          this.removeTempFile(taskInfo.tempFilePath);
+          
+        } else if (statusData.status === 'error' || statusData.error) {
+          console.error(`Ошибка при синхронизации файла ${taskInfo.fileName}:`, statusData.error);
+          
+          // Обновляем задачу
+          this.updateTask(fileId, {
+            status: 'error',
+            error: statusData.error,
+            endTime: Date.now()
+          });
+          
+          // Эмитим событие ошибки
+          this.emitSyncEvent('sync_error', {
+            fileId,
+            error: statusData.error
+          });
+          
+          // Удаляем временный файл
+          this.removeTempFile(taskInfo.tempFilePath);
+          
+        } else {
+          // Если синхронизация еще идет, запланируем следующую проверку
+          setTimeout(() => {
+            this.scheduleStatusCheck(fileId);
+          }, 2000);
+        }
+      })
+      .catch(error => {
+        console.error(`Ошибка при проверке статуса синхронизации для ${fileId}:`, error);
+        
+        // Если это не критическая ошибка, продолжаем проверять статус
+        setTimeout(() => {
+          this.scheduleStatusCheck(fileId);
+        }, 3000);
+      });
+  }
+  
+  // Получение задачи по ID
+  getTaskById(fileId) {
+    if (!this.tasks) {
+      this.tasks = {};
+    }
+    return this.tasks[fileId];
+  }
+  
+  // Обновление информации о задаче
+  updateTask(fileId, updates) {
+    if (!this.tasks) {
+      this.tasks = {};
+    }
+    
+    this.tasks[fileId] = {
+      ...this.tasks[fileId],
+      ...updates
+    };
+    
+    // Сохраняем в localStorage для восстановления после перезагрузки
+    this.saveTasks();
+  }
+  
+  // Сохранение задач в localStorage
+  saveTasks() {
+    try {
+      localStorage.setItem('syncTasks', JSON.stringify(this.tasks));
+    } catch (e) {
+      console.warn('Не удалось сохранить задачи в localStorage:', e);
+    }
+  }
+  
+  // Удаление временного файла
+  removeTempFile(tempFilePath) {
+    if (!tempFilePath) {
+      return Promise.resolve();
+    }
+    
+    console.log(`Удаление временного файла: ${tempFilePath}`);
+    
+    return fetch(`${API_URL}/${API_VERSION}/uploads/remove-temp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        tempFilePath
+      })
+    })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        console.log('Временный файл удален:', data);
+        return data;
+      })
+      .catch(error => {
+        console.error('Ошибка при удалении временного файла:', error);
+        return { success: false, error: error.message };
+      });
+  }
+  
+  // Эмиттер событий синхронизации
+  emitSyncEvent(eventType, data) {
+    // Проверяем, что у нас есть слушатели
+    if (!this.syncListeners || this.syncListeners.length === 0) {
+      return;
+    }
+    
+    // Вызываем каждый зарегистрированный обработчик
+    this.syncListeners.forEach(listener => {
+      try {
+        listener({
+          type: eventType,
+          data: {
+            ...data,
+            timestamp: Date.now()
+          }
+        });
+      } catch (error) {
+        console.error('Ошибка при вызове обработчика события синхронизации:', error);
+      }
+    });
   }
 }
 

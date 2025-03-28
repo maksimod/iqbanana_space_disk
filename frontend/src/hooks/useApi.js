@@ -146,88 +146,32 @@ const useApi = () => {
   }, [fetchData]);
 
   /**
-   * Загрузка файла с прогрессом и оптимизацией для больших файлов
+   * Загрузка файла с прогрессом
    */
   const uploadFile = useCallback((disk, path, file, onProgress, onComplete, onError) => {
-    console.log(`Подготовка к загрузке файла: ${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`);
+    console.log(`Начинаем загрузку файла: ${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`);
 
-  // Проверяем поддержку локального хранилища
-  if (syncService.isSupported) {
-    // Используем сервис синхронизации для загрузки файла
-    syncService.uploadFile(file, {
-      disk,
-      path,
-      onProgress,
-      onComplete: (result) => {
-        if (onComplete) {
-          onComplete(result);
-        }
-      },
-      onError: (error) => {
-        if (onError) {
-          onError(error.message || 'Произошла ошибка при загрузке файла');
-        }
-      }
-    })
-    .then(result => {
-      console.log('Файл добавлен в очередь синхронизации:', result);
-      // Добавляем обработчик событий для этого конкретного файла
-      const syncListener = (event) => {
-        if (event.data && event.data.fileId === result.fileId) {
-          if (event.type === 'sync_progress') {
-            if (onProgress) {
-              onProgress(event.data.progress || 0);
-            }
-          } else if (event.type === 'sync_completed') {
-            if (onComplete) {
-              onComplete({
-                name: file.name,
-                size: file.size,
-                path: path ? `${path}/${file.name}` : file.name,
-                fullPath: path ? `${path}/${file.name}` : file.name
-              });
-            }
-            // Удаляем обработчик после завершения
-            syncService.removeSyncListener(syncListener);
-          } else if (event.type === 'sync_error' || event.type === 'error') {
-            if (onError) {
-              onError(event.data.error || 'Произошла ошибка при синхронизации файла');
-            }
-            // Удаляем обработчик после ошибки
-            syncService.removeSyncListener(syncListener);
-          }
-        }
-      };
-      
-      // Добавляем обработчик
-      syncService.addSyncListener(syncListener);
-    })
-    .catch(error => {
-      console.error('Ошибка при добавлении файла в очередь синхронизации:', error);
-      if (onError) {
-        onError(error.message || 'Произошла ошибка при загрузке файла');
-      }
-    });
-    
-    // Возвращаем функцию для отмены загрузки
-    return () => {
-      console.log('Отмена загрузки файла:', file.name);
-      
-      // Отменяем синхронизацию, если есть fileId
-      if (result && result.fileId) {
-        syncService.cancelSync(result.fileId)
-          .then(result => {
-            console.log('Синхронизация отменена:', result);
-          })
-          .catch(error => {
-            console.error('Ошибка при отмене синхронизации:', error);
-          });
-      }
-    };
-  } else {
-    
     // ID загрузки для отслеживания
     const uploadId = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    
+    // Функция для обновления статуса загрузки в localStorage
+    const updateLocalUploadStatus = (id, updates) => {
+      try {
+        const activeUploads = JSON.parse(localStorage.getItem('activeUploads') || '{}');
+        
+        if (activeUploads[id]) {
+          activeUploads[id] = {
+            ...activeUploads[id],
+            ...updates,
+            lastUpdate: Date.now()
+          };
+          
+          localStorage.setItem('activeUploads', JSON.stringify(activeUploads));
+        }
+      } catch (e) {
+        console.warn('Не удалось обновить статус загрузки в localStorage:', e);
+      }
+    };
     
     // Сохраняем информацию о файле в localStorage для постоянного хранения
     try {
@@ -289,13 +233,13 @@ const useApi = () => {
     }
     
     // Определяем, большой ли файл
-    const isLargeFile = false; // файлы больше 50MB 
+    const isLargeFile = file.size > 50 * 1024 * 1024; // файлы больше 50MB 
     const isVeryLargeFile = file.size > 500 * 1024 * 1024; // файлы больше 500MB
     
     // Настраиваем размер чанка в зависимости от размера файла
     const chunkSize = isVeryLargeFile ? 5 * 1024 * 1024 : // 5MB для очень больших файлов
-                     isLargeFile ? 2 * 1024 * 1024 : // 2MB для больших файлов
-                     1 * 1024 * 1024; // 1MB для обычных файлов
+                    isLargeFile ? 2 * 1024 * 1024 : // 2MB для больших файлов
+                    1 * 1024 * 1024; // 1MB для обычных файлов
     
     // Запоминаем, если загрузка была отменена
     let requestAborted = false;
@@ -344,7 +288,7 @@ const useApi = () => {
           formData.append('index', i.toString());
           formData.append('totalChunks', totalChunks.toString());
           formData.append('filename', file.name);
-          formData.append('path', path);
+          formData.append('path', path || '');
           formData.append('uploadId', uploadId);
           formData.append('fileSize', file.size.toString());
           
@@ -406,16 +350,20 @@ const useApi = () => {
               }
             }
             
-            // Обрабатываем ответ сервера
-            const data = await response.json();
-            
-            // Увеличиваем счетчик загруженных чанков
+            // Обновляем счетчик загруженных чанков
             uploadedChunks++;
             
-            // Обновляем прогресс загрузки
-            const progress = Math.min(Math.round((uploadedChunks / totalChunks) * 95), 95); // оставляем 5% на финализацию
+            // Рассчитываем прогресс загрузки (от 0 до 95% - для загрузки чанков)
+            const progress = Math.floor((uploadedChunks / totalChunks) * 95);
+            
+            console.log(`Прогресс загрузки: ${progress}% (${uploadedChunks}/${totalChunks} чанков)`);
+            
+            // Обновляем прогресс
             if (progress > lastProgress) {
-              onProgress(progress);
+              if (onProgress) {
+                onProgress(progress);
+              }
+              
               lastProgress = progress;
               
               // Обновляем статус в localStorage
@@ -425,151 +373,241 @@ const useApi = () => {
                 uploadedChunks
               });
             }
-            
-            // Если это последний чанк, запускаем финализацию
-            if (data.isLastChunk || uploadedChunks === totalChunks) {
-              console.log('Загружен последний чанк, начинаем финализацию...');
-              await finalizeUpload();
-            }
           } catch (error) {
-            // Проверяем, не была ли загрузка отменена пользователем
-            if (error.name === 'AbortError' || requestAborted) {
-              console.log('Загрузка была отменена пользователем');
-              throw new Error('Загрузка отменена');
+            if (requestAborted) {
+              console.log('Загрузка была отменена');
+              break;
             }
             
             console.error(`Ошибка при загрузке чанка ${i}:`, error);
             hasError = true;
-            throw error;
+            
+            // Обновляем статус в localStorage
+            updateLocalUploadStatus(uploadId, {
+              status: 'error',
+              error: error.message,
+              failedChunk: i
+            });
+            
+            // Вызываем колбэк ошибки
+            if (onError) {
+              onError(error.message);
+            }
+            
+            // Удаляем обработчик beforeunload
+            window.removeEventListener('beforeunload', handleBeforeUnload);
+            
+            return;
           }
         }
         
-        // Если все чанки загружены, но финализация еще не запущена
-        if (uploadedChunks === totalChunks && !requestAborted && !hasError) {
-          console.log('Все чанки загружены, запускаем финализацию...');
-          await finalizeUpload();
-        }
-      } catch (error) {
-        // Проверяем, не была ли загрузка отменена пользователем
-        if (error.name === 'AbortError' || requestAborted) {
-          console.log('Загрузка была отменена');
-          updateLocalUploadStatus(uploadId, {
-            status: 'cancelled',
-            cancelledAt: Date.now()
-          });
-        } else {
-          console.error('Ошибка при чанковой загрузке файла:', error);
-          updateLocalUploadStatus(uploadId, {
-            status: 'error',
-            error: error.message || 'Неизвестная ошибка при загрузке',
-            errorAt: Date.now()
-          });
-          onError(error.message || 'Произошла ошибка при загрузке файла');
+        // Если загрузка была отменена, прекращаем
+        if (requestAborted) {
+          console.log('Загрузка была отменена, прекращаем обработку');
+          return;
         }
         
-        // Отправляем запрос на отмену загрузки на сервере
-        try {
-          await fetch(getApiUrl(`/disks/${disk}/cancel-upload`), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              filename: file.name,
-              path: path,
-              uploadId
-            })
-          });
-        } catch (cancelError) {
-          console.warn('Не удалось отменить загрузку на сервере:', cancelError);
-        }
-        
-        // Удаляем обработчик beforeunload
-        window.removeEventListener('beforeunload', handleBeforeUnload);
-        
-        return false;
-      }
-    };
-    
-    // Функция для финализации загрузки
-    const finalizeUpload = async () => {
-      try {
-        // Обновляем статус в localStorage
-        updateLocalUploadStatus(uploadId, {
-          status: 'finalizing',
-          progress: 95
-        });
-        
-        onProgress(95);
-        lastProgress = 95;
-        
-        // Запрашиваем финализацию загрузки на сервере
-        const response = await fetch(getApiUrl(`/disks/${disk}/finalize-upload`), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            filename: file.name,
-            path: path,
-            totalChunks,
-            uploadId
-          }),
-          signal: abortController.signal
-        });
-        
-        if (!response.ok) {
-          const data = await response.json().catch(() => ({}));
-          throw new Error(data.error || 'Ошибка при финализации загрузки');
-        }
-        
-        const data = await response.json();
-        console.log('Ответ сервера при финализации:', data);
-        
-        // Если файл уже существует или финализация завершена мгновенно
-        if (data.success && (data.file || data.status === 'completed')) {
+        // Если все чанки загружены успешно, отправляем запрос на завершение загрузки
+        if (uploadedChunks === totalChunks && !hasError) {
+          console.log('Все чанки загружены успешно, завершаем загрузку');
+          
           // Обновляем статус в localStorage
           updateLocalUploadStatus(uploadId, {
-            status: 'completed',
-            progress: 100,
-            completedAt: Date.now()
+            status: 'finalizing',
+            progress: 95,
+            uploadedChunks
           });
           
-          onProgress(100);
-          lastProgress = 100;
+          // Обновляем прогресс
+          if (onProgress) {
+            onProgress(95);
+          }
           
-          // Вызываем колбэк завершения
-          setTimeout(() => {
-            onComplete({
-              filename: file.name,
-              path: path || '',
-              disk,
-              fullPath: path ? `${path}/${file.name}` : file.name
+          lastProgress = 95;
+          
+          try {
+            // Отправляем запрос на завершение загрузки
+            const finalizeResponse = await fetch(getApiUrl(`/disks/${disk}/finalize-upload`), {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                uploadId,
+                filename: file.name,
+                path: path || '',
+                totalChunks,
+                fileSize: file.size
+              }),
+              signal: abortController.signal
             });
-          }, 500);
+            
+            if (!finalizeResponse.ok) {
+              const data = await finalizeResponse.json().catch(() => ({}));
+              throw new Error(data.error || `Ошибка при завершении загрузки: ${finalizeResponse.status}`);
+            }
+            
+            const finalizeData = await finalizeResponse.json();
+            
+            // Проверяем ответ сервера
+            if (!finalizeData.success) {
+              throw new Error(finalizeData.error || 'Не удалось завершить загрузку файла');
+            }
+            
+            console.log('Загрузка успешно завершена:', finalizeData);
+            
+            // Обновляем статус в localStorage
+            updateLocalUploadStatus(uploadId, {
+              status: 'completed',
+              progress: 100,
+              completedAt: Date.now()
+            });
+            
+            // Обновляем прогресс
+            if (onProgress) {
+              onProgress(100);
+            }
+            
+            lastProgress = 100;
+            
+            // Вызываем колбэк завершения
+            if (onComplete) {
+              onComplete({
+                name: file.name,
+                size: file.size,
+                path: path || '',
+                fullPath: path ? `${path}/${file.name}` : file.name
+              });
+            }
+            
+            // Удаляем обработчик beforeunload
+            window.removeEventListener('beforeunload', handleBeforeUnload);
+            
+            return;
+          } catch (error) {
+            console.error('Ошибка при завершении загрузки:', error);
+            
+            // Пробуем проверить, появился ли файл в директории
+            const checkFileExists = async () => {
+              try {
+                const filesResponse = await fetch(getApiUrl(`/disks/${disk}/files?path=${encodeURIComponent(path || '')}`));
+                
+                if (filesResponse.ok) {
+                  const filesData = await filesResponse.json();
+                  const fileExists = filesData.files?.some(f => f.name === file.name);
+                  
+                  if (fileExists) {
+                    console.log('Файл найден в директории, загрузка, вероятно, завершена');
+                    
+                    // Обновляем статус в localStorage
+                    updateLocalUploadStatus(uploadId, {
+                      status: 'completed',
+                      progress: 100,
+                      completedAt: Date.now()
+                    });
+                    
+                    // Обновляем прогресс
+                    if (onProgress) {
+                      onProgress(100);
+                    }
+                    
+                    lastProgress = 100;
+                    
+                    // Вызываем колбэк завершения
+                    if (onComplete) {
+                      onComplete({
+                        name: file.name,
+                        size: file.size,
+                        path: path || '',
+                        fullPath: path ? `${path}/${file.name}` : file.name
+                      });
+                    }
+                    
+                    // Удаляем обработчик beforeunload
+                    window.removeEventListener('beforeunload', handleBeforeUnload);
+                    
+                    return true;
+                  }
+                }
+              } catch (error) {
+                console.error('Ошибка при финальной проверке наличия файла:', error);
+              }
+              
+              // Обновляем статус в localStorage
+              updateLocalUploadStatus(uploadId, {
+                status: 'error',
+                error: error.message,
+                progress: lastProgress
+              });
+              
+              // Вызываем колбэк ошибки
+              if (onError) {
+                onError(error.message);
+              }
+              
+              // Удаляем обработчик beforeunload
+              window.removeEventListener('beforeunload', handleBeforeUnload);
+              
+              return false;
+            };
+            
+            // Запускаем проверку
+            return await checkFileExists();
+          }
+        }
+        
+        // Если не все чанки загружены или была ошибка
+        if (hasError) {
+          const errorMessage = 'Не удалось загрузить все чанки файла';
+          console.error(errorMessage);
+          
+          // Обновляем статус в localStorage
+          updateLocalUploadStatus(uploadId, {
+            status: 'error',
+            error: errorMessage,
+            uploadedChunks
+          });
+          
+          // Вызываем колбэк ошибки
+          if (onError) {
+            onError(errorMessage);
+          }
           
           // Удаляем обработчик beforeunload
           window.removeEventListener('beforeunload', handleBeforeUnload);
           
-          return true;
-        } else {
-          // Финализация запущена, но будет выполняться на сервере в фоновом режиме
-          // Запускаем проверку статуса
-          await checkFinalizeStatus();
-          return true;
+          return false;
         }
       } catch (error) {
-        // Проверяем, не была ли загрузка отменена пользователем
-        if (error.name === 'AbortError' || requestAborted) {
-          console.log('Финализация была отменена');
+        // Если загрузка была отменена, не считаем это ошибкой
+        if (requestAborted) {
+          console.log('Загрузка была отменена');
+          
+          // Обновляем статус в localStorage
           updateLocalUploadStatus(uploadId, {
             status: 'cancelled',
-            cancelledAt: Date.now()
+            cancelledAt: Date.now(),
+            progress: lastProgress
           });
-        } else {
-          console.error('Ошибка при финализации загрузки:', error);
-          updateLocalUploadStatus(uploadId, {
-            status: 'error',
-            error: error.message || 'Неизвестная ошибка при финализации',
-            errorAt: Date.now()
-          });
-          onError(error.message || 'Произошла ошибка при финализации загрузки');
+          
+          // Удаляем обработчик beforeunload
+          window.removeEventListener('beforeunload', handleBeforeUnload);
+          
+          return false;
+        }
+        
+        console.error('Ошибка при загрузке файла:', error);
+        
+        // Обновляем статус в localStorage
+        updateLocalUploadStatus(uploadId, {
+          status: 'error',
+          error: error.message,
+          progress: lastProgress
+        });
+        
+        // Вызываем колбэк ошибки
+        if (onError) {
+          onError(error.message);
         }
         
         // Удаляем обработчик beforeunload
@@ -578,229 +616,6 @@ const useApi = () => {
         return false;
       }
     };
-    
-    // Функция для проверки статуса финализации
-    const checkFinalizeStatus = async () => {
-      let maxAttempts = 30; // Максимальное количество попыток проверки
-      let attempts = 0;
-      let complete = false;
-      let lastStatus = '';
-      
-      while (attempts < maxAttempts && !requestAborted && !complete) {
-        attempts++;
-        
-        try {
-          // Делаем паузу между запросами
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          
-          // Запрашиваем статус загрузки
-          const response = await fetch(getApiUrl(`/disks/${disk}/upload-status?path=${encodeURIComponent(path)}`), {
-            signal: abortController.signal
-          });
-          
-          if (!response.ok) {
-            console.error('Ошибка при проверке статуса загрузки:', response.statusText);
-            continue;
-          }
-          
-          const data = await response.json();
-          const thisUpload = data.uploads?.find(upload => 
-            upload.filename === file.name && 
-            (upload.path === path || (!upload.path && !path))
-          );
-          
-          if (thisUpload) {
-            const status = thisUpload.status;
-            const progress = thisUpload.progress || lastProgress;
-            
-            // Обновляем прогресс только если он увеличился
-            if (progress > lastProgress) {
-              onProgress(progress);
-              lastProgress = progress;
-              
-              // Обновляем статус в localStorage
-              updateLocalUploadStatus(uploadId, {
-                status,
-                progress,
-                serverProgress: progress
-              });
-            }
-            
-            // Если статус изменился, логируем его
-            if (status !== lastStatus) {
-              console.log(`Статус загрузки изменился: ${lastStatus} -> ${status}, прогресс: ${progress}%`);
-              lastStatus = status;
-            }
-            
-            // Проверяем завершение загрузки
-            if (status === 'completed' || progress >= 100) {
-              complete = true;
-              
-              // Обновляем статус в localStorage
-              updateLocalUploadStatus(uploadId, {
-                status: 'completed',
-                progress: 100,
-                completedAt: Date.now()
-              });
-              
-              onProgress(100);
-              lastProgress = 100;
-              
-              // Вызываем колбэк завершения
-              onComplete({
-                filename: file.name,
-                path: path || '',
-                disk,
-                fullPath: path ? `${path}/${file.name}` : file.name
-              });
-              
-              // Удаляем обработчик beforeunload
-              window.removeEventListener('beforeunload', handleBeforeUnload);
-              
-              return true;
-            }
-            
-            // Если произошла ошибка на сервере
-            if (status === 'error') {
-              throw new Error(thisUpload.error || 'Ошибка при обработке файла на сервере');
-            }
-          } else if (attempts > 10) {
-            // Если после 10 попыток загрузка не найдена, проверяем наличие файла напрямую
-            try {
-              const filesResponse = await fetch(getApiUrl(`/disks/${disk}/files?path=${encodeURIComponent(path)}`), {
-                signal: abortController.signal
-              });
-              
-              if (filesResponse.ok) {
-                const filesData = await filesResponse.json();
-                const fileExists = filesData.files?.some(f => f.name === file.name);
-                
-                if (fileExists) {
-                  console.log('Файл найден в директории, загрузка, вероятно, завершена');
-                  complete = true;
-                  
-                  // Обновляем статус в localStorage
-                  updateLocalUploadStatus(uploadId, {
-                    status: 'completed',
-                    progress: 100,
-                    completedAt: Date.now()
-                  });
-                  
-                  onProgress(100);
-                  lastProgress = 100;
-                  
-                  // Вызываем колбэк завершения
-                  onComplete({
-                    filename: file.name,
-                    path: path || '',
-                    disk,
-                    fullPath: path ? `${path}/${file.name}` : file.name
-                  });
-                  
-                  // Удаляем обработчик beforeunload
-                  window.removeEventListener('beforeunload', handleBeforeUnload);
-                  
-                  return true;
-                }
-              }
-            } catch (error) {
-              console.error('Ошибка при проверке наличия файла:', error);
-            }
-          }
-        } catch (error) {
-          // Проверяем, не была ли загрузка отменена пользователем
-          if (error.name === 'AbortError' || requestAborted) {
-            console.log('Проверка статуса была отменена');
-            return false;
-          }
-          
-          console.error('Ошибка при проверке статуса загрузки:', error);
-        }
-      }
-      
-      // Если достигнут лимит попыток, но загрузка не завершена
-      if (attempts >= maxAttempts && !complete && !requestAborted) {
-        console.warn('Превышено максимальное количество попыток проверки статуса');
-        
-        // Проверяем наличие файла напрямую как последнюю попытку
-        try {
-          const filesResponse = await fetch(getApiUrl(`/disks/${disk}/files?path=${encodeURIComponent(path)}`));
-          
-          if (filesResponse.ok) {
-            const filesData = await filesResponse.json();
-            const fileExists = filesData.files?.some(f => f.name === file.name);
-            
-            if (fileExists) {
-              console.log('Файл найден в директории, загрузка, вероятно, завершена');
-              
-              // Обновляем статус в localStorage
-              updateLocalUploadStatus(uploadId, {
-                status: 'completed',
-                progress: 100,
-                completedAt: Date.now()
-              });
-              
-              onProgress(100);
-              lastProgress = 100;
-              
-              // Вызываем колбэк завершения
-              onComplete({
-                filename: file.name,
-                path: path || '',
-                disk,
-                fullPath: path ? `${path}/${file.name}` : file.name
-              });
-              
-              // Удаляем обработчик beforeunload
-              window.removeEventListener('beforeunload', handleBeforeUnload);
-              
-              return true;
-            }
-          }
-        } catch (error) {
-          console.error('Ошибка при финальной проверке наличия файла:', error);
-        }
-        
-        // Обновляем статус в localStorage
-        updateLocalUploadStatus(uploadId, {
-          status: 'unknown',
-          progress: lastProgress,
-          lastChecked: Date.now()
-        });
-        
-        // Показываем предупреждение пользователю
-        toast.show({
-          type: 'warning',
-          title: 'Неопределенный статус загрузки',
-          message: `Не удалось определить статус загрузки файла ${file.name}. Проверьте, появился ли файл в списке.`
-        });
-      }
-      
-      return complete;
-    };
-    
-    // Функция для обновления статуса загрузки в localStorage
-    const updateLocalUploadStatus = (id, updates) => {
-      try {
-        const activeUploads = JSON.parse(localStorage.getItem('activeUploads') || '{}');
-        
-        if (activeUploads[id]) {
-          activeUploads[id] = {
-            ...activeUploads[id],
-            ...updates,
-            lastUpdate: Date.now()
-          };
-          
-          localStorage.setItem('activeUploads', JSON.stringify(activeUploads));
-        }
-      } catch (e) {
-        console.warn('Не удалось обновить статус загрузки в localStorage:', e);
-      }
-    };
-    
-    // Показываем начальный прогресс
-    onProgress(1);
-    lastProgress = 1;
     
     // Запускаем загрузку
     startChunkedUpload();
@@ -833,7 +648,6 @@ const useApi = () => {
         })
       }).catch(e => console.warn('Не удалось отправить запрос на отмену загрузки:', e));
     };
-  }
   }, [getApiUrl, toast]);
 
   // Получение активных загрузок из localStorage для текущего пути
