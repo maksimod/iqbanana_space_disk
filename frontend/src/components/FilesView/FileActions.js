@@ -1,25 +1,35 @@
 import React, { useState } from 'react';
-import { FaUpload, FaFolderPlus } from 'react-icons/fa';
+import { FaUpload, FaFolderPlus, FaBroom } from 'react-icons/fa';
+import FolderDialog from './FolderDialog';
 
 const FileActions = ({ 
   onUpload, 
   onCreateFolder, 
-  uploadProgress = 0 
+  uploadProgress = 0,
+  onClearUploads
 }) => {
   const [selectedFile, setSelectedFile] = useState(null);
   const [folderName, setFolderName] = useState('');
+  const [showFolderDialog, setShowFolderDialog] = useState(false);
 
   const handleFileChange = (event) => {
-    setSelectedFile(event.target.files[0]);
+    const file = event.target.files[0];
+    if (file) {
+      setSelectedFile(file);
+      handleUpload(file);
+    }
   };
 
-  const handleUpload = () => {
-    if (!selectedFile) {
+  const handleUpload = (file) => {
+    const fileToUpload = file || selectedFile;
+    
+    // Проверка наличия файла перед загрузкой
+    if (!fileToUpload) {
       alert('Пожалуйста, выберите файл для загрузки');
       return;
     }
     
-    onUpload(selectedFile, () => {
+    onUpload(fileToUpload, () => {
       setSelectedFile(null);
       document.getElementById('file-upload').value = '';
     });
@@ -27,7 +37,6 @@ const FileActions = ({
 
   const handleCreateFolder = () => {
     if (!folderName.trim()) {
-      alert('Пожалуйста, введите имя папки');
       return;
     }
     
@@ -40,6 +49,20 @@ const FileActions = ({
     }
   };
 
+  const handleOpenFolderDialog = () => {
+    setShowFolderDialog(true);
+  };
+
+  const handleCloseFolderDialog = () => {
+    setShowFolderDialog(false);
+  };
+
+  const handleSubmitFolder = (name) => {
+    onCreateFolder(name, () => {
+      setShowFolderDialog(false);
+    });
+  };
+
   return (
     <div className="file-actions">
       <div className="upload-section">
@@ -48,7 +71,7 @@ const FileActions = ({
           id="file-upload"
           onChange={handleFileChange}
         />
-        <button className="action-button" onClick={handleUpload}>
+        <button className="action-button" onClick={() => handleUpload()}>
           <FaUpload /> Загрузить
         </button>
         {uploadProgress > 0 && (
@@ -65,17 +88,25 @@ const FileActions = ({
       </div>
       
       <div className="create-folder-section">
-        <input
-          type="text"
-          placeholder="Имя новой папки"
-          value={folderName}
-          onChange={(e) => setFolderName(e.target.value)}
-          onKeyPress={handleKeyPress}
-        />
-        <button className="action-button" onClick={handleCreateFolder}>
+        <button className="action-button" onClick={handleOpenFolderDialog}>
           <FaFolderPlus /> Создать папку
         </button>
       </div>
+      
+      {onClearUploads && (
+        <div className="clear-uploads-section">
+          <button className="action-button clear-button" onClick={onClearUploads}>
+            <FaBroom /> Очистить загрузки
+          </button>
+        </div>
+      )}
+
+      {showFolderDialog && (
+        <FolderDialog
+          onClose={handleCloseFolderDialog}
+          onSubmit={handleSubmitFolder}
+        />
+      )}
     </div>
   );
 };

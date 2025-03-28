@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
 
 // Создание контекста
 const ToastContext = createContext();
@@ -9,8 +9,35 @@ const ToastContext = createContext();
 export const ToastProvider = ({ children }) => {
   const [toasts, setToasts] = useState([]);
   
+  // Используем ref для отслеживания недавних уведомлений, 
+  // чтобы предотвратить дубликаты
+  const recentToasts = useRef(new Map());
+  
   // Добавление нового уведомления
   const addToast = useCallback((message, type = 'info', duration = 3000) => {
+    // Создаем уникальный ключ для проверки дубликатов
+    const toastKey = `${type}:${message}`;
+    
+    // Проверяем, было ли такое же уведомление недавно
+    const lastShown = recentToasts.current.get(toastKey);
+    const now = Date.now();
+    
+    // Если такое же уведомление было показано менее 2 секунд назад, игнорируем
+    if (lastShown && (now - lastShown) < 2000) {
+      console.log('Предотвращение дублирующегося уведомления:', message);
+      return null;
+    }
+    
+    // Запоминаем время показа этого уведомления
+    recentToasts.current.set(toastKey, now);
+    
+    // Удаляем старые записи (старше 10 секунд)
+    recentToasts.current.forEach((timestamp, key) => {
+      if (now - timestamp > 10000) {
+        recentToasts.current.delete(key);
+      }
+    });
+    
     const id = Date.now();
     
     // Добавляем новое уведомление

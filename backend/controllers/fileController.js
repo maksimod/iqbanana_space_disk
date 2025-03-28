@@ -349,10 +349,65 @@ const downloadFile = (req, res, next) => {
   });
 };
 
+// Метод для очистки статуса загрузки для конкретного файла
+const clearFileUploadStatus = (req, res) => {
+  const { disk } = req.params;
+  const { path: filePath, filename } = req.body;
+  
+  if (!global.activeUploads) {
+    global.activeUploads = new Map();
+    logger.info('Инициализирован новый объект активных загрузок');
+    return res.json({ success: true, message: 'Статус загрузки очищен' });
+  }
+  
+  if (!disk) {
+    return res.status(400).json({ success: false, error: 'Не указан ID диска' });
+  }
+  
+  const folderPath = filePath || '';
+  
+  if (filename) {
+    // Очищаем статус для конкретного файла
+    const uploadKey = `${disk}:${folderPath}:${filename}`;
+    const removed = global.activeUploads.delete(uploadKey);
+    
+    if (removed) {
+      logger.info(`Очищен статус загрузки для файла: ${disk}:${folderPath}/${filename}`);
+      return res.json({ 
+        success: true, 
+        message: `Статус загрузки для файла ${filename} очищен` 
+      });
+    } else {
+      logger.info(`Файл не найден в активных загрузках: ${disk}:${folderPath}/${filename}`);
+      return res.json({ 
+        success: true, 
+        message: `Файл ${filename} не найден в активных загрузках` 
+      });
+    }
+  } else {
+    // Очищаем все файлы в указанной директории
+    let count = 0;
+    
+    for (const [key, upload] of global.activeUploads.entries()) {
+      if (key.startsWith(`${disk}:${folderPath}:`)) {
+        global.activeUploads.delete(key);
+        count++;
+      }
+    }
+    
+    logger.info(`Очищено ${count} записей о загрузках для директории ${disk}:${folderPath}`);
+    return res.json({ 
+      success: true, 
+      message: `Очищено ${count} записей о загрузках` 
+    });
+  }
+};
+
 module.exports = {
   getFiles,
   uploadFile,
   deleteFile,
   createFolder,
-  downloadFile
+  downloadFile,
+  clearFileUploadStatus
 };

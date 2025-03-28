@@ -27,6 +27,12 @@ app.use(logger.requestLogger);
 // Глобальное состояние для хранения статуса смонтированности дисков
 global.mountedDisks = {};
 
+// Инициализация глобального объекта для отслеживания активных загрузок
+if (!global.activeUploads || !(global.activeUploads instanceof Map)) {
+    global.activeUploads = new Map();
+    logger.info('Инициализирован новый глобальный объект для отслеживания активных загрузок');
+}
+
 // Функция для проверки реального монтирования диска
 // Использует несколько методов для повышения надежности проверки
 async function verifyDiskMounting(diskName, mountPoint) {
@@ -119,6 +125,83 @@ function startDiskMonitoring() {
         app.use('/api/disks', diskRoutes);
         app.use('/api/disks', fileRoutes);
         app.use('/api/system', systemRoutes);
+        
+        // Добавляем маршрут для очистки активных загрузок
+        app.post('/api/v1/disks/:diskId/clear-uploads', (req, res) => {
+            const { diskId } = req.params;
+            
+            try {
+                if (!global.mountedDisks[diskId]) {
+                    logger.error(`Диск ${diskId} не найден при попытке очистить загрузки`);
+                    return res.status(404).json({ 
+                        success: false, 
+                        error: `Диск ${diskId} не найден` 
+                    });
+                }
+                
+                // Очищаем активные загрузки для данного диска
+                if (global.activeUploads && global.activeUploads instanceof Map) {
+                    let count = 0;
+                    
+                    // Перебираем все загрузки и удаляем те, которые относятся к указанному диску
+                    for (const [key, upload] of global.activeUploads.entries()) {
+                        if (upload.disk === diskId) {
+                            global.activeUploads.delete(key);
+                            count++;
+                        }
+                    }
+                    
+                    logger.info(`Очищено ${count} активных загрузок для диска ${diskId}`);
+                    return res.json({ 
+                        success: true, 
+                        message: `Очищено ${count} активных загрузок для диска ${diskId}` 
+                    });
+                } else {
+                    // Если глобальный объект не инициализирован, создаем его
+                    global.activeUploads = new Map();
+                    logger.info(`Создан новый объект активных загрузок для диска ${diskId}`);
+                    return res.json({ 
+                        success: true, 
+                        message: `Активные загрузки для диска ${diskId} не найдены или уже очищены` 
+                    });
+                }
+            } catch (error) {
+                logger.error(`Ошибка при очистке активных загрузок для диска ${diskId}:`, error);
+                return res.status(500).json({
+                    success: false,
+                    error: `Ошибка при очистке активных загрузок: ${error.message || 'Неизвестная ошибка'}`
+                });
+            }
+        });
+
+        // Добавляем общий маршрут для очистки всех активных загрузок
+        app.post('/api/v1/uploads/clear', (req, res) => {
+            try {
+                if (global.activeUploads && global.activeUploads instanceof Map) {
+                    const count = global.activeUploads.size;
+                    global.activeUploads.clear();
+                    logger.info(`Очищены все активные загрузки (${count})`);
+                    return res.json({ 
+                        success: true, 
+                        message: `Очищено ${count} активных загрузок` 
+                    });
+                } else {
+                    // Если глобальный объект не инициализирован, создаем его
+                    global.activeUploads = new Map();
+                    logger.info('Создан новый объект активных загрузок');
+                    return res.json({ 
+                        success: true, 
+                        message: 'Активные загрузки не найдены или уже очищены' 
+                    });
+                }
+            } catch (error) {
+                logger.error('Ошибка при очистке всех активных загрузок:', error);
+                return res.status(500).json({
+                    success: false,
+                    error: `Ошибка при очистке активных загрузок: ${error.message || 'Неизвестная ошибка'}`
+                });
+            }
+        });
         
         // Обработка ошибок
         app.use(errorHandler);

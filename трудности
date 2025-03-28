@@ -1,6 +1,0 @@
-1) Установка sshpass
-Выполните следующую команду для установки sshpass на вашем сервере:
-sudo apt-get install sshpass
-2)Установка sshpass на клиентской машине
-Выполните следующую команду на клиентской машине, где вы запускаете Ansible:
-sudo apt-get install sshpass
