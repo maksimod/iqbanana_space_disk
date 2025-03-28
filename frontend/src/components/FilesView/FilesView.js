@@ -414,13 +414,16 @@ const FilesView = () => {
   };
 
   // Скачивание файла или папки
-  const handleDownload = async (file) => {
+  const handleDownload = (file) => {
     toast.showInfo(`Скачивание файла: ${file.name}`);
-    const success = await downloadFile(currentDisk, file.path, file.name);
+    const downloadUrl = getDownloadUrl(currentDisk, file.path);
     
-    if (!success) {
-      toast.showError(`Не удалось скачать файл: ${file.name}`);
-    }
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = file.name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   // Обработка результатов поиска
