@@ -172,9 +172,82 @@ ansible-playbook -i inventory playbook.yml --diff "$@"
 PLAYBOOK_STATUS=$?
 
 # Дополнительная проверка монтирования после выполнения playbook
-# Дополнительная проверка монтирования после выполнения playbook
 if [ $PLAYBOOK_STATUS -ne 0 ] || ! df -h | grep -q "/mnt/storage"; then
     echo "Playbook завершился с ошибками или монтирование не выполнено. Выполняем дополнительные действия..."
+    
+    # Получение IP сервера NFS из inventory
+    echo "Получение IP сервера NFS из inventory..."
+    SERVER_IP=$(grep -E '^\[nfs_server\]' inventory -A 1 | tail -n 1 | awk '{print $1}')
+
+    if [ -z "$SERVER_IP" ]; then
+        echo "ОШИБКА: Не удалось определить IP сервера из inventory"
+        exit 1
+    fi
+
+    echo "Используем сервер из inventory: $SERVER_IP"
+
+    # Проверка доступности NFS сервера
+    echo "Проверка доступности NFS сервера..."
+    if ! nc -z -w 5 $SERVER_IP 2049; then
+        echo "ПРЕДУПРЕЖДЕНИЕ: NFS порт на сервере $SERVER_IP недоступен!"
+        echo "Проверяем статус NFS сервера..."
+        
+        # Пытаемся запустить NFS на сервере
+        ssh -o StrictHostKeyChecking=no root@$SERVER_IP "
+            systemctl restart nfs-server
+            exportfs -r
+            echo 'Экспорты на сервере:'
+            exportfs -v
+        " || echo "Не удалось подключиться к серверу или перезапустить NFS"
+    fi
+
+    # Проверка экспортов
+    echo "Проверка доступных NFS экспортов на сервере $SERVER_IP..."
+    EXPORTS=$(showmount -e $SERVER_IP 2>/dev/null || echo "Нет доступных экспортов")
+    echo "$EXPORTS"
+
+    # Отключаем существующие монтирования
+    echo "Отключение существующих монтирований..."
+    umount -f -l /mnt/storage/sda 2>/dev/null || true
+    umount -f -l /mnt/storage/sdb 2>/dev/null || true
+    
+    # Создание точек монтирования
+    echo "Создание точек монтирования..."
+    mkdir -p /mnt/storage/sda /mnt/storage/sdb
+    chmod 777 /mnt/storage/sda /mnt/storage/sdb
+    
+    # Ручное монтирование NFS с оптимальными параметрами
+    echo "Монтирование NFS шар с сервера $SERVER_IP..."
+    MOUNT_OPTS="vers=3,soft,nolock,rsize=8192,wsize=8192,nofail"
+    
+    echo "Монтирование /mnt/storage/sda..."
+    mount -t nfs -o $MOUNT_OPTS $SERVER_IP:/mnt/storage/sda /mnt/storage/sda
+    if mount | grep -q "/mnt/storage/sda"; then
+        echo "✓ Успешно смонтирован sda"
+    else
+        echo "✗ Ошибка монтирования sda"
+    fi
+    
+    echo "Монтирование /mnt/storage/sdb..."
+    mount -t nfs -o $MOUNT_OPTS $SERVER_IP:/mnt/storage/sdb /mnt/storage/sdb
+    if mount | grep -q "/mnt/storage/sdb"; then
+        echo "✓ Успешно смонтирован sdb"
+    else
+        echo "✗ Ошибка монтирования sdb"
+    fi
+    
+    # Обновление fstab
+    echo "Обновление /etc/fstab..."
+    # Удаление старых записей безопасным способом
+    sudo sed -i "/.*$SERVER_IP:\/mnt\/storage\/.*/d" /etc/fstab
+    
+    # Добавление новых записей с параметром nofail
+    echo "$SERVER_IP:/mnt/storage/sda /mnt/storage/sda nfs $MOUNT_OPTS 0 0" | sudo tee -a /etc/fstab
+    echo "$SERVER_IP:/mnt/storage/sdb /mnt/storage/sdb nfs $MOUNT_OPTS 0 0" | sudo tee -a /etc/fstab
+    
+    # Перезагрузка systemd
+    systemctl daemon-reload
+fi
     
     # Получение IP сервера NFS из inventory
     echo "Получение IP сервера NFS из inventory..."

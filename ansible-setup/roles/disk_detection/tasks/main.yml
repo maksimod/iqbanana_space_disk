@@ -157,6 +157,14 @@
   with_items: "{{ storage_devices | default([]) }}"
   when: storage_devices is defined and storage_devices | length > 0
 
+# Получаем UUID дисков
+- name: Get UUID for disks
+  shell: "blkid -s UUID -o value {{ item }}"
+  register: disk_uuids
+  with_items: "{{ storage_devices | default([]) }}"
+  when: storage_devices is defined and storage_devices | length > 0
+  changed_when: false
+
 # Монтирование дисков
 - name: Mount disks directly
   mount:
@@ -164,32 +172,44 @@
     src: "{{ item }}"
     fstype: xfs
     state: mounted
-    opts: defaults
+    opts: "defaults,nofail"
   with_items: "{{ storage_devices | default([]) }}"
   register: mount_result
   when: storage_devices is defined and storage_devices | length > 0
 
-# Добавление в fstab
-- name: Update fstab for disks
+# Обновляем fstab с UUID
+- name: Update fstab for disks with UUID
   lineinfile:
     path: /etc/fstab
-    regexp: ".*{{ item }} .*{{ nfs_mount_base }}/{{ item | basename }}.*"
-    line: "{{ item }} {{ nfs_mount_base }}/{{ item | basename }} xfs defaults 0 0"
+    regexp: ".*{{ nfs_mount_base }}/{{ item.0 | basename }}.*"
+    line: "UUID={{ item.1.stdout }} {{ nfs_mount_base }}/{{ item.0 | basename }} xfs defaults,nofail 0 0"
     state: present
-  with_items: "{{ storage_devices | default([]) }}"
-  when: storage_devices is defined and storage_devices | length > 0
+  with_together:
+    - "{{ storage_devices | default([]) }}"
+    - "{{ disk_uuids.results | default([]) }}"
+  when: 
+    - storage_devices is defined 
+    - storage_devices | length > 0
+    - disk_uuids is defined
+    - disk_uuids.results is defined
 
 # Создаем storage_disks для экспорта NFS
 - name: Initialize storage_disks variable
   set_fact:
     storage_disks: []
 
-# Обновляем storage_disks с информацией о дисках
-- name: Update storage_disks with disk info
+# Обновляем storage_disks с информацией о дисках и UUID
+- name: Update storage_disks with UUID info
   set_fact:
-    storage_disks: "{{ storage_disks + [{'device': item, 'mountpoint': item | basename, 'fstype': 'xfs'}] }}"
-  with_items: "{{ storage_devices | default([]) }}"
-  when: storage_devices is defined and storage_devices | length > 0
+    storage_disks: "{{ storage_disks + [{'device': item.0, 'mountpoint': item.0 | basename, 'fstype': 'xfs', 'uuid': item.1.stdout}] }}"
+  with_together:
+    - "{{ storage_devices | default([]) }}"
+    - "{{ disk_uuids.results | default([]) }}"
+  when: 
+    - storage_devices is defined 
+    - storage_devices | length > 0
+    - disk_uuids is defined
+    - disk_uuids.results is defined
 
 # Показываем итоговую информацию о смонтированных дисках
 - name: Display mounted disks information
@@ -201,3 +221,9 @@
 - name: Show mounted disks
   debug:
     msg: "{{ mounted_disks_info.stdout_lines | default(['No disks mounted']) }}"
+
+# Показываем UUID всех дисков для отладки
+- name: Display UUID information of all disks
+  debug:
+    msg: "{{ storage_disks }}"
+  when: storage_disks is defined and storage_disks | length > 0

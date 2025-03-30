@@ -16,8 +16,8 @@ const config = {
   
   // Пути к смонтированным дискам на веб-сервере
   disks: {
-    'disk_sdb': '/mnt/storage/sdb',
-    'disk_sdc': '/mnt/storage/sdc',
+    'кек': '/mnt/storage/sdb',
+    'чебурек': '/mnt/storage/sda',
   },
   
   // Настройки производительности для файловых операций
