@@ -253,7 +253,7 @@ if [ $PLAYBOOK_STATUS -ne 0 ] || ! df -h | grep -q "/mnt/storage"; then
                     LETTER=${DISK_LETTERS[$DISK_KEY]:-"X"}
                     
                     # Добавляем диск в конфигурацию
-                    DISKS_CONFIG="${DISKS_CONFIG}    '$LETTER:': '/mnt/storage/$SERVER_IP/$DISK_NAME',\n"
+                    DISKS_CONFIG="${DISKS_CONFIG}'$LETTER:': '/mnt/storage/$SERVER_IP/$DISK_NAME'\n"
                     
                     # Удаляем старую запись из fstab если есть
                     sed -i "\|$SERVER_IP:$EXPORT_PATH|d" /etc/fstab
@@ -283,8 +283,24 @@ if [ $PLAYBOOK_STATUS -ne 0 ] || ! df -h | grep -q "/mnt/storage"; then
         # Удаляем лишние пробелы в конце DISKS_CONFIG
         DISKS_CONFIG=$(echo -e "$DISKS_CONFIG" | sed 's/,$//')
         
-        # Создаем временный файл конфигурации
-        cat > "$CONFIG_PATH" << EOF
+# Полностью перестраиваем формат вывода дисков
+FORMATTED_DISKS=""
+LAST_INDEX=$(echo -e "$DISKS_CONFIG" | wc -l)
+CURRENT=0
+
+while IFS= read -r line; do
+  CURRENT=$((CURRENT+1))
+  # Убираем лишние пробелы и добавляем запятую для всех строк, кроме последней
+  FORMATTED_LINE=$(echo "$line" | sed 's/^ */            /')
+  if [ $CURRENT -lt $LAST_INDEX ]; then
+    FORMATTED_DISKS="${FORMATTED_DISKS}${FORMATTED_LINE},\n"
+  else
+    FORMATTED_DISKS="${FORMATTED_DISKS}${FORMATTED_LINE}\n"
+  fi
+done <<< "$DISKS_CONFIG"
+
+# Создаем временный файл конфигурации с правильным форматированием
+cat > "$CONFIG_PATH" << EOF
 // Конфигурация приложения
 const config = {
   // Базовые настройки
@@ -303,7 +319,7 @@ const config = {
   
   // Пути к смонтированным дискам на веб-сервере
   disks: {
-$(echo -e "$DISKS_CONFIG")
+$(echo -e "$FORMATTED_DISKS")
   },
   
   // Настройки производительности для файловых операций
