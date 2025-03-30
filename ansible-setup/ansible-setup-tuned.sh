@@ -172,6 +172,8 @@ ansible-playbook -i inventory playbook.yml --diff "$@"
 PLAYBOOK_STATUS=$?
 
 # Дополнительная проверка монтирования после выполнения playbook
+# Дополнительная проверка монтирования после выполнения playbook
+# Дополнительная проверка монтирования после выполнения playbook
 if [ $PLAYBOOK_STATUS -ne 0 ] || ! df -h | grep -q "/mnt/storage"; then
     echo "Playbook завершился с ошибками или монтирование не выполнено. Выполняем дополнительные действия..."
     
@@ -186,6 +188,13 @@ if [ $PLAYBOOK_STATUS -ne 0 ] || ! df -h | grep -q "/mnt/storage"; then
     
     echo "Найдено ${#SERVER_IPS[@]} NFS-серверов в inventory."
     
+    # Словарь с буквами дисков
+    declare -A DISK_LETTERS
+    DISK_LETTERS=(["192.168.0.102/sda"]="C" ["192.168.0.102/sdb"]="D" ["192.168.0.106/sda"]="E" ["192.168.0.106/sdb"]="F")
+
+    # Генерация конфигурации дисков для backend
+    DISKS_CONFIG=""
+    
     # Обработка каждого сервера
     for SERVER_IP in "${SERVER_IPS[@]}"; do
         echo "Обрабатываем сервер: $SERVER_IP"
@@ -196,8 +205,9 @@ if [ $PLAYBOOK_STATUS -ne 0 ] || ! df -h | grep -q "/mnt/storage"; then
             echo "ПРЕДУПРЕЖДЕНИЕ: NFS порт на сервере $SERVER_IP недоступен!"
             echo "Проверяем статус NFS сервера..."
             
-            # Пытаемся запустить NFS на сервере
-            ssh -o StrictHostKeyChecking=no root@$SERVER_IP "
+            # Пытаемся запустить NFS на сервере без запроса пароля
+            # Используем настройки SSH из inventory
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 root@$SERVER_IP "
                 systemctl restart nfs-server
                 exportfs -r
                 echo 'Экспорты на сервере:'
@@ -212,7 +222,7 @@ if [ $PLAYBOOK_STATUS -ne 0 ] || ! df -h | grep -q "/mnt/storage"; then
 
         if [[ "$EXPORTS" != *"Нет доступных экспортов"* ]]; then
             # Создание директории сервера
-            SERVER_DIR="/mnt/storage/$(basename $SERVER_IP)"
+            SERVER_DIR="/mnt/storage/$SERVER_IP"
             mkdir -p "$SERVER_DIR"
             
             # Получаем список экспортов
@@ -238,6 +248,13 @@ if [ $PLAYBOOK_STATUS -ne 0 ] || ! df -h | grep -q "/mnt/storage"; then
                 if mount | grep -q "$MOUNT_POINT"; then
                     echo "✓ Успешно смонтирован $DISK_NAME с сервера $SERVER_IP"
                     
+                    # Получаем букву диска
+                    DISK_KEY="$SERVER_IP/$DISK_NAME"
+                    LETTER=${DISK_LETTERS[$DISK_KEY]:-"X"}
+                    
+                    # Добавляем диск в конфигурацию
+                    DISKS_CONFIG="${DISKS_CONFIG}    '$LETTER:': '/mnt/storage/$SERVER_IP/$DISK_NAME',\n"
+                    
                     # Удаляем старую запись из fstab если есть
                     sed -i "\|$SERVER_IP:$EXPORT_PATH|d" /etc/fstab
                     
@@ -251,6 +268,65 @@ if [ $PLAYBOOK_STATUS -ne 0 ] || ! df -h | grep -q "/mnt/storage"; then
             echo "На сервере $SERVER_IP нет доступных экспортов"
         fi
     done
+    
+    # После обновления fstab необходимо обновить конфигурацию backend
+    echo "Обновление конфигурации backend..."
+    
+    # Путь к конфигурации backend
+    CONFIG_PATH="../backend/config/config.js"
+    if [ -f "$CONFIG_PATH" ]; then
+        echo "Найден файл конфигурации backend: $CONFIG_PATH"
+        
+        # Создание резервной копии
+        cp "$CONFIG_PATH" "${CONFIG_PATH}.bak"
+        
+        # Удаляем лишние пробелы в конце DISKS_CONFIG
+        DISKS_CONFIG=$(echo -e "$DISKS_CONFIG" | sed 's/,$//')
+        
+        # Создаем временный файл конфигурации
+        cat > "$CONFIG_PATH" << EOF
+// Конфигурация приложения
+const config = {
+  // Базовые настройки
+  server: {
+    port: process.env.PORT || 6005,
+    allowedOrigins: [
+      'http://46.35.241.37:6001', 
+      'http://localhost:6001',
+      'https://iqbanana.online',
+      'http://iqbanana.online'
+    ]
+  },
+  
+  // Версия API
+  apiVersion: 'v1',
+  
+  // Пути к смонтированным дискам на веб-сервере
+  disks: {
+$(echo -e "$DISKS_CONFIG")
+  },
+  
+  // Настройки производительности для файловых операций
+  performance: {
+    maxFileSize: 20 * 1024 * 1024 * 1024, // 20GB максимальный размер файла
+    chunkSize: 5 * 1024 * 1024, // 5MB размер чанка по умолчанию для больших файлов
+    maxConcurrentUploads: 5, // Максимальное количество одновременных загрузок
+    uploadTimeout: 3600000, // 1 час таймаут для загрузки полного файла
+    chunkTimeout: 600000, // 10 минут таймаут для загрузки чанка
+    readBufferSize: 4096 * 1024, // 4 MB буфер для чтения файлов
+    writeBufferSize: 8192 * 1024 // 8 MB буфер для записи файлов
+  }
+};
+
+module.exports = config;
+EOF
+        
+        echo "✓ Конфигурация backend обновлена успешно"
+        echo "Содержимое конфигурации дисков:"
+        grep -A 10 "disks: {" "$CONFIG_PATH"
+    else
+        echo "⚠️ Файл конфигурации backend не найден: $CONFIG_PATH"
+    fi
     
     # Перезагрузка systemd
     systemctl daemon-reload

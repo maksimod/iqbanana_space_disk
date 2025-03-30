@@ -94,15 +94,6 @@
     msg: "{{ 'SUCCESS: NFS server ' + item.item + ' is reachable' if item is succeeded else 'WARNING: Cannot reach NFS server ' + item.item }}"
   with_items: "{{ nfs_network_checks.results }}"
 
-# Создание базовой директории
-- name: Create base storage directory
-  file:
-    path: "{{ nfs_mount_base }}"
-    state: directory
-    mode: '0777'
-    owner: root
-    group: root
-
 # Добавляем задачу для очистки кэша дескрипторов файлов NFS
 - name: Clear NFS file handle cache
   shell: |
@@ -114,6 +105,15 @@
     service nfs-common restart || true
     echo 'NFS cache cleared'
   ignore_errors: yes
+
+# Создание базовой директории
+- name: Create base storage directory
+  file:
+    path: "{{ nfs_mount_base }}"
+    state: directory
+    mode: '0777'
+    owner: root
+    group: root
 
 # Создание каталогов для каждого сервера
 - name: Create server directories
@@ -131,6 +131,65 @@
   with_items: "{{ all_storage_disks }}"
   loop_control:
     loop_var: server_item
+  when: all_storage_disks | length > 0
+
+# Формирование конфигурации дисков для backend config
+- name: Set Backend config disk mappings
+  set_fact:
+    backend_disks: {}
+  
+- name: Create entries for backend disks config
+  set_fact:
+    backend_disks: "{{ backend_disks | combine({
+      ('L:' if loop.index == 1 else
+       'C:' if loop.index == 2 else
+       'D:' if loop.index == 3 else
+       'E:' if loop.index == 4 else
+       'F:' if loop.index == 5 else
+       'G:' if loop.index == 6 else
+       'H:' if loop.index == 7 else
+       'I:' if loop.index == 8 else 'X-' + loop.index | string + ':'): 
+       nfs_mount_base + '/' + item.server + '/' + item.disk.mountpoint
+    }) }}"
+  loop: "{{ all_storage_disks | 
+            subelements('disks', 
+            skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.server }}/{{ item.disk.mountpoint }}"
+
+- name: Display backend disks config
+  debug:
+    var: backend_disks
+
+# Создаем шаблон конфигурации для backend
+- name: Generate backend config
+  template:
+    src: backend_config.js.j2
+    dest: "{{ backend_config_path | default('/home/client/iqbanana_space_disk/backend/config') }}/config.js"
+    mode: '0644'
+    owner: root
+    group: root
+    backup: yes
+  when: backend_config_path is defined
+
+# Создаем systemd сервис для автозапуска скрипта
+- name: Create systemd service for NFS automount
+  copy:
+    dest: /etc/systemd/system/nfs-automount.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=NFS Auto-mount Service
+      After=network-online.target
+      Wants=network-online.target
+      
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/nfs-automount.sh
+      RemainAfterExit=yes
+      
+      [Install]
+      WantedBy=multi-user.target
   when: all_storage_disks | length > 0
 
 # Создаем скрипт автоматического монтирования для повышения надежности
@@ -186,26 +245,6 @@
           echo "NFS сервер $SERVER ($SERVER_IP) недоступен"
         fi
       done
-  when: all_storage_disks | length > 0
-
-# Создаем systemd сервис для автозапуска скрипта
-- name: Create systemd service for NFS automount
-  copy:
-    dest: /etc/systemd/system/nfs-automount.service
-    mode: '0644'
-    content: |
-      [Unit]
-      Description=NFS Auto-mount Service
-      After=network-online.target
-      Wants=network-online.target
-      
-      [Service]
-      Type=oneshot
-      ExecStart=/usr/local/bin/nfs-automount.sh
-      RemainAfterExit=yes
-      
-      [Install]
-      WantedBy=multi-user.target
   when: all_storage_disks | length > 0
 
 # Активируем сервис

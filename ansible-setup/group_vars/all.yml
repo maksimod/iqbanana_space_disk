@@ -38,8 +38,8 @@ nfs_mount_timeout: 60
 nfs_mount_retries: 5
 nfs_mount_delay: 10
 
-# Путь к директории конфигурации backend
-backend_config_path: "/home/client/iqbanana_space_disk/backend/config"
+# Путь к директории конфигурации backend (путь относительно корня проекта)
+backend_config_path: "/home/user/iqbanana_space_disk/backend/config"
 
 # Оптимизированные параметры sysctl для NFS
 nfs_sysctl_params:
@@ -57,3 +57,17 @@ nfs_sysctl_params:
   vm.dirty_background_ratio: 5
   vm.dirty_expire_centisecs: 12000
   sunrpc.tcp_slot_table_entries: 128
+
+# Буквы дисков для конфигурации backend
+disk_letters:
+  - C
+  - D
+  - E
+  - F
+  - G
+  - H
+  - I
+  - J
+  - K
+  - L
+  - M
