@@ -1,4 +1,4 @@
-// Конфигурация приложения с оптимизацией для высокоскоростной передачи файлов
+// Конфигурация приложения
 const config = {
   // Базовые настройки
   server: {
@@ -16,10 +16,10 @@ const config = {
   
   // Пути к смонтированным дискам на веб-сервере
   disks: {
-{% for drive_letter, mount_path in backend_disks.items() %}
-    '{{ drive_letter }}': '{{ mount_path }}'{% if not loop.last %},{% endif %}
-
-{% endfor %}
+            'X:': '/mnt/storage/192.168.0.102/sdc',
+            'D:': '/mnt/storage/192.168.0.102/sdb',
+            'F:': '/mnt/storage/192.168.0.106/sdb',
+            'E:': '/mnt/storage/192.168.0.106/sda'
   },
   
   // Настройки производительности для файловых операций

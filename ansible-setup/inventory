@@ -1,6 +1,0 @@
-[nfs_servers]
-192.168.0.102 ansible_user=root ansible_ssh_pass="{{ server1_password }}" ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
-192.168.0.106 ansible_user=root ansible_ssh_pass="{{ server2_password }}" ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
-
-[nfs_client]
-192.168.0.103 ansible_user=root ansible_ssh_pass="{{ client_password }}" ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
