@@ -109,6 +109,18 @@
   ignore_errors: yes
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
+# Добавляем задачу для очистки кэша дескрипторов файлов NFS
+- name: Clear NFS file handle cache
+  shell: |
+    echo 'Clearing NFS cache and stale file handles...'
+    service nfs-common restart || true
+    service rpcbind restart || true
+    sleep 2
+    rm -f /var/lib/nfs/state || true
+    service nfs-common restart || true
+    echo 'NFS cache cleared'
+  ignore_errors: yes
+
 # Проверка доступности экспортов
 - name: Wait for NFS exports to be available
   shell: "showmount -e {{ nfs_server_ip }}"
@@ -133,13 +145,13 @@
   with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
-# Монтирование NFS с ультра-оптимизированными параметрами для больших файлов
+# Монтирование NFS шар с ультра-оптимизированными параметрами для больших файлов
 - name: Mount NFS shares with optimized parameters for large files
   mount:
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
     src: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}"
     fstype: nfs
-    opts: "rw,soft,tcp,noatime,nodiratime,rsize=1048576,wsize=1048576,timeo=600,retrans=2,noresvport,_netdev,bg,nofail,nconnect=16,fsc,actimeo=600,nocto,noac,lookupcache=positive,local_lock=none"
+    opts: "rw,hard,intr,tcp,noatime,nodiratime,rsize=1048576,wsize=1048576,timeo=600,retrans=2,noresvport,_netdev,bg,nofail,nconnect=16,fsc,actimeo=600,nocto,local_lock=none"
     state: mounted
   with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   register: nfs_mount_result
@@ -154,7 +166,7 @@
   lineinfile:
     path: /etc/fstab
     regexp: ".*{{ nfs_mount_base }}/{{ item.mountpoint }}.*"
-    line: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }} nfs rw,soft,tcp,noatime,rsize=1048576,wsize=1048576,timeo=600,retrans=2,noresvport,nofail,bg,nconnect=8,fsc,actimeo=600,nocto 0 0"
+    line: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }} nfs rw,hard,intr,tcp,noatime,rsize=1048576,wsize=1048576,timeo=600,retrans=2,noresvport,nofail,bg,nconnect=8,fsc,actimeo=600,nocto 0 0"
     state: present
     backup: yes
   with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"

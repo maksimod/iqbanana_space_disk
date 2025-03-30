@@ -150,6 +150,21 @@ PLAYBOOK_STATUS=$?
 if [ $PLAYBOOK_STATUS -ne 0 ]; then
     echo "Playbook завершился с ошибками. Выполняем дополнительные действия..."
     
+    # Очистка устаревших дескрипторов файлов
+    echo "Очистка устаревших дескрипторов файлов NFS..."
+    service nfs-common restart
+    service rpcbind restart
+    sleep 2
+    rm -f /var/lib/nfs/state 2>/dev/null || true
+    service nfs-common restart
+    
+    # Принудительное размонтирование всех NFS-монтирований
+    echo "Принудительное размонтирование всех NFS-монтирований..."
+    for mount in $(mount | grep nfs | awk '{print $3}'); do
+        echo "Размонтирование $mount..."
+        umount -f -l $mount 2>/dev/null || true
+    done
+    
     # Проверка смонтированных дисков
     if ! mount | grep -q "/mnt/storage"; then
         echo "Пытаемся смонтировать NFS вручную..."
@@ -167,14 +182,20 @@ if [ $PLAYBOOK_STATUS -ne 0 ]; then
                 mkdir -p /mnt/storage/$disk
                 chmod 777 /mnt/storage/$disk
                 
-                # Попытка с опциями NFS v3
-                echo "  Попытка с NFS v3..."
-                mount -t nfs -o rw,soft,noatime,vers=3 $SERVER_IP:/mnt/storage/$disk /mnt/storage/$disk 2>/dev/null
+                # Используем более надежные параметры монтирования
+                echo "  Попытка монтирования с оптимальными параметрами..."
+                mount -t nfs -o rw,hard,intr,noatime,timeo=600,retrans=2,noresvport $SERVER_IP:/mnt/storage/$disk /mnt/storage/$disk 2>/dev/null
+                
+                if ! mount | grep -q "/mnt/storage/$disk"; then
+                    # Попытка с опциями NFS v3
+                    echo "  Попытка с NFS v3..."
+                    mount -t nfs -o rw,hard,intr,noatime,vers=3 $SERVER_IP:/mnt/storage/$disk /mnt/storage/$disk 2>/dev/null
+                fi
                 
                 if ! mount | grep -q "/mnt/storage/$disk"; then
                     # Попытка с опциями NFS v4
                     echo "  Попытка с NFS v4..."
-                    mount -t nfs -o rw,soft,noatime,vers=4 $SERVER_IP:/mnt/storage/$disk /mnt/storage/$disk 2>/dev/null
+                    mount -t nfs -o rw,hard,intr,noatime,vers=4 $SERVER_IP:/mnt/storage/$disk /mnt/storage/$disk 2>/dev/null
                 fi
                 
                 if ! mount | grep -q "/mnt/storage/$disk"; then

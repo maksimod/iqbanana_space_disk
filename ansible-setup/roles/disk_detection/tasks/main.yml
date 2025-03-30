@@ -213,7 +213,7 @@
 # Добавим проверку результата монтирования
 - name: Display mount results
   debug:
-    msg: "Монтирование {{ item.item.1 | basename }}: {{ 'Успешно' if item.rc == 0 else 'Не удалось: ' + item.stderr }}"
+    msg: "Монтирование {{ item.item.1 | basename }}: {{ 'Успешно' if item.rc is defined and item.rc == 0 else 'Не удалось' }}"
   with_items: "{{ mount_result.results | default([]) }}"
   when: mount_result is defined and mount_result.results is defined
 
