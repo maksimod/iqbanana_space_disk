@@ -61,7 +61,7 @@ if ! command -v sshpass >/dev/null 2>&1; then
 fi
 
 # Проверка и установка других необходимых пакетов
-required_packages="python3 python3-pip netcat-openbsd openssh-client openssh-server nfs-common rpcbind iptables"
+required_packages="python3 python3-pip netcat-openbsd openssh-client openssh-server nfs-common rpcbind iptables lsof"
 for pkg in $required_packages; do
     if ! dpkg -l | grep -q "ii  $pkg"; then
         echo "Установка пакета $pkg..."
@@ -79,6 +79,25 @@ rm -rf /tmp/ansible_fact_cache
 mkdir -p /tmp/ansible_fact_cache
 chmod 700 /tmp/ansible_fact_cache
 
+# Решение проблемы с замаскированным nfs-common
+echo "Проверка и настройка NFS-клиента..."
+# Проверка, если nfs-common замаскирован
+if systemctl status nfs-common 2>&1 | grep -q "masked"; then
+    echo "nfs-common замаскирован. Выполняем альтернативную настройку NFS..."
+    
+    # Принудительное удаление ссылки маскирования
+    find /etc/systemd/system -name "nfs*" -type l -delete 2>/dev/null || true
+    
+    # Принудительная переустановка пакетов NFS
+    apt-get install --reinstall nfs-common -y
+    
+    # Перезагрузка системного менеджера
+    systemctl daemon-reload
+    
+    # Запуск rpcbind вместо nfs-common
+    systemctl restart rpcbind || /etc/init.d/rpcbind start || /sbin/rpcbind
+fi
+
 # Размаскирование nfs-common, если он замаскирован на клиенте
 echo "Проверка и размаскирование необходимых служб..."
 systemctl unmask nfs-common 2>/dev/null || true
@@ -93,7 +112,7 @@ export ANSIBLE_CACHE_PLUGIN_TIMEOUT=86400
 export ANSIBLE_GATHERING=smart
 export ANSIBLE_STRATEGY=$STRATEGY
 export ANSIBLE_FORKS=$FORKS
-export ANSIBLE_CALLBACK_WHITELIST=profile_tasks,timer
+export ANSIBLE_CALLBACKS_ENABLED=profile_tasks,timer
 export ANSIBLE_STDOUT_CALLBACK=yaml
 export ANSIBLE_HOST_KEY_CHECKING=False
 
@@ -106,6 +125,12 @@ if [ "$PARALLEL" = true ]; then
     export ANSIBLE_SSH_RETRIES=5
     export ANSIBLE_DISPLAY_OK_HOSTS=false
 fi
+
+# Принудительная очистка NFS перед запуском
+echo "Очистка NFS состояния..."
+umount -f -l -a -t nfs,nfs4 2>/dev/null || true
+pgrep rpcbind >/dev/null || /sbin/rpcbind
+rm -f /var/lib/nfs/etab /var/lib/nfs/rmtab /var/lib/nfs/state 2>/dev/null || true
 
 # Применение системных оптимизаций
 echo "Применение системных оптимизаций..."
@@ -147,73 +172,83 @@ ansible-playbook -i inventory playbook.yml --diff "$@"
 PLAYBOOK_STATUS=$?
 
 # Дополнительная проверка монтирования после выполнения playbook
-if [ $PLAYBOOK_STATUS -ne 0 ]; then
-    echo "Playbook завершился с ошибками. Выполняем дополнительные действия..."
+# Дополнительная проверка монтирования после выполнения playbook
+if [ $PLAYBOOK_STATUS -ne 0 ] || ! df -h | grep -q "/mnt/storage"; then
+    echo "Playbook завершился с ошибками или монтирование не выполнено. Выполняем дополнительные действия..."
     
-    # Очистка устаревших дескрипторов файлов
-    echo "Очистка устаревших дескрипторов файлов NFS..."
-    service nfs-common restart
-    service rpcbind restart
-    sleep 2
-    rm -f /var/lib/nfs/state 2>/dev/null || true
-    service nfs-common restart
-    
-    # Принудительное размонтирование всех NFS-монтирований
-    echo "Принудительное размонтирование всех NFS-монтирований..."
-    for mount in $(mount | grep nfs | awk '{print $3}'); do
-        echo "Размонтирование $mount..."
-        umount -f -l $mount 2>/dev/null || true
-    done
-    
-    # Проверка смонтированных дисков
-    if ! mount | grep -q "/mnt/storage"; then
-        echo "Пытаемся смонтировать NFS вручную..."
-        
-        # Получаем IP сервера из inventory
-        SERVER_IP=$(grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' inventory | head -1 | awk '{print $1}')
-        if [ -n "$SERVER_IP" ]; then
-            # Проверяем доступность экспортов
-            echo "Доступные экспорты на сервере:"
-            showmount -e $SERVER_IP || echo "Не удалось получить список экспортов"
-            
-            # Пробуем монтировать с разными параметрами
-            for disk in sda sdb; do
-                echo "Пробуем смонтировать $disk..."
-                mkdir -p /mnt/storage/$disk
-                chmod 777 /mnt/storage/$disk
-                
-                # Используем более надежные параметры монтирования
-                echo "  Попытка монтирования с оптимальными параметрами..."
-                mount -t nfs -o rw,hard,intr,noatime,timeo=600,retrans=2,noresvport $SERVER_IP:/mnt/storage/$disk /mnt/storage/$disk 2>/dev/null
-                
-                if ! mount | grep -q "/mnt/storage/$disk"; then
-                    # Попытка с опциями NFS v3
-                    echo "  Попытка с NFS v3..."
-                    mount -t nfs -o rw,hard,intr,noatime,vers=3 $SERVER_IP:/mnt/storage/$disk /mnt/storage/$disk 2>/dev/null
-                fi
-                
-                if ! mount | grep -q "/mnt/storage/$disk"; then
-                    # Попытка с опциями NFS v4
-                    echo "  Попытка с NFS v4..."
-                    mount -t nfs -o rw,hard,intr,noatime,vers=4 $SERVER_IP:/mnt/storage/$disk /mnt/storage/$disk 2>/dev/null
-                fi
-                
-                if ! mount | grep -q "/mnt/storage/$disk"; then
-                    # Последняя попытка с минимальными опциями
-                    echo "  Последняя попытка с минимальными опциями..."
-                    mount -t nfs $SERVER_IP:/mnt/storage/$disk /mnt/storage/$disk 2>/dev/null
-                fi
-                
-                if mount | grep -q "/mnt/storage/$disk"; then
-                    echo "  ✓ Диск $disk успешно смонтирован"
-                else
-                    echo "  ✗ Не удалось смонтировать диск $disk"
-                fi
-            done
-        else
-            echo "Не удалось определить IP сервера NFS из inventory"
-        fi
+    # Получение IP сервера NFS из inventory
+    echo "Получение IP сервера NFS из inventory..."
+    SERVER_IP=$(grep -E '^\[nfs_server\]' inventory -A 1 | tail -n 1 | awk '{print $1}')
+
+    if [ -z "$SERVER_IP" ]; then
+        echo "ОШИБКА: Не удалось определить IP сервера из inventory"
+        exit 1
     fi
+
+    echo "Используем сервер из inventory: $SERVER_IP"
+
+    # Проверка доступности NFS сервера
+    echo "Проверка доступности NFS сервера..."
+    if ! nc -z -w 5 $SERVER_IP 2049; then
+        echo "ПРЕДУПРЕЖДЕНИЕ: NFS порт на сервере $SERVER_IP недоступен!"
+        echo "Проверяем статус NFS сервера..."
+        
+        # Пытаемся запустить NFS на сервере
+        ssh -o StrictHostKeyChecking=no root@$SERVER_IP "
+            systemctl restart nfs-server
+            exportfs -r
+            echo 'Экспорты на сервере:'
+            exportfs -v
+        " || echo "Не удалось подключиться к серверу или перезапустить NFS"
+    fi
+
+    # Проверка экспортов
+    echo "Проверка доступных NFS экспортов на сервере $SERVER_IP..."
+    EXPORTS=$(showmount -e $SERVER_IP 2>/dev/null || echo "Нет доступных экспортов")
+    echo "$EXPORTS"
+
+    # Отключаем существующие монтирования
+    echo "Отключение существующих монтирований..."
+    umount -f -l /mnt/storage/sda 2>/dev/null || true
+    umount -f -l /mnt/storage/sdb 2>/dev/null || true
+    
+    # Создание точек монтирования
+    echo "Создание точек монтирования..."
+    mkdir -p /mnt/storage/sda /mnt/storage/sdb
+    chmod 777 /mnt/storage/sda /mnt/storage/sdb
+    
+    # Ручное монтирование NFS с оптимальными параметрами
+    echo "Монтирование NFS шар с сервера $SERVER_IP..."
+    MOUNT_OPTS="vers=3,soft,nolock,rsize=8192,wsize=8192,nofail"
+    
+    echo "Монтирование /mnt/storage/sda..."
+    mount -t nfs -o $MOUNT_OPTS $SERVER_IP:/mnt/storage/sda /mnt/storage/sda
+    if mount | grep -q "/mnt/storage/sda"; then
+        echo "✓ Успешно смонтирован sda"
+    else
+        echo "✗ Ошибка монтирования sda"
+    fi
+    
+    echo "Монтирование /mnt/storage/sdb..."
+    mount -t nfs -o $MOUNT_OPTS $SERVER_IP:/mnt/storage/sdb /mnt/storage/sdb
+    if mount | grep -q "/mnt/storage/sdb"; then
+        echo "✓ Успешно смонтирован sdb"
+    else
+        echo "✗ Ошибка монтирования sdb"
+    fi
+    
+    # Обновление fstab
+    echo "Обновление /etc/fstab..."
+    # Удаление старых записей
+    grep -v "$SERVER_IP:/mnt/storage/" /etc/fstab > /tmp/fstab.new
+    cp /tmp/fstab.new /etc/fstab
+    
+    # Добавление новых записей
+    echo "$SERVER_IP:/mnt/storage/sda /mnt/storage/sda nfs $MOUNT_OPTS 0 0" >> /etc/fstab
+    echo "$SERVER_IP:/mnt/storage/sdb /mnt/storage/sdb nfs $MOUNT_OPTS 0 0" >> /etc/fstab
+    
+    # Перезагрузка systemd
+    systemctl daemon-reload
 fi
 
 # Подсчет общего времени выполнения

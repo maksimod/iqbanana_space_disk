@@ -25,9 +25,15 @@
   delay: 5
   until: nfs_client_install is succeeded
 
-- name: Display NFS client installation status
+# Принудительное использование сервера из inventory
+- name: Get NFS server from inventory
+  set_fact:
+    active_nfs_server_ip: "{{ groups['nfs_server'][0] }}"
+    cacheable: yes
+
+- name: Display server IP
   debug:
-    msg: "{{ 'SUCCESS: NFS client installed' if nfs_client_install is succeeded else 'ERROR: Failed to install NFS client' }}"
+    msg: "Используем NFS сервер из inventory: {{ active_nfs_server_ip }}"
 
 # Перезапуск клиентских сервисов для гарантии работы
 - name: Restart NFS client services
@@ -37,21 +43,6 @@
     enabled: yes
   with_items:
     - rpcbind
-  ignore_errors: yes
-
-# Проверка, работает ли nfs-common после размаскирования
-- name: Check if nfs-common service exists and is not masked
-  shell: "systemctl status nfs-common 2>&1 | grep -q 'masked'"
-  register: nfs_common_masked
-  failed_when: false
-  changed_when: false
-  
-# Только размаскируем, не пытаемся запустить, если служба замаскирована
-- name: Unmask nfs-common if masked
-  systemd:
-    name: nfs-common
-    masked: no
-  when: nfs_common_masked.rc == 0
   ignore_errors: yes
 
 # Оптимизация параметров ядра для NFS
@@ -68,19 +59,12 @@
     - { key: "net.core.wmem_default", value: "4194304" }
     - { key: "net.core.rmem_max", value: "16777216" }
     - { key: "net.core.wmem_max", value: "16777216" }
-    - { key: "vm.dirty_ratio", value: "80" }
-    - { key: "vm.dirty_background_ratio", value: "5" }
-    - { key: "vm.dirty_expire_centisecs", value: "12000" }
-    - { key: "net.ipv4.tcp_rmem", value: "4096 87380 16777216" }
-    - { key: "net.ipv4.tcp_wmem", value: "4096 65536 16777216" }
-    - { key: "net.ipv4.tcp_low_latency", value: "1" }
-    - { key: "net.core.netdev_max_backlog", value: "2500" }
   ignore_errors: yes
 
 # Проверка доступности NFS сервера
 - name: Check network connectivity to NFS server
   wait_for:
-    host: "{{ nfs_server_ip }}"
+    host: "{{ active_nfs_server_ip }}"
     port: 2049
     timeout: "{{ nfs_mount_timeout | default(30) }}"
   register: nfs_network_check
@@ -102,28 +86,9 @@
     owner: root
     group: root
 
-# Очистка устаревших NFS монтирований
-- name: Clean stale NFS mounts
-  shell: "umount -f -l {{ nfs_mount_base }}/{{ item.mountpoint }} 2>/dev/null || true"
-  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
-  ignore_errors: yes
-  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
-
-# Добавляем задачу для очистки кэша дескрипторов файлов NFS
-- name: Clear NFS file handle cache
-  shell: |
-    echo 'Clearing NFS cache and stale file handles...'
-    service nfs-common restart || true
-    service rpcbind restart || true
-    sleep 2
-    rm -f /var/lib/nfs/state || true
-    service nfs-common restart || true
-    echo 'NFS cache cleared'
-  ignore_errors: yes
-
 # Проверка доступности экспортов
-- name: Wait for NFS exports to be available
-  shell: "showmount -e {{ nfs_server_ip }}"
+- name: Check available NFS exports
+  shell: "showmount -e {{ active_nfs_server_ip }}"
   register: remote_exports
   retries: 5
   delay: 5
@@ -133,6 +98,15 @@
 - name: Display remote exports
   debug:
     msg: "Remote NFS exports: {{ remote_exports.stdout_lines | default(['No exports visible']) }}"
+
+# Очистка существующих записей fstab для NFS
+- name: Clean up previous NFS entries in fstab
+  lineinfile:
+    path: /etc/fstab
+    regexp: '.*{{ active_nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}.*'
+    state: absent
+  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
+  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
 # Создание точек монтирования
 - name: Create mount points for NFS shares
@@ -145,127 +119,43 @@
   with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
-# Монтирование NFS шар с ультра-оптимизированными параметрами для больших файлов
-- name: Mount NFS shares with optimized parameters for large files
+# Размонтирование существующих NFS шар
+- name: Unmount any existing NFS mounts
+  shell: "umount -f -l {{ nfs_mount_base }}/{{ item.mountpoint }} 2>/dev/null || true"
+  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
+  ignore_errors: yes
+  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
+
+# Монтирование NFS шар с оптимальными параметрами
+- name: Mount NFS shares with optimized parameters
   mount:
     path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
-    src: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}"
+    src: "{{ active_nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }}"
     fstype: nfs
-    opts: "rw,hard,intr,tcp,noatime,nodiratime,rsize=1048576,wsize=1048576,timeo=600,retrans=2,noresvport,_netdev,bg,nofail,nconnect=16,fsc,actimeo=600,nocto,local_lock=none"
+    opts: "vers=3,soft,nolock,rsize=8192,wsize=8192,nofail"
     state: mounted
   with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   register: nfs_mount_result
-  retries: "{{ nfs_mount_retries | default(5) }}"
-  delay: "{{ nfs_mount_delay | default(10) }}"
+  retries: 3
+  delay: 5
   until: nfs_mount_result is succeeded
   ignore_errors: yes
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
-# Настраиваем fstab для NFS монтирований с использованием уникальных экспортных путей
-- name: Configure fstab for persistent NFS mounts with UUID identifiers
+# Настраиваем fstab для NFS монтирований
+- name: Configure fstab for persistent NFS mounts
   lineinfile:
     path: /etc/fstab
     regexp: ".*{{ nfs_mount_base }}/{{ item.mountpoint }}.*"
-    line: "{{ nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }} nfs rw,hard,intr,tcp,noatime,rsize=1048576,wsize=1048576,timeo=600,retrans=2,noresvport,nofail,bg,nconnect=8,fsc,actimeo=600,nocto 0 0"
+    line: "{{ active_nfs_server_ip }}:{{ nfs_mount_base }}/{{ item.mountpoint }} {{ nfs_mount_base }}/{{ item.mountpoint }} nfs vers=3,soft,nolock,rsize=8192,wsize=8192,nofail 0 0"
     state: present
     backup: yes
   with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
   when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
 
-# Создаем конфигурационный файл для автоматического монтирования
-- name: Create auto-mount script for NFS shares with proper error handling
-  copy:
-    dest: /usr/local/bin/mount-nfs-shares.sh
-    mode: '0755'
-    content: |
-      #!/bin/bash
-      # Скрипт для автоматического монтирования NFS шар
-      
-      SERVER_IP="{{ nfs_server_ip }}"
-      BASE_DIR="{{ nfs_mount_base }}"
-      RETRY_COUNT=5
-      RETRY_DELAY=10
-      
-      # Проверяем доступность сервера NFS
-      check_server() {
-        for i in $(seq 1 $RETRY_COUNT); do
-          if nc -z -w 2 $SERVER_IP 2049; then
-            return 0
-          fi
-          echo "Сервер NFS ($SERVER_IP) недоступен, попытка $i из $RETRY_COUNT"
-          sleep $RETRY_DELAY
-        done
-        return 1
-      }
-      
-      # Монтируем шары из fstab
-      mount_shares() {
-        grep -E "$SERVER_IP:.*nfs" /etc/fstab | while read line; do
-          mount_point=$(echo $line | awk '{print $2}')
-          if ! mountpoint -q "$mount_point"; then
-            echo "Монтирование $mount_point..."
-            mount "$mount_point"
-            if [ $? -eq 0 ]; then
-              echo "Успешно смонтировано: $mount_point"
-            else
-              echo "Ошибка монтирования: $mount_point"
-            fi
-          else
-            echo "$mount_point уже смонтирован"
-          fi
-        done
-      }
-      
-      # Основная логика
-      echo "Проверка доступности сервера NFS..."
-      if check_server; then
-        echo "Сервер NFS доступен, монтирование шар..."
-        mount_shares
-      else
-        echo "ОШИБКА: Сервер NFS ($SERVER_IP) недоступен после $RETRY_COUNT попыток"
-        exit 1
-      fi
-      
-      # Вывод результатов
-      echo "Статус монтирования NFS:"
-      df -h | grep -E 'nfs|$SERVER_IP'
-      
-      exit 0
-  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
-
-# Создаем systemd сервис для автоматического монтирования
-- name: Create systemd service for auto-mounting NFS shares
-  copy:
-    dest: /etc/systemd/system/nfs-automount.service
-    mode: '0644'
-    content: |
-      [Unit]
-      Description=Auto-mount NFS Shares
-      After=network-online.target
-      Wants=network-online.target
-      
-      [Service]
-      Type=oneshot
-      ExecStart=/usr/local/bin/mount-nfs-shares.sh
-      RemainAfterExit=yes
-      
-      [Install]
-      WantedBy=multi-user.target
-  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
-
-# Активируем и запускаем сервис автоматического монтирования
-- name: Enable and start NFS auto-mount service
-  systemd:
-    name: nfs-automount
-    state: started
-    enabled: yes
-    daemon_reload: yes
-  ignore_errors: yes
-  when: hostvars[groups['nfs_server'][0]]['storage_disks'] is defined and hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
-
 # Проверка успешности монтирования
 - name: Verify NFS mounts
-  shell: "df -h | grep -E '{{ nfs_server_ip }}|nfs' || echo 'No NFS mounts detected'"
+  shell: "df -h | grep {{ active_nfs_server_ip }}:{{ nfs_mount_base }}"
   register: mount_verification
   changed_when: false
   failed_when: false
@@ -273,65 +163,3 @@
 - name: Display mount verification results
   debug:
     msg: "NFS mounts: {{ mount_verification.stdout_lines | default(['No NFS mounts detected']) }}"
-
-# Установка прав доступа для всех примонтированных NFS директорий
-- name: Ensure proper permissions for NFS mounts
-  file:
-    path: "{{ nfs_mount_base }}/{{ item.mountpoint }}"
-    state: directory
-    mode: '0777'
-    recurse: yes
-  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
-  ignore_errors: yes
-  when: 
-    - hostvars[groups['nfs_server'][0]]['storage_disks'] is defined
-    - hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
-    - mount_verification.rc == 0
-    - "'No NFS mounts detected' not in mount_verification.stdout"
-
-# Проверка прав на запись (только если есть монтирования)
-- name: Test write permissions if mounted
-  shell: "touch {{ nfs_mount_base }}/{{ item.mountpoint }}/ansible_write_test_{{ ansible_date_time.epoch }}.txt && echo OK || echo FAILED"
-  register: write_test_results
-  with_items: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
-  ignore_errors: yes
-  when: 
-    - hostvars[groups['nfs_server'][0]]['storage_disks'] is defined
-    - hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0 
-    - mount_verification.rc == 0
-    - "'No NFS mounts detected' not in mount_verification.stdout"
-
-# Отображение результатов теста записи
-- name: Display write test results
-  debug:
-    msg: "Write test for {{ item.item.mountpoint }}: {{ item.stdout | default('Test not performed') }}"
-  with_items: "{{ write_test_results.results | default([]) }}"
-  when: write_test_results is defined and write_test_results.results is defined
-
-# Очистка временных файлов
-- name: Clean up test files
-  file:
-    path: "{{ nfs_mount_base }}/{{ item.item.mountpoint }}/ansible_write_test_{{ ansible_date_time.epoch }}.txt"
-    state: absent
-  with_items: "{{ write_test_results.results | default([]) }}"
-  ignore_errors: yes
-  when: write_test_results is defined and write_test_results.results is defined and item.stdout is defined and item.stdout == "OK"
-
-# Генерация и установка нового config.js на основе смонтированных дисков
-- name: Generate and install backend config
-  template:
-    src: backend_config.js.j2
-    dest: "{{ backend_config_path }}/config.js"
-    mode: '0644'
-    force: yes
-  when: 
-    - backend_config_path is defined
-    - hostvars[groups['nfs_server'][0]]['storage_disks'] is defined
-    - hostvars[groups['nfs_server'][0]]['storage_disks'] | length > 0
-  register: config_updated
-  ignore_errors: no
-
-- name: Display config update status
-  debug:
-    msg: "Backend configuration {{ 'updated successfully' if config_updated is succeeded else 'failed to update' }}"
-  when: backend_config_path is defined

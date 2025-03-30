@@ -26,10 +26,6 @@
   changed_when: false
   ignore_errors: yes
 
-- name: Display root partition
-  debug:
-    msg: "Root partition is {{ root_partition.stdout }}"
-
 # Получаем системный диск
 - name: Identify system disk
   shell: "lsblk -no pkname {{ root_partition.stdout }} 2>/dev/null || echo ''"
@@ -49,6 +45,7 @@
   changed_when: false
   ignore_errors: yes
 
+# Показываем найденные устройства
 - name: Display all disks
   debug:
     msg: "All disks: {{ all_disks.stdout_lines | default([]) }}"
@@ -62,35 +59,6 @@
     - all_disks.stdout_lines | length > 0
     - system_disk_name.stdout != ''
 
-# Если система не распознала системный диск, используем другой метод
-- name: Get mounted partitions
-  shell: "cat /proc/mounts | grep -E '^/dev/[a-z]' | cut -d' ' -f1"
-  register: mounted_partitions
-  changed_when: false
-  ignore_errors: yes
-  when: storage_devices is not defined or storage_devices | length == 0
-
-# Извлекаем диски из разделов
-- name: Extract disks from partitions
-  shell: "echo {{ mounted_partitions.stdout_lines | join(' ') }} | xargs -n1 lsblk -no pkname 2>/dev/null | sort | uniq | sed 's/^/\\/dev\\//'"
-  register: system_disks_from_mounts
-  changed_when: false
-  ignore_errors: yes
-  when: 
-    - mounted_partitions is defined
-    - mounted_partitions.stdout_lines is defined
-    - mounted_partitions.stdout_lines | length > 0
-
-# Фильтруем системные диски из всех дисков
-- name: Filter system disks from all disks
-  set_fact:
-    storage_devices: "{{ all_disks.stdout_lines | difference(system_disks_from_mounts.stdout_lines) }}"
-  when: 
-    - system_disks_from_mounts is defined
-    - system_disks_from_mounts.stdout_lines is defined
-    - all_disks.stdout_lines is defined
-    - (storage_devices is not defined or storage_devices | length == 0)
-
 # Показываем найденные устройства
 - name: Display storage devices
   debug:
@@ -102,9 +70,34 @@
     msg: "WARNING: No storage devices found!"
   when: storage_devices is not defined or storage_devices | length == 0
 
+# Проверка использования дисков перед размонтированием
+- name: Check if disks are in use
+  shell: "lsof {{ item }} 2>/dev/null || echo 'Not in use'"
+  register: disk_usage
+  with_items: "{{ storage_devices | default([]) }}"
+  ignore_errors: yes
+  when: storage_devices is defined and storage_devices | length > 0
+
+# Принудительная остановка процессов, использующих диски
+- name: Kill processes using disks if needed
+  shell: "fuser -k {{ item.item }} 2>/dev/null || echo 'No processes to kill'"
+  with_items: "{{ disk_usage.results | default([]) }}"
+  when: item.stdout is defined and item.stdout != 'Not in use'
+  ignore_errors: yes
+
 # Размонтирование всех найденных несистемных дисков перед форматированием
 - name: Unmount any mounted storage devices
-  shell: "umount {{ item }} 2>/dev/null || true"
+  shell: "umount -f -l {{ item }} 2>/dev/null || true"
+  with_items: "{{ storage_devices | default([]) }}"
+  ignore_errors: yes
+  when: storage_devices is defined and storage_devices | length > 0
+
+# Ожидание завершения размонтирования
+- name: Wait for unmount to complete
+  wait_for:
+    path: "{{ item }}"
+    state: absent
+    timeout: 10
   with_items: "{{ storage_devices | default([]) }}"
   ignore_errors: yes
   when: storage_devices is defined and storage_devices | length > 0
@@ -116,44 +109,42 @@
   ignore_errors: yes
   when: storage_devices is defined and storage_devices | length > 0
 
-# Создание новой таблицы разделов GPT
-- name: Create new GPT partition tables
-  shell: "parted -s {{ item }} mklabel gpt && parted -s {{ item }} mkpart primary 0% 100% && sleep 2"
+# Создание новой таблицы разделов GPT с безопасной проверкой
+- name: Format disks with XFS filesystem directly
+  shell: |
+    # Сначала проверяем, используется ли диск
+    if lsof {{ item }} 2>/dev/null | grep -q .; then
+      echo "Обнаружены процессы, использующие {{ item }}, завершаем их..."
+      fuser -k {{ item }} 2>/dev/null || true
+      sleep 2
+    fi
+    
+    # Проверяем, есть ли активные точки монтирования на диске
+    MOUNT_POINTS=$(lsblk -no MOUNTPOINT {{ item }} 2>/dev/null | grep -v '^$')
+    if [ -n "$MOUNT_POINTS" ]; then
+      echo "Размонтирование точек монтирования: $MOUNT_POINTS"
+      echo "$MOUNT_POINTS" | while read mp; do
+        umount -f -l "$mp" 2>/dev/null || true
+      done
+      sleep 2
+    fi
+    
+    # Форматируем диск напрямую в XFS (без создания разделов)
+    echo "Форматирование диска {{ item }} в XFS..."
+    mkfs.xfs -f {{ item }}
+    
+    # Проверяем успешность форматирования
+    if file -s {{ item }} | grep -q "XFS"; then
+      echo "✓ Диск {{ item }} успешно отформатирован в XFS"
+      exit 0
+    else
+      echo "✗ Ошибка форматирования диска {{ item }}"
+      exit 1
+    fi
   with_items: "{{ storage_devices | default([]) }}"
+  register: format_result
   ignore_errors: yes
   when: storage_devices is defined and storage_devices | length > 0
-
-# Получение информации о созданных разделах
-- name: Get new partition info
-  shell: "lsblk -no NAME,MOUNTPOINT {{ item }} | grep -v ' /' | grep -v ' [SWAP]' | grep -v ' /boot' | grep -v $(basename {{ item }})$ | awk '{print $1}' | sed 's/[^a-zA-Z0-9]//g' | head -1"
-  register: new_partitions
-  with_items: "{{ storage_devices | default([]) }}"
-  changed_when: false
-  ignore_errors: yes
-  when: storage_devices is defined and storage_devices | length > 0
-
-# Форматирование новых разделов в XFS (оптимально для больших файлов)
-- name: Format new partitions with XFS
-  shell: "mkfs.xfs -f /dev/$(echo {{ item.stdout }}) 2>/dev/null || true"
-  with_items: "{{ new_partitions.results | default([]) }}"
-  when: 
-    - storage_devices is defined 
-    - storage_devices | length > 0
-    - item.stdout is defined
-    - item.stdout != ""
-  ignore_errors: yes
-
-# Получение UUID разделов
-- name: Get UUID for new partitions
-  shell: "blkid -s UUID -o value /dev/{{ item.stdout }}"
-  register: partition_uuids
-  with_items: "{{ new_partitions.results | default([]) }}"
-  when:
-    - storage_devices is defined
-    - storage_devices | length > 0
-    - item.stdout is defined
-    - item.stdout != ""
-  ignore_errors: yes
 
 # Создаем каталоги для монтирования
 - name: Create mount points
@@ -166,86 +157,39 @@
   with_items: "{{ storage_devices | default([]) }}"
   when: storage_devices is defined and storage_devices | length > 0
 
-# Монтируем новые разделы по UUID
-- name: Mount new partitions using UUID
-  shell: "mkdir -p {{ nfs_mount_base }}/{{ item.1 | basename }} && mount UUID=$(blkid -s UUID -o value /dev/{{ item.0.stdout }}) {{ nfs_mount_base }}/{{ item.1 | basename }} && echo 'Mounted successfully by UUID'"
-  with_together:
-    - "{{ new_partitions.results | default([]) }}"
-    - "{{ storage_devices | default([]) }}"
-  when: 
-    - storage_devices is defined 
-    - storage_devices | length > 0
-    - item.0.stdout is defined
-    - item.0.stdout != ""
+# Монтирование дисков
+- name: Mount disks directly
+  mount:
+    path: "{{ nfs_mount_base }}/{{ item | basename }}"
+    src: "{{ item }}"
+    fstype: xfs
+    state: mounted
+    opts: defaults
+  with_items: "{{ storage_devices | default([]) }}"
   register: mount_result
-  ignore_errors: yes
+  when: storage_devices is defined and storage_devices | length > 0
 
-# Безопасно удаляем все записи монтирования, относящиеся к нашим хранилищам
-- name: Remove all storage mount entries from fstab
+# Добавление в fstab
+- name: Update fstab for disks
   lineinfile:
     path: /etc/fstab
-    regexp: '^\S+\s+{{ nfs_mount_base }}/\S+'
-    state: absent
-  ignore_errors: yes
-
-# Добавляем монтирование по UUID в fstab
-- name: Add mounts to fstab using UUID for persistent mounting
-  lineinfile:
-    path: /etc/fstab
-    regexp: ".*{{ nfs_mount_base }}/{{ item.1 | basename }}.*"
-    line: "UUID={{ partition_uuids.results[loop_index].stdout }} {{ nfs_mount_base }}/{{ item.1 | basename }} xfs defaults,noatime,logbufs=8,logbsize=256k,nofail 0 0"
+    regexp: ".*{{ item }} .*{{ nfs_mount_base }}/{{ item | basename }}.*"
+    line: "{{ item }} {{ nfs_mount_base }}/{{ item | basename }} xfs defaults 0 0"
     state: present
-  with_together:
-    - "{{ new_partitions.results | default([]) }}"
-    - "{{ storage_devices | default([]) }}"
-  loop_control:
-    index_var: loop_index
-  when: 
-    - storage_devices is defined 
-    - storage_devices | length > 0
-    - item.0.stdout is defined
-    - item.0.stdout != ""
-    - partition_uuids is defined
-    - partition_uuids.results is defined
-    - partition_uuids.results[loop_index].stdout is defined
-  ignore_errors: yes
-  
-# Добавим проверку результата монтирования
-- name: Display mount results
-  debug:
-    msg: "Монтирование {{ item.item.1 | basename }}: {{ 'Успешно' if item.rc is defined and item.rc == 0 else 'Не удалось' }}"
-  with_items: "{{ mount_result.results | default([]) }}"
-  when: mount_result is defined and mount_result.results is defined
+  with_items: "{{ storage_devices | default([]) }}"
+  when: storage_devices is defined and storage_devices | length > 0
 
-# Добавим проверку результата монтирования
-- name: Verify mount results
-  debug:
-    msg: "Mounted {{ item.item.1 | basename }} as {{ item.item.0.stdout }}: {{ item.changed }}"
-  with_items: "{{ mount_result.results | default([]) }}"
-  when: mount_result is defined
-
-# Создаем storage_disks для экспорта NFS с UUID
+# Создаем storage_disks для экспорта NFS
 - name: Initialize storage_disks variable
   set_fact:
     storage_disks: []
 
-# Обновляем storage_disks с информацией о новых разделах и их UUID
-- name: Update storage_disks with new partitions and UUID
+# Обновляем storage_disks с информацией о дисках
+- name: Update storage_disks with disk info
   set_fact:
-    storage_disks: "{{ storage_disks + [{'device': item.1, 'partition': '/dev/' + item.0.stdout, 'mountpoint': item.1 | basename, 'fstype': 'xfs', 'uuid': partition_uuids.results[loop_index].stdout }] }}"
-  with_together:
-    - "{{ new_partitions.results | default([]) }}"
-    - "{{ storage_devices | default([]) }}"
-  loop_control:
-    index_var: loop_index
-  when: 
-    - storage_devices is defined 
-    - storage_devices | length > 0
-    - item.0.stdout is defined
-    - item.0.stdout != ""
-    - partition_uuids is defined
-    - partition_uuids.results is defined
-    - partition_uuids.results[loop_index].stdout is defined
+    storage_disks: "{{ storage_disks + [{'device': item, 'mountpoint': item | basename, 'fstype': 'xfs'}] }}"
+  with_items: "{{ storage_devices | default([]) }}"
+  when: storage_devices is defined and storage_devices | length > 0
 
 # Показываем итоговую информацию о смонтированных дисках
 - name: Display mounted disks information
@@ -257,9 +201,3 @@
 - name: Show mounted disks
   debug:
     msg: "{{ mounted_disks_info.stdout_lines | default(['No disks mounted']) }}"
-
-# Показываем UUID всех дисков для отладки
-- name: Display UUID information of all mounted disks
-  debug:
-    msg: "{{ storage_disks }}"
-  when: storage_disks is defined and storage_disks | length > 0
