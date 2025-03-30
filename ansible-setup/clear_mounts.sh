@@ -8,6 +8,24 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
+# Режим защиты данных по умолчанию ВКЛЮЧЕН
+DATA_PROTECTION=true
+
+# Проверка аргумента командной строки для отключения защиты
+if [ "$1" == "--force" ]; then
+    DATA_PROTECTION=false
+    echo -e "${RED}ВНИМАНИЕ: Режим защиты данных ОТКЛЮЧЕН. Это опасно для ваших данных!${NC}"
+    echo "У вас есть 5 секунд чтобы отменить операцию (Ctrl+C)"
+    sleep 5
+fi
+
+if [ "$DATA_PROTECTION" = true ]; then
+    echo -e "${YELLOW}РЕЖИМ ЗАЩИТЫ ДАННЫХ: Скрипт выполняется в безопасном режиме${NC}"
+    echo -e "${YELLOW}Размонтирование /mnt/storage ОТКЛЮЧЕНО для защиты данных${NC}"
+    echo -e "${YELLOW}Для принудительного размонтирования используйте: $0 --force${NC}"
+    echo ""
+fi
+
 echo -e "${GREEN}===== Скрипт очистки монтирований NFS и дисков =====${NC}"
 
 # Проверка прав root
@@ -19,15 +37,29 @@ fi
 
 # 1. Размонтирование всех NFS шар
 echo -e "${YELLOW}Размонтирование всех NFS-шар...${NC}"
-for mount in $(mount | grep -E 'nfs|type nfs' | awk '{print $3}'); do
-    echo "Размонтирование $mount..."
-    umount -f -l "$mount" 2>/dev/null
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✓ Успешно размонтирован $mount${NC}"
-    else
-        echo -e "${RED}✗ Не удалось размонтировать $mount${NC}"
-    fi
-done
+if [ "$DATA_PROTECTION" = true ]; then
+    echo -e "${GREEN}ЗАЩИТА ДАННЫХ: Пропускаем размонтирование /mnt/storage/*${NC}"
+    for mount in $(mount | grep -E 'nfs|type nfs' | awk '{print $3}' | grep -v "/mnt/storage"); do
+        echo "Размонтирование $mount..."
+        umount -f -l "$mount" 2>/dev/null
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}✓ Успешно размонтирован $mount${NC}"
+        else
+            echo -e "${RED}✗ Не удалось размонтировать $mount${NC}"
+        fi
+    done
+else
+    # Стандартное размонтирование без защиты
+    for mount in $(mount | grep -E 'nfs|type nfs' | awk '{print $3}'); do
+        echo "Размонтирование $mount..."
+        umount -f -l "$mount" 2>/dev/null
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}✓ Успешно размонтирован $mount${NC}"
+        else
+            echo -e "${RED}✗ Не удалось размонтировать $mount${NC}"
+        fi
+    done
+fi
 
 # 2. Размонтирование всех несистемных дисков
 echo -e "\n${YELLOW}Размонтирование несистемных дисков...${NC}"

@@ -2,6 +2,32 @@
 
 # Скрипт для запуска оптимизированного Ansible playbook
 
+# ВАЖНО: Режим защиты данных
+DATA_PROTECTION=true
+
+# Показать предупреждение о защите данных
+echo "=========================================================="
+echo "РЕЖИМ ЗАЩИТЫ ДАННЫХ ВКЛЮЧЕН"
+echo "Автоматическое форматирование дисков ОТКЛЮЧЕНО"
+echo "Форсированное размонтирование существующих дисков ОТКЛЮЧЕНО"
+echo "=========================================================="
+
+# Проверка на наличие важных данных перед выполнением
+echo "ПРОВЕРКА: Поиск смонтированных дисков в /mnt/storage..."
+MOUNTED_DISKS=$(df -h | grep "/mnt/storage" || echo "Нет смонтированных дисков")
+echo "$MOUNTED_DISKS"
+
+if [[ "$MOUNTED_DISKS" != "Нет смонтированных дисков" ]]; then
+    echo "ВАЖНО: Обнаружены смонтированные диски с данными!"
+    echo "Для защиты ваших данных, убедитесь что вы создали их резервные копии."
+    echo "Продолжить выполнение скрипта? (Y/n)"
+    read -r response
+    if [[ "$response" != "Y" ]]; then
+        echo "Выполнение скрипта остановлено пользователем."
+        exit 0
+    fi
+fi
+
 # Параметры по умолчанию
 STRATEGY="free"
 FORKS=20
@@ -177,6 +203,17 @@ PLAYBOOK_STATUS=$?
 if [ $PLAYBOOK_STATUS -ne 0 ] || ! df -h | grep -q "/mnt/storage"; then
     echo "Playbook завершился с ошибками или монтирование не выполнено. Выполняем дополнительные действия..."
     
+    # Режим защиты данных
+    if [ "$DATA_PROTECTION" = true ]; then
+        echo "РЕЖИМ ЗАЩИТЫ ДАННЫХ: Проверка существующих монтирований..."
+        EXISTING_MOUNTS=$(df -h | grep "/mnt/storage" || echo "Нет существующих монтирований")
+        echo "$EXISTING_MOUNTS"
+        
+        echo "РЕЖИМ ЗАЩИТЫ ДАННЫХ: Принудительное создание точек монтирования без размонтирования..."
+        # Только создаем точки монтирования, НЕ размонтируя существующие
+    fi
+    
+
     # Получение IP серверов NFS из inventory
     echo "Получение IP серверов NFS из inventory..."
     SERVER_IPS=($(grep -A 100 '^\[nfs_servers\]' inventory | grep -v '^\[' | grep -v '^#' | grep -v '^$' | awk '{print $1}' | head -n 10))
@@ -237,8 +274,11 @@ if [ $PLAYBOOK_STATUS -ne 0 ] || ! df -h | grep -q "/mnt/storage"; then
                 mkdir -p "$MOUNT_POINT"
                 chmod 777 "$MOUNT_POINT"
                 
-                echo "Отключение существующего монтирования $MOUNT_POINT..."
-                umount -f -l "$MOUNT_POINT" 2>/dev/null || true
+                echo "Проверка существующего монтирования $MOUNT_POINT..."
+                if mount | grep -q "$MOUNT_POINT"; then
+                    echo "✓ Точка $MOUNT_POINT уже смонтирована, оставляем как есть для безопасности данных"
+                    continue
+                fi
                 
                 # Монтирование NFS шар с оптимальными параметрами
                 echo "Монтирование $EXPORT_PATH с сервера $SERVER_IP в $MOUNT_POINT..."
@@ -253,13 +293,13 @@ if [ $PLAYBOOK_STATUS -ne 0 ] || ! df -h | grep -q "/mnt/storage"; then
                     LETTER=${DISK_LETTERS[$DISK_KEY]:-"X"}
                     
                     # Добавляем диск в конфигурацию
-                    DISKS_CONFIG="${DISKS_CONFIG}'$LETTER:': '/mnt/storage/$SERVER_IP/$DISK_NAME'\n"
+                    DISKS_CONFIG="${DISKS_CONFIG}'$LETTER:': '$MOUNT_POINT'\n"
                     
-                    # Удаляем старую запись из fstab если есть
-                    sed -i "\|$SERVER_IP:$EXPORT_PATH|d" /etc/fstab
-                    
-                    # Добавляем новую запись в fstab
-                    echo "$SERVER_IP:$EXPORT_PATH $MOUNT_POINT nfs $MOUNT_OPTS 0 0" >> /etc/fstab
+                    # Проверяем существование записи в fstab
+                    if ! grep -q "$SERVER_IP:$EXPORT_PATH $MOUNT_POINT" /etc/fstab; then
+                        # Добавляем новую запись в fstab только если её нет
+                        echo "$SERVER_IP:$EXPORT_PATH $MOUNT_POINT nfs $MOUNT_OPTS 0 0" >> /etc/fstab
+                    fi
                 else
                     echo "✗ Ошибка монтирования $DISK_NAME с сервера $SERVER_IP"
                 fi

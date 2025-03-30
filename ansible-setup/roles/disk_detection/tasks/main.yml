@@ -135,45 +135,46 @@
   when: storage_devices is defined and storage_devices | length > 0
 
 # Форматирование только пустых дисков
-- name: Format empty disks with XFS filesystem
+# НИКОГДА не форматировать диски - полностью безопасная версия
+- name: DO NOT Format disks - safety feature
+  debug:
+    msg: "БЕЗОПАСНОСТЬ: Форматирование дисков ОТКЛЮЧЕНО для защиты данных на диске {{ item.item }}"
+  with_items: "{{ disk_data_check.results | default([]) }}"
+  when: 
+    - storage_devices is defined 
+    - storage_devices | length > 0
+
+# Заменяем опасное форматирование информацией о диске
+- name: Just report disk information instead of formatting
   shell: |
-    # Сначала проверяем, используется ли диск
-    if lsof {{ item.item }} 2>/dev/null | grep -q .; then
-      echo "Обнаружены процессы, использующие {{ item.item }}, завершаем их..."
-      fuser -k {{ item.item }} 2>/dev/null || true
-      sleep 2
-    fi
+    # Только вывод информации без изменения дисков
+    echo "БЕЗОПАСНОСТЬ: Автоматическое форматирование отключено"
     
-    # Проверяем, есть ли активные точки монтирования на диске
+    # Выводим информацию о диске для диагностики
+    echo "Информация о диске {{ item.item }}:"
+    blkid {{ item.item }} || echo "Нет информации blkid"
+    
+    # Проверяем тип файловой системы
+    FS_TYPE=$(blkid -o value -s TYPE {{ item.item }} 2>/dev/null || echo "не определен")
+    echo "Тип файловой системы: $FS_TYPE"
+    
+    # Проверяем точки монтирования
     MOUNT_POINTS=$(lsblk -no MOUNTPOINT {{ item.item }} 2>/dev/null | grep -v '^$')
     if [ -n "$MOUNT_POINTS" ]; then
-      echo "Размонтирование точек монтирования: $MOUNT_POINTS"
-      echo "$MOUNT_POINTS" | while read mp; do
-        umount -f -l "$mp" 2>/dev/null || true
-      done
-      sleep 2
-    fi
-    
-    # Форматируем диск напрямую в XFS (без создания разделов)
-    echo "Форматирование диска {{ item.item }} в XFS..."
-    mkfs.xfs -f {{ item.item }}
-    
-    # Проверяем успешность форматирования
-    if file -s {{ item.item }} | grep -q "XFS"; then
-      echo "✓ Диск {{ item.item }} успешно отформатирован в XFS"
-      exit 0
+      echo "Текущие точки монтирования: $MOUNT_POINTS"
     else
-      echo "✗ Ошибка форматирования диска {{ item.item }}"
-      exit 1
+      echo "Диск не смонтирован"
     fi
+    
+    # Специальный код, чтобы формат замены не нарушал логику скрипта
+    exit 0
   with_items: "{{ disk_data_check.results | default([]) }}"
   register: format_result
   ignore_errors: yes
   when: 
     - storage_devices is defined 
     - storage_devices | length > 0
-    - item.rc == 0  # Форматируем только диски без существующих файловых систем
-
+    
 # Создаем каталоги для монтирования
 - name: Create mount points
   file:
