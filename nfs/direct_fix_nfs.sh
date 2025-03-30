@@ -19,11 +19,9 @@ DISKS_TO_MOUNT=(
     "192.168.0.106:sdb:F"
 )
 
-# Пропускать форматирование пустых дисков? (true/false)
-SKIP_FORMATTING=true
-
-# Перезапускать сервисы NFS? (true/false) 
-RESTART_NFS=true
+# Параметры монтирования
+MOUNT_OPTIONS="defaults,nofail,noatime,x-systemd.device-timeout=30"
+NFS_MOUNT_OPTIONS="vers=3,soft,nolock,rsize=8192,wsize=8192,nofail,noatime,x-systemd.device-timeout=30"
 
 # Базовый каталог для монтирования
 MOUNT_BASE="/mnt/data_storage"
@@ -38,14 +36,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}===== Скрипт прямого исправления NFS-экспортов =====${NC}"
-echo -e "${YELLOW}Настройка для серверов: ${SERVERS[*]}${NC}"
-echo -e "${YELLOW}Клиент: $CLIENT_IP${NC}"
-echo -e "${YELLOW}Диски для монтирования: ${NC}"
-for disk_info in "${DISKS_TO_MOUNT[@]}"; do
-    IFS=':' read -r server disk letter <<< "$disk_info"
-    echo -e "${YELLOW}- Сервер $server, диск $disk (буква $letter)${NC}"
-done
+echo -e "${GREEN}===== Скрипт настройки NFS с UUID и безопасными параметрами =====${NC}"
 
 # Проверка прав root
 if [ "$(id -u)" -ne 0 ]; then
@@ -53,6 +44,26 @@ if [ "$(id -u)" -ne 0 ]; then
     echo "Используйте: sudo $0"
     exit 1
 fi
+
+# Запрос паролей в начале выполнения
+declare -A SERVER_PASSWORDS
+for SERVER in "${SERVERS[@]}"; do
+    echo -n "Введите пароль для root@$SERVER: "
+    read -s SERVER_PASSWORD
+    echo
+    SERVER_PASSWORDS[$SERVER]="$SERVER_PASSWORD"
+done
+
+# Функция для SSH с сохраненным паролем
+ssh_with_password() {
+    local server=$1
+    local password=${SERVER_PASSWORDS[$server]}
+    local command=$2
+    
+    # Используем sshpass для передачи пароля без запроса
+    sshpass -p "$password" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@$server "$command"
+    return $?
+}
 
 # 1. Сначала размонтируем существующие NFSы
 echo -e "${YELLOW}Размонтирование всех NFS-шар...${NC}"
@@ -82,58 +93,59 @@ for SERVER in "${SERVERS[@]}"; do
         fi
     done
     
-    # Если у сервера нет дисков для монтирования, пропускаем его
-    if [ ${#server_disks[@]} -eq 0 ]; then
-        echo -e "${YELLOW}Для сервера $SERVER не указаны диски в настройках. Пропускаем...${NC}"
-        continue
-    fi
-    
     # Строка с дисками для передачи по SSH
     disks_string=$(printf "'%s' " "${server_disks[@]}")
     
-    # SSH на сервер для фиксации монтирования дисков
-    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@$SERVER << EOF || { echo -e "${RED}Ошибка подключения к серверу $SERVER${NC}"; continue; }
-    echo "Проверка физических дисков на сервере $SERVER"
+    # SSH команда для настройки сервера
+    server_cmd="
+    echo \"Проверка физических дисков на сервере $SERVER\"
     lsblk -f
     
     # Перезапуск NFS для чистого состояния
-    if [ "$RESTART_NFS" = true ]; then
-        echo "Перезапуск NFS сервисов..."
-        systemctl stop nfs-kernel-server rpcbind
-        systemctl start rpcbind
-        sleep 2
-        systemctl start nfs-kernel-server
-    fi
+    echo \"Перезапуск NFS сервисов...\"
+    systemctl stop nfs-kernel-server rpcbind
+    systemctl start rpcbind
+    sleep 2
+    systemctl start nfs-kernel-server
     
     # Определить, какие диски имеются
     SYSTEM_DISK=\$(df -h / | grep -v Filesystem | awk '{print \$1}' | sed 's/[0-9]//g' | sed 's#/dev/##')
-    echo "Системный диск: \$SYSTEM_DISK"
+    echo \"Системный диск: \$SYSTEM_DISK\"
     
     # Информация о размерах дисков
-    echo "Размеры дисков:"
-    lsblk -dn -o NAME,SIZE
+    echo \"Размеры дисков:\"
+    lsblk -dn -o NAME,SIZE,UUID
     
     # Создать директории для монтирования
     mkdir -p /mnt/storage
     
     # Монтируем только указанные диски
-    echo "Монтирование только указанных дисков: ${server_disks[*]}"
+    echo \"Монтирование только указанных дисков: ${server_disks[*]}\"
+    
+    # Сбросим fstab
+    cp /etc/fstab /etc/fstab.backup.\$(date '+%Y%m%d%H%M%S')
+    
+    # Сохраним только системные монтирования
+    grep -E '(^UUID|\s/\s|\sswap\s|^#)' /etc/fstab > /etc/fstab.new
+    
+    # Добавим комментарий о безопасности
+    echo \"# Безопасное монтирование дисков с UUID и опцией nofail\" >> /etc/fstab.new
     
     for DISK in ${disks_string}; do
         # Убираем одинарные кавычки, если они есть
-        DISK=\$(echo \$DISK | tr -d "'")
+        DISK=\$(echo \$DISK | tr -d \"'\")
         
-        echo "Обработка диска /dev/\$DISK..."
+        echo \"Обработка диска /dev/\$DISK...\"
         
         # Пропускаем системный диск
-        if [ "\$DISK" == "\$SYSTEM_DISK" ]; then
-            echo "ВНИМАНИЕ: \$DISK является системным диском! Пропускаем."
+        if [ \"\$DISK\" == \"\$SYSTEM_DISK\" ]; then
+            echo \"ВНИМАНИЕ: \$DISK является системным диском! Пропускаем.\"
             continue
         fi
         
         # Проверяем существование диска
-        if [ ! -e "/dev/\$DISK" ]; then
-            echo "ОШИБКА: Диск /dev/\$DISK не существует!"
+        if [ ! -e \"/dev/\$DISK\" ]; then
+            echo \"ОШИБКА: Диск /dev/\$DISK не существует!\"
             continue
         fi
         
@@ -141,72 +153,68 @@ for SERVER in "${SERVERS[@]}"; do
         mkdir -p /mnt/storage/\$DISK
         
         # Размонтируем диск если он уже смонтирован
-        if mount | grep -q "/dev/\$DISK on"; then
-            echo "Диск /dev/\$DISK уже смонтирован, размонтируем..."
+        if mount | grep -q \"/dev/\$DISK on\"; then
+            echo \"Диск /dev/\$DISK уже смонтирован, размонтируем...\"
             umount -f -l /dev/\$DISK 2>/dev/null || true
         fi
         
-        # Проверяем файловую систему
+        # Проверяем UUID диска
+        UUID=\$(blkid -s UUID -o value /dev/\$DISK 2>/dev/null)
         FS_TYPE=\$(blkid -o value -s TYPE /dev/\$DISK 2>/dev/null)
         
-        if [ -z "\$FS_TYPE" ]; then
-            if [ "$SKIP_FORMATTING" = true ]; then
-                echo "Диск /dev/\$DISK не содержит файловой системы, и форматирование отключено. Пропускаем."
-                continue
-            else
-                echo "✓ Создаем XFS файловую систему на диске /dev/\$DISK"
-                mkfs.xfs -f /dev/\$DISK
-                FS_TYPE="xfs"
-            fi
+        if [ -z \"\$FS_TYPE\" ]; then
+            echo \"Диск /dev/\$DISK не содержит файловой системы. Создаем XFS...\"
+            mkfs.xfs -f /dev/\$DISK
+            FS_TYPE=\"xfs\"
+            # Получаем UUID повторно
+            UUID=\$(blkid -s UUID -o value /dev/\$DISK)
         fi
         
-        echo "Монтирование /dev/\$DISK (\$FS_TYPE) в /mnt/storage/\$DISK"
-        mount -t \$FS_TYPE /dev/\$DISK /mnt/storage/\$DISK
+        if [ -z \"\$UUID\" ]; then
+            echo \"ОШИБКА: Не удалось получить UUID для диска /dev/\$DISK\"
+            continue
+        fi
+        
+        echo \"Монтирование /dev/\$DISK (\$FS_TYPE, UUID=\$UUID) в /mnt/storage/\$DISK\"
+        mount -t \$FS_TYPE -o $MOUNT_OPTIONS /dev/\$DISK /mnt/storage/\$DISK
         
         # Проверка монтирования
-        if mount | grep -q "/dev/\$DISK on /mnt/storage/\$DISK"; then
-            echo "✓ Диск /dev/\$DISK успешно смонтирован"
+        if mount | grep -q \"/dev/\$DISK on /mnt/storage/\$DISK\"; then
+            echo \"✓ Диск /dev/\$DISK успешно смонтирован\"
             
-            # Обновляем fstab
-            if ! grep -q "/dev/\$DISK.*mnt/storage/\$DISK" /etc/fstab; then
-                # Удаляем старые записи с этим диском
-                sed -i "/\/dev\/\$DISK/d" /etc/fstab
-                # Добавляем новую запись
-                echo "/dev/\$DISK /mnt/storage/\$DISK \$FS_TYPE defaults 0 0" >> /etc/fstab
-            fi
+            # Добавляем запись в новый fstab с UUID
+            echo \"UUID=\$UUID /mnt/storage/\$DISK \$FS_TYPE $MOUNT_OPTIONS 0 0\" >> /etc/fstab.new
             
             # Настройка прав доступа
             chmod -R 777 /mnt/storage/\$DISK
         else
-            echo "✗ Ошибка монтирования диска /dev/\$DISK"
+            echo \"✗ Ошибка монтирования диска /dev/\$DISK\"
         fi
     done
     
-    # Проверка и настройка экспортов NFS
-    echo "Настройка NFS экспортов..."
+    # Применяем новый fstab
+    mv /etc/fstab.new /etc/fstab
+    
+    # Перезагружаем systemd
+    systemctl daemon-reload
+    
+    # Настройка NFS экспортов
+    echo \"Настройка NFS экспортов...\"
     
     # Удаляем все старые экспорты для этого IP
-    grep -v "$CLIENT_IP" /etc/exports > /tmp/exports.tmp
+    grep -v \"$CLIENT_IP\" /etc/exports > /tmp/exports.tmp || echo \"# NFS exports\" > /tmp/exports.tmp
     mv /tmp/exports.tmp /etc/exports
-    
-    # Добавление заголовка если файл пуст
-    if [ ! -s /etc/exports ]; then
-        cat > /etc/exports << EXPORTS
-# NFS exports - прямая настройка
-# Автоматически сгенерировано скриптом direct_fix_nfs.sh
-EXPORTS
-    fi
     
     # Добавление только указанных дисков в exports
     for DISK in ${disks_string}; do
         # Убираем одинарные кавычки, если они есть
-        DISK=\$(echo \$DISK | tr -d "'")
+        DISK=\$(echo \$DISK | tr -d \"'\")
         
-        if mount | grep -q "/mnt/storage/\$DISK"; then
-            echo "/mnt/storage/\$DISK $CLIENT_IP(rw,sync,no_subtree_check,no_root_squash,insecure)" >> /etc/exports
-            echo "Экспортирован /mnt/storage/\$DISK для клиента $CLIENT_IP"
+        if mount | grep -q \"/mnt/storage/\$DISK\"; then
+            echo \"/mnt/storage/\$DISK $CLIENT_IP(rw,sync,no_subtree_check,no_root_squash,insecure)\" >> /etc/exports
+            echo \"Экспортирован /mnt/storage/\$DISK для клиента $CLIENT_IP\"
         else
-            echo "Диск /mnt/storage/\$DISK не смонтирован, пропускаем экспорт"
+            echo \"Диск /mnt/storage/\$DISK не смонтирован, пропускаем экспорт\"
         fi
     done
     
@@ -215,14 +223,30 @@ EXPORTS
     systemctl restart nfs-kernel-server
     
     # Проверка экспортов
-    echo "Экспорты NFS:"
+    echo \"Экспорты NFS:\"
     exportfs -v
     
-    # Проверка смонтированных дисков
-    echo "Смонтированные диски:"
-    df -h | grep "/mnt/storage"
-EOF
-
+    # Проверка смонтированных дисков с параметрами UUID
+    echo \"Смонтированные диски:\"
+    df -h | grep \"/mnt/storage\"
+    
+    # Проверка UUID в fstab
+    echo \"UUID в fstab:\"
+    grep UUID /etc/fstab
+    "
+    
+    # Выполнение команды на сервере с сохраненным паролем
+    if ! ssh_with_password "$SERVER" "$server_cmd"; then
+        echo -e "${RED}Ошибка при настройке сервера $SERVER${NC}"
+        continue
+    fi
+    
+    # Проверка наличия утилиты showmount
+    if ! command -v showmount &> /dev/null; then
+        echo "Утилита showmount не установлена. Устанавливаем..."
+        apt-get update -qq && apt-get install -y nfs-common
+    fi
+    
     # Получение списка экспортов с сервера (с клиента)
     echo "Проверка доступных экспортов с сервера $SERVER..."
     sleep 2  # Даем время NFS-серверу инициализироваться
@@ -265,6 +289,9 @@ cp /etc/fstab /etc/fstab.backup_$(date +"%Y%m%d%H%M%S")
 grep -v "$MOUNT_BASE" /etc/fstab > /tmp/fstab.new
 cp /tmp/fstab.new /etc/fstab
 
+# Добавляем комментарий о NFS монтированиях
+echo "# NFS монтирования с опцией nofail для безопасной загрузки" >> /etc/fstab
+
 # Монтирование каждого экспорта
 for EXPORT_ENTRY in "${EXPORTS_TO_MOUNT[@]}"; do
     IFS=':' read -r SERVER_IP EXPORT_PATH LETTER <<< "$EXPORT_ENTRY"
@@ -282,12 +309,12 @@ for EXPORT_ENTRY in "${EXPORTS_TO_MOUNT[@]}"; do
     
     # Монтирование
     echo "Монтирование $SERVER_IP:$EXPORT_PATH в $MOUNT_POINT (Буква: $LETTER)"
-    mount -t nfs -o vers=3,soft,nolock,rsize=8192,wsize=8192 $SERVER_IP:$EXPORT_PATH $MOUNT_POINT
+    mount -t nfs -o $NFS_MOUNT_OPTIONS $SERVER_IP:$EXPORT_PATH $MOUNT_POINT
     
     if mount | grep -q " on $MOUNT_POINT "; then
         echo -e "${GREEN}✓ Успешно смонтирован $EXPORT_PATH с сервера $SERVER_IP (Буква: $LETTER)${NC}"
         # Добавление в fstab
-        echo "$SERVER_IP:$EXPORT_PATH $MOUNT_POINT nfs vers=3,soft,nolock,rsize=8192,wsize=8192,nofail 0 0" >> /etc/fstab
+        echo "$SERVER_IP:$EXPORT_PATH $MOUNT_POINT nfs $NFS_MOUNT_OPTIONS 0 0" >> /etc/fstab
     else
         echo -e "${RED}✗ Ошибка монтирования $EXPORT_PATH с сервера $SERVER_IP${NC}"
     fi
