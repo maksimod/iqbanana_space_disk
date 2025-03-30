@@ -110,17 +110,42 @@
   when: storage_devices is defined and storage_devices | length > 0
 
 # Создание новой таблицы разделов GPT с безопасной проверкой
-- name: Format disks with XFS filesystem directly
+# Вместо прямого форматирования диска, нужно добавить проверку наличия данных
+- name: Check for existing data on storage devices
+  shell: |
+    DEVICE="{{ item }}"
+    echo "Проверка диска $DEVICE на наличие существующих данных..."
+    
+    # Проверяем тип файловой системы
+    FS_TYPE=$(blkid -o value -s TYPE $DEVICE 2>/dev/null)
+    
+    if [ -n "$FS_TYPE" ]; then
+      # Файловая система уже существует
+      echo "ВНИМАНИЕ: На диске $DEVICE обнаружена файловая система $FS_TYPE"
+      echo "Пропускаем форматирование для сохранения данных"
+      exit 100  # Специальный код для обозначения наличия данных
+    else
+      echo "Диск $DEVICE не содержит распознаваемой файловой системы"
+      exit 0
+    fi
+  register: disk_data_check
+  changed_when: false
+  failed_when: disk_data_check.rc != 0 and disk_data_check.rc != 100
+  with_items: "{{ storage_devices | default([]) }}"
+  when: storage_devices is defined and storage_devices | length > 0
+
+# Форматирование только пустых дисков
+- name: Format empty disks with XFS filesystem
   shell: |
     # Сначала проверяем, используется ли диск
-    if lsof {{ item }} 2>/dev/null | grep -q .; then
-      echo "Обнаружены процессы, использующие {{ item }}, завершаем их..."
-      fuser -k {{ item }} 2>/dev/null || true
+    if lsof {{ item.item }} 2>/dev/null | grep -q .; then
+      echo "Обнаружены процессы, использующие {{ item.item }}, завершаем их..."
+      fuser -k {{ item.item }} 2>/dev/null || true
       sleep 2
     fi
     
     # Проверяем, есть ли активные точки монтирования на диске
-    MOUNT_POINTS=$(lsblk -no MOUNTPOINT {{ item }} 2>/dev/null | grep -v '^$')
+    MOUNT_POINTS=$(lsblk -no MOUNTPOINT {{ item.item }} 2>/dev/null | grep -v '^$')
     if [ -n "$MOUNT_POINTS" ]; then
       echo "Размонтирование точек монтирования: $MOUNT_POINTS"
       echo "$MOUNT_POINTS" | while read mp; do
@@ -130,21 +155,24 @@
     fi
     
     # Форматируем диск напрямую в XFS (без создания разделов)
-    echo "Форматирование диска {{ item }} в XFS..."
-    mkfs.xfs -f {{ item }}
+    echo "Форматирование диска {{ item.item }} в XFS..."
+    mkfs.xfs -f {{ item.item }}
     
     # Проверяем успешность форматирования
-    if file -s {{ item }} | grep -q "XFS"; then
-      echo "✓ Диск {{ item }} успешно отформатирован в XFS"
+    if file -s {{ item.item }} | grep -q "XFS"; then
+      echo "✓ Диск {{ item.item }} успешно отформатирован в XFS"
       exit 0
     else
-      echo "✗ Ошибка форматирования диска {{ item }}"
+      echo "✗ Ошибка форматирования диска {{ item.item }}"
       exit 1
     fi
-  with_items: "{{ storage_devices | default([]) }}"
+  with_items: "{{ disk_data_check.results | default([]) }}"
   register: format_result
   ignore_errors: yes
-  when: storage_devices is defined and storage_devices | length > 0
+  when: 
+    - storage_devices is defined 
+    - storage_devices | length > 0
+    - item.rc == 0  # Форматируем только диски без существующих файловых систем
 
 # Создаем каталоги для монтирования
 - name: Create mount points
