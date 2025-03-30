@@ -140,22 +140,22 @@
   
 - name: Create entries for backend disks config
   set_fact:
-    backend_disks: "{{ backend_disks | combine({
-      ('L:' if loop.index == 1 else
-       'C:' if loop.index == 2 else
-       'D:' if loop.index == 3 else
-       'E:' if loop.index == 4 else
-       'F:' if loop.index == 5 else
-       'G:' if loop.index == 6 else
-       'H:' if loop.index == 7 else
-       'I:' if loop.index == 8 else 'X-' + loop.index | string + ':'): 
-       nfs_mount_base + '/' + item.server + '/' + item.disk.mountpoint
+    backend_disks: "{{ backend_disks | default({}) | combine({
+      ('C:' if ansible_loop.index == 1 else
+       'D:' if ansible_loop.index == 2 else
+       'E:' if ansible_loop.index == 3 else
+       'F:' if ansible_loop.index == 4 else
+       'G:' if ansible_loop.index == 5 else
+       'H:' if ansible_loop.index == 6 else
+       'I:' if ansible_loop.index == 7 else
+       'J:' if ansible_loop.index == 8 else 'X-' + ansible_loop.index | string + ':'): 
+       item.0.server_ip + ':' + nfs_mount_base + '/' + item.1.mountpoint
     }) }}"
-  loop: "{{ all_storage_disks | 
-            subelements('disks', 
-            skip_missing=True) }}"
+  with_nested:
+    - "{{ all_storage_disks }}"
+    - "{{ all_storage_disks | sum(attribute='disks', start=[]) }}"
   loop_control:
-    label: "{{ item.server }}/{{ item.disk.mountpoint }}"
+    index_var: ansible_loop.index
 
 - name: Display backend disks config
   debug:
