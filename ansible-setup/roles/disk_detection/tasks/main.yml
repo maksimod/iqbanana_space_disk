@@ -102,11 +102,11 @@
   ignore_errors: yes
   when: storage_devices is defined and storage_devices | length > 0
 
-# Очистка таблицы разделов на устройствах для полного форматирования
-- name: Wipe partition tables on storage devices
-  shell: "wipefs -a {{ item }} && sgdisk -Z {{ item }} 2>/dev/null || true"
+# На безопасную версию:
+- name: DO NOT Wipe partition tables - data protection mode
+  debug:
+    msg: "ЗАЩИТА ДАННЫХ: Очистка таблиц разделов ОТКЛЮЧЕНА для диска {{ item }}"
   with_items: "{{ storage_devices | default([]) }}"
-  ignore_errors: yes
   when: storage_devices is defined and storage_devices | length > 0
 
 # Создание новой таблицы разделов GPT с безопасной проверкой
@@ -194,17 +194,52 @@
   when: storage_devices is defined and storage_devices | length > 0
   changed_when: false
 
-# Монтирование дисков
-- name: Mount disks directly
-  mount:
-    path: "{{ nfs_mount_base }}/{{ item | basename }}"
-    src: "{{ item }}"
-    fstype: xfs
-    state: mounted
-    opts: "defaults,nofail"
+- name: Mount physical disks without formatting
+  shell: |
+    # Ищем несистемные физические диски
+    SYSTEM_DISK=$(df -h / | grep -v Filesystem | awk '{print $1}' | sed 's/[0-9]//g')
+    echo "Системный диск: $SYSTEM_DISK"
+    
+    # Ищем все физические диски кроме системного
+    for disk in $(lsblk -dn -o NAME | grep -v "${SYSTEM_DISK##*/}" | grep -v loop | grep -v sr | grep -v ram); do
+      echo "Обработка диска: $disk"
+      
+      # Создаем точку монтирования
+      mkdir -p /mnt/storage/$disk
+      chmod 777 /mnt/storage/$disk
+      
+      # Проверяем, смонтирован ли диск
+      if ! mount | grep -q "/dev/$disk "; then
+        # Проверяем файловую систему
+        FS_TYPE=$(blkid -o value -s TYPE /dev/$disk 2>/dev/null)
+        
+        if [ -z "$FS_TYPE" ]; then
+          echo "ВНИМАНИЕ: Диск /dev/$disk не имеет файловой системы. Создаем XFS."
+          mkfs.xfs -f /dev/$disk
+          FS_TYPE="xfs"
+        fi
+        
+        echo "Монтирование /dev/$disk как $FS_TYPE в /mnt/storage/$disk"
+        mount -t $FS_TYPE /dev/$disk /mnt/storage/$disk
+        
+        # Проверяем успешность монтирования
+        if mount | grep -q "/dev/$disk on /mnt/storage/$disk"; then
+          echo "✓ Диск /dev/$disk успешно смонтирован в /mnt/storage/$disk"
+        else
+          echo "✗ Ошибка монтирования диска /dev/$disk"
+        fi
+      else
+        echo "Диск /dev/$disk уже смонтирован"
+      fi
+    done
+    
+    # Выводим смонтированные диски
+    echo "Смонтированные диски:"
+    df -h | grep "/mnt/storage"
   with_items: "{{ storage_devices | default([]) }}"
-  register: mount_result
+  register: mount_disk_result
   when: storage_devices is defined and storage_devices | length > 0
+  ignore_errors: yes
 
 # Обновляем fstab с UUID
 - name: Update fstab for disks with UUID

@@ -4,6 +4,7 @@
 
 # ВАЖНО: Режим защиты данных
 DATA_PROTECTION=true
+DATA_SAFETY=true
 
 # Показать предупреждение о защите данных
 echo "=========================================================="
@@ -269,39 +270,52 @@ if [ $PLAYBOOK_STATUS -ne 0 ] || ! df -h | grep -q "/mnt/storage"; then
                 # Извлекаем имя диска из пути экспорта
                 DISK_NAME=$(basename $EXPORT_PATH)
                 
-                # Создание точки монтирования
-                MOUNT_POINT="$SERVER_DIR/$DISK_NAME"
-                mkdir -p "$MOUNT_POINT"
-                chmod 777 "$MOUNT_POINT"
-                
-                echo "Проверка существующего монтирования $MOUNT_POINT..."
-                if mount | grep -q "$MOUNT_POINT"; then
-                    echo "✓ Точка $MOUNT_POINT уже смонтирована, оставляем как есть для безопасности данных"
+                # !!! Важное изменение: не монтировать системные разделы
+                if [[ "$DISK_NAME" == "/" || "$DISK_NAME" == "boot" || "$DISK_NAME" == "home" || "$DISK_NAME" == "var" || "$DISK_NAME" == "usr" || "$DISK_NAME" == "etc" ]]; then
+                    echo "⚠️ Пропускаем системный раздел $DISK_NAME для защиты данных"
                     continue
                 fi
                 
-                # Монтирование NFS шар с оптимальными параметрами
-                echo "Монтирование $EXPORT_PATH с сервера $SERVER_IP в $MOUNT_POINT..."
-                MOUNT_OPTS="vers=3,soft,nolock,rsize=8192,wsize=8192,nofail"
-                mount -t nfs -o $MOUNT_OPTS "$SERVER_IP:$EXPORT_PATH" "$MOUNT_POINT"
-                
-                if mount | grep -q "$MOUNT_POINT"; then
-                    echo "✓ Успешно смонтирован $DISK_NAME с сервера $SERVER_IP"
+                # Проверяем, не является ли экспорт системным диском
+                if [[ "$EXPORT_PATH" == "/mnt/storage/sd"* ]]; then
+                    # Убедиться, что мы монтируем раздел с данными, а не системный диск
                     
-                    # Получаем букву диска
-                    DISK_KEY="$SERVER_IP/$DISK_NAME"
-                    LETTER=${DISK_LETTERS[$DISK_KEY]:-"X"}
+                    # Настраиваем корректную точку монтирования для данных
+                    # Убедитесь, что это путь к данным, а не к системному диску
+                    MOUNT_POINT="$SERVER_DIR/$DISK_NAME"
+                    mkdir -p "$MOUNT_POINT"
+                    chmod 777 "$MOUNT_POINT"
                     
-                    # Добавляем диск в конфигурацию
-                    DISKS_CONFIG="${DISKS_CONFIG}'$LETTER:': '$MOUNT_POINT'\n"
+                    # Проверяем, что диск уже не смонтирован
+                    if mount | grep -q "$MOUNT_POINT"; then
+                        echo "✓ $MOUNT_POINT уже смонтирован, пропускаем"
+                        continue
+                    fi
                     
-                    # Проверяем существование записи в fstab
-                    if ! grep -q "$SERVER_IP:$EXPORT_PATH $MOUNT_POINT" /etc/fstab; then
-                        # Добавляем новую запись в fstab только если её нет
-                        echo "$SERVER_IP:$EXPORT_PATH $MOUNT_POINT nfs $MOUNT_OPTS 0 0" >> /etc/fstab
+                    echo "Монтирование $EXPORT_PATH с сервера $SERVER_IP в $MOUNT_POINT..."
+                    MOUNT_OPTS="vers=3,soft,nolock,rsize=8192,wsize=8192,nofail"
+                    mount -t nfs -o $MOUNT_OPTS "$SERVER_IP:$EXPORT_PATH" "$MOUNT_POINT"
+                    
+                    if mount | grep -q "$MOUNT_POINT"; then
+                        echo "✓ Успешно смонтирован $DISK_NAME с сервера $SERVER_IP"
+                        
+                        # Получаем букву диска
+                        DISK_KEY="$SERVER_IP/$DISK_NAME"
+                        LETTER=${DISK_LETTERS[$DISK_KEY]:-"X"}
+                        
+                        # Добавляем диск в конфигурацию
+                        DISKS_CONFIG="${DISKS_CONFIG}'$LETTER:': '$MOUNT_POINT'\n"
+                        
+                        # Проверяем существование записи в fstab
+                        if ! grep -q "$SERVER_IP:$EXPORT_PATH $MOUNT_POINT" /etc/fstab; then
+                            # Добавляем новую запись в fstab только если её нет
+                            echo "$SERVER_IP:$EXPORT_PATH $MOUNT_POINT nfs $MOUNT_OPTS 0 0" >> /etc/fstab
+                        fi
+                    else
+                        echo "✗ Ошибка монтирования $DISK_NAME с сервера $SERVER_IP"
                     fi
                 else
-                    echo "✗ Ошибка монтирования $DISK_NAME с сервера $SERVER_IP"
+                    echo "⚠️ Пропускаем экспорт $EXPORT_PATH (не выглядит как диск хранения данных)"
                 fi
             done
         else
