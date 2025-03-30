@@ -11,6 +11,8 @@ debian/mini.iso
 .env.test.local
 .env.production.local
 
+secrets.yml
+
 # Логи
 npm-debug.log*
 yarn-debug.log*

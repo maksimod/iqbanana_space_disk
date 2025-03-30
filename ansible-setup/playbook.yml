@@ -6,6 +6,8 @@
   hosts: all
   become: yes
   gather_facts: yes
+  vars_files:
+    - group_vars/secrets.yml
   tasks:
     - name: Unmask any masked services
       systemd:
@@ -33,6 +35,8 @@
   hosts: all
   become: yes
   gather_facts: yes
+  vars_files:
+    - group_vars/secrets.yml
   tasks:
     - name: Check SSH connection
       ping:
@@ -55,6 +59,8 @@
   hosts: nfs_server
   become: yes
   gather_facts: yes
+  vars_files:
+    - group_vars/secrets.yml
   tasks:
     - name: Set server IP address
       set_fact:
@@ -95,6 +101,8 @@
   hosts: nfs_client
   become: yes
   gather_facts: no
+  vars_files:
+    - group_vars/secrets.yml
   tasks:
     - name: Wait for NFS server to be ready
       wait_for:
@@ -121,6 +129,8 @@
   hosts: nfs_client
   become: yes
   gather_facts: yes
+  vars_files:
+    - group_vars/secrets.yml
   tasks:
     - name: Set server IP address
       set_fact:
@@ -148,6 +158,8 @@
   hosts: nfs_client
   become: yes
   gather_facts: no
+  vars_files:
+    - group_vars/secrets.yml
   tasks:
     - name: Check NFS mounts
       shell: "df -h | grep {{ hostvars[groups['nfs_server'][0]]['nfs_server_ip'] }} || echo 'No mounts found'"
