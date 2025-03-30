@@ -16,8 +16,8 @@ const config = {
   
   // Пути к смонтированным дискам на веб-сервере
   disks: {
+            'X:': '/mnt/storage/192.168.0.102/sdc',
             'D:': '/mnt/storage/192.168.0.102/sdb',
-            'C:': '/mnt/storage/192.168.0.102/sda',
             'F:': '/mnt/storage/192.168.0.106/sdb',
             'E:': '/mnt/storage/192.168.0.106/sda'
   },
