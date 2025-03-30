@@ -175,75 +175,82 @@ PLAYBOOK_STATUS=$?
 if [ $PLAYBOOK_STATUS -ne 0 ] || ! df -h | grep -q "/mnt/storage"; then
     echo "Playbook завершился с ошибками или монтирование не выполнено. Выполняем дополнительные действия..."
     
-    # Получение IP сервера NFS из inventory
-    echo "Получение IP сервера NFS из inventory..."
-    SERVER_IP=$(grep -E '^\[nfs_server\]' inventory -A 1 | tail -n 1 | awk '{print $1}')
-
-    if [ -z "$SERVER_IP" ]; then
-        echo "ОШИБКА: Не удалось определить IP сервера из inventory"
+    # Получение IP серверов NFS из inventory
+    echo "Получение IP серверов NFS из inventory..."
+    SERVER_IPS=($(grep -A 100 '^\[nfs_servers\]' inventory | grep -v '^\[' | grep -v '^#' | grep -v '^$' | awk '{print $1}' | head -n 10))
+    
+    if [ ${#SERVER_IPS[@]} -eq 0 ]; then
+        echo "ОШИБКА: Не удалось определить IP серверов из inventory"
         exit 1
     fi
-
-    echo "Используем сервер из inventory: $SERVER_IP"
-
-    # Проверка доступности NFS сервера
-    echo "Проверка доступности NFS сервера..."
-    if ! nc -z -w 5 $SERVER_IP 2049; then
-        echo "ПРЕДУПРЕЖДЕНИЕ: NFS порт на сервере $SERVER_IP недоступен!"
-        echo "Проверяем статус NFS сервера..."
+    
+    echo "Найдено ${#SERVER_IPS[@]} NFS-серверов в inventory."
+    
+    # Обработка каждого сервера
+    for SERVER_IP in "${SERVER_IPS[@]}"; do
+        echo "Обрабатываем сервер: $SERVER_IP"
         
-        # Пытаемся запустить NFS на сервере
-        ssh -o StrictHostKeyChecking=no root@$SERVER_IP "
-            systemctl restart nfs-server
-            exportfs -r
-            echo 'Экспорты на сервере:'
-            exportfs -v
-        " || echo "Не удалось подключиться к серверу или перезапустить NFS"
-    fi
+        # Проверка доступности NFS сервера
+        echo "Проверка доступности NFS сервера $SERVER_IP..."
+        if ! nc -z -w 5 $SERVER_IP 2049; then
+            echo "ПРЕДУПРЕЖДЕНИЕ: NFS порт на сервере $SERVER_IP недоступен!"
+            echo "Проверяем статус NFS сервера..."
+            
+            # Пытаемся запустить NFS на сервере
+            ssh -o StrictHostKeyChecking=no root@$SERVER_IP "
+                systemctl restart nfs-server
+                exportfs -r
+                echo 'Экспорты на сервере:'
+                exportfs -v
+            " || echo "Не удалось подключиться к серверу или перезапустить NFS"
+        fi
 
-    # Проверка экспортов
-    echo "Проверка доступных NFS экспортов на сервере $SERVER_IP..."
-    EXPORTS=$(showmount -e $SERVER_IP 2>/dev/null || echo "Нет доступных экспортов")
-    echo "$EXPORTS"
+        # Проверка экспортов
+        echo "Проверка доступных NFS экспортов на сервере $SERVER_IP..."
+        EXPORTS=$(showmount -e $SERVER_IP 2>/dev/null || echo "Нет доступных экспортов")
+        echo "$EXPORTS"
 
-    # Отключаем существующие монтирования
-    echo "Отключение существующих монтирований..."
-    umount -f -l /mnt/storage/sda 2>/dev/null || true
-    umount -f -l /mnt/storage/sdb 2>/dev/null || true
-    
-    # Создание точек монтирования
-    echo "Создание точек монтирования..."
-    mkdir -p /mnt/storage/sda /mnt/storage/sdb
-    chmod 777 /mnt/storage/sda /mnt/storage/sdb
-    
-    # Ручное монтирование NFS с оптимальными параметрами
-    echo "Монтирование NFS шар с сервера $SERVER_IP..."
-    MOUNT_OPTS="vers=3,soft,nolock,rsize=8192,wsize=8192,nofail"
-    
-    echo "Монтирование /mnt/storage/sda..."
-    mount -t nfs -o $MOUNT_OPTS $SERVER_IP:/mnt/storage/sda /mnt/storage/sda
-    if mount | grep -q "/mnt/storage/sda"; then
-        echo "✓ Успешно смонтирован sda"
-    else
-        echo "✗ Ошибка монтирования sda"
-    fi
-    
-    echo "Монтирование /mnt/storage/sdb..."
-    mount -t nfs -o $MOUNT_OPTS $SERVER_IP:/mnt/storage/sdb /mnt/storage/sdb
-    if mount | grep -q "/mnt/storage/sdb"; then
-        echo "✓ Успешно смонтирован sdb"
-    else
-        echo "✗ Ошибка монтирования sdb"
-    fi
-    
-    # Обновление fstab
-    echo "Обновление /etc/fstab..."
-    # Удаление старых записей безопасным способом
-    sed -i "/.*$SERVER_IP:\/mnt\/storage\/.*/d" /etc/fstab
-    
-    # Добавление новых записей с параметром nofail
-    echo "$SERVER_IP:/mnt/storage/sda /mnt/storage/sda nfs $MOUNT_OPTS 0 0" >> /etc/fstab
-    echo "$SERVER_IP:/mnt/storage/sdb /mnt/storage/sdb nfs $MOUNT_OPTS 0 0" >> /etc/fstab
+        if [[ "$EXPORTS" != *"Нет доступных экспортов"* ]]; then
+            # Создание директории сервера
+            SERVER_DIR="/mnt/storage/$(basename $SERVER_IP)"
+            mkdir -p "$SERVER_DIR"
+            
+            # Получаем список экспортов
+            EXPORT_PATHS=$(echo "$EXPORTS" | grep -v "Export list" | awk '{print $1}')
+            
+            for EXPORT_PATH in $EXPORT_PATHS; do
+                # Извлекаем имя диска из пути экспорта
+                DISK_NAME=$(basename $EXPORT_PATH)
+                
+                # Создание точки монтирования
+                MOUNT_POINT="$SERVER_DIR/$DISK_NAME"
+                mkdir -p "$MOUNT_POINT"
+                chmod 777 "$MOUNT_POINT"
+                
+                echo "Отключение существующего монтирования $MOUNT_POINT..."
+                umount -f -l "$MOUNT_POINT" 2>/dev/null || true
+                
+                # Монтирование NFS шар с оптимальными параметрами
+                echo "Монтирование $EXPORT_PATH с сервера $SERVER_IP в $MOUNT_POINT..."
+                MOUNT_OPTS="vers=3,soft,nolock,rsize=8192,wsize=8192,nofail"
+                mount -t nfs -o $MOUNT_OPTS "$SERVER_IP:$EXPORT_PATH" "$MOUNT_POINT"
+                
+                if mount | grep -q "$MOUNT_POINT"; then
+                    echo "✓ Успешно смонтирован $DISK_NAME с сервера $SERVER_IP"
+                    
+                    # Удаляем старую запись из fstab если есть
+                    sed -i "\|$SERVER_IP:$EXPORT_PATH|d" /etc/fstab
+                    
+                    # Добавляем новую запись в fstab
+                    echo "$SERVER_IP:$EXPORT_PATH $MOUNT_POINT nfs $MOUNT_OPTS 0 0" >> /etc/fstab
+                else
+                    echo "✗ Ошибка монтирования $DISK_NAME с сервера $SERVER_IP"
+                fi
+            done
+        else
+            echo "На сервере $SERVER_IP нет доступных экспортов"
+        fi
+    done
     
     # Перезагрузка systemd
     systemctl daemon-reload

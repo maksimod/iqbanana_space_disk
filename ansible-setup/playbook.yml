@@ -1,5 +1,6 @@
 ---
 # Playbook для автоматического определения и монтирования несистемных дисков через NFS
+# с поддержкой нескольких серверов
 
 # Предварительная подготовка системы на всех узлах
 - name: System preparation
@@ -55,8 +56,8 @@
       delay: 5
       until: package_install is success
 
-- name: Configure NFS Server
-  hosts: nfs_server
+- name: Configure NFS Servers
+  hosts: nfs_servers
   become: yes
   gather_facts: yes
   vars_files:
@@ -65,6 +66,7 @@
     - name: Set server IP address
       set_fact:
         nfs_server_ip: "{{ ansible_default_ipv4.address }}"
+        nfs_server_hostname: "{{ inventory_hostname }}"
         cacheable: yes
 
     - name: Set client IP address
@@ -87,43 +89,54 @@
       
     - name: Display found disks
       debug:
-        msg: "Storage disks found: {{ storage_disks | default([]) }}"
+        msg: "Storage disks found on {{ inventory_hostname }}: {{ storage_disks | default([]) }}"
         
     - name: Skip if no disks found
-      meta: end_play
+      meta: end_host
       when: storage_disks is not defined or storage_disks | length == 0
 
     - name: Include NFS server role
       include_role:
         name: nfs_server
 
-- name: Wait for NFS server to be ready
+- name: Wait for all NFS servers to be ready
   hosts: nfs_client
   become: yes
   gather_facts: no
   vars_files:
     - group_vars/secrets.yml
   tasks:
-    - name: Wait for NFS server to be ready
+    - name: Set fact for server IPs
+      set_fact:
+        server_ips: "{{ server_ips | default({}) | combine({item: hostvars[item]['nfs_server_ip'] | default(item)}) }}"
+      with_items: "{{ groups['nfs_servers'] }}"
+      
+    - name: Wait for each NFS server to be ready
       wait_for:
-        host: "{{ hostvars[groups['nfs_server'][0]]['nfs_server_ip'] }}"
+        host: "{{ server_ips[item] }}"
         port: 2049
         timeout: "{{ nfs_mount_timeout | default(60) }}"
-      register: nfs_ready
+      register: nfs_ready_results
       retries: 5
       delay: 10
-      until: nfs_ready is success
+      until: nfs_ready_results is success
       ignore_errors: yes
-
-    - name: Display NFS server status
+      with_items: "{{ groups['nfs_servers'] }}"
+      
+    - name: Save readiness status for each server
+      set_fact:
+        server_ready_status: "{{ server_ready_status | default({}) | combine({item.item: item.failed | ternary('not ready', 'ready')}) }}"
+      with_items: "{{ nfs_ready_results.results }}"
+      
+    - name: Display NFS servers status
       debug:
-        msg: "NFS server is {{ 'ready' if nfs_ready is success else 'not ready' }}"
+        msg: "NFS server {{ item }} is {{ server_ready_status[item] }}"
+      with_items: "{{ groups['nfs_servers'] }}"
 
     # Используем shell вместо pause для совместимости с free-стратегией
-    - name: Wait for NFS server to fully initialize
+    - name: Wait for NFS servers to fully initialize
       shell: "sleep 15"
       changed_when: false
-      when: nfs_ready is success
 
 - name: Configure NFS Client
   hosts: nfs_client
@@ -132,23 +145,28 @@
   vars_files:
     - group_vars/secrets.yml
   tasks:
-    - name: Set server IP address
+    - name: Initialize all_storage_disks list
       set_fact:
-        nfs_server_ip: "{{ hostvars[groups['nfs_server'][0]]['nfs_server_ip'] }}"
-        cacheable: yes
-
-    - name: Get storage_disks from server
+        all_storage_disks: []
+        
+    - name: Set fact for server IPs
       set_fact:
-        storage_disks: "{{ hostvars[groups['nfs_server'][0]]['storage_disks'] | default([]) }}"
-        cacheable: yes
+        server_ips: "{{ server_ips | default({}) | combine({item: hostvars[item]['nfs_server_ip'] | default(item)}) }}"
+      with_items: "{{ groups['nfs_servers'] }}"
       
-    - name: Display storage disks to mount
+    - name: Collect storage disks from all servers
+      set_fact:
+        all_storage_disks: "{{ all_storage_disks + [{'server': item, 'server_ip': server_ips[item], 'disks': hostvars[item]['storage_disks'] | default([])}] }}"
+      with_items: "{{ groups['nfs_servers'] }}"
+      when: hostvars[item]['storage_disks'] is defined and hostvars[item]['storage_disks'] | length > 0
+      
+    - name: Display all storage disks to mount
       debug:
-        msg: "Storage disks to mount: {{ storage_disks | default([]) }}"
+        msg: "All storage disks to mount: {{ all_storage_disks | default([]) }}"
 
-    - name: Skip if no disks found on server
+    - name: Skip if no disks found on any servers
       meta: end_play
-      when: storage_disks is not defined or storage_disks | length == 0
+      when: all_storage_disks | length == 0
         
     - name: Include NFS client role
       include_role:
@@ -161,8 +179,13 @@
   vars_files:
     - group_vars/secrets.yml
   tasks:
-    - name: Check NFS mounts
-      shell: "df -h | grep {{ hostvars[groups['nfs_server'][0]]['nfs_server_ip'] }} || echo 'No mounts found'"
+    - name: Set fact for server IPs
+      set_fact:
+        server_ips: "{{ server_ips | default({}) | combine({item: hostvars[item]['nfs_server_ip'] | default(item)}) }}"
+      with_items: "{{ groups['nfs_servers'] }}"
+      
+    - name: Check NFS mounts for all servers
+      shell: "df -h | grep -E '{{ server_ips.values() | join('|') }}' || echo 'No mounts found'"
       register: mount_check
       changed_when: false
 
