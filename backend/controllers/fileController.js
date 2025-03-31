@@ -182,6 +182,16 @@ const deleteFile = (req, res, next) => {
   const { disk } = req.params;
   const { filePath } = req.body;
   
+  // Проверка на права администратора
+  if (!req.user.isAdmin) {
+    logger.warn(`Попытка удаления файла без прав администратора: ${req.user.username}`);
+    return res.status(403).json({ 
+      success: false,
+      error: 'Недостаточно прав для удаления. Запросите разрешение у администратора',
+      requiresAdmin: true
+    });
+  }
+  
   if (!config.disks[disk]) {
     logger.warn(`Попытка удаления файла на несуществующем диске: ${disk}`);
     return res.status(404).json({ error: 'Диск не найден' });

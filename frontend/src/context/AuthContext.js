@@ -18,7 +18,7 @@ export const AuthProvider = ({ children }) => {
 
   // Проверяем статус аутентификации при загрузке
   useEffect(() => {
-    const checkAuth = async () => {
+    const checkAuth = async (retryCount = 0, maxRetries = 3) => {
       setLoading(true);
       try {
         const token = localStorage.getItem('token');
@@ -43,20 +43,39 @@ export const AuthProvider = ({ children }) => {
         if (response.ok && data.success) {
           logDebug('User authenticated:', data.user);
           setUser(data.user);
+          setError(null);
+          setLoading(false);
+          setInitialized(true);
+        } else if (retryCount < maxRetries) {
+          // Попробуем повторить через короткую паузу
+          logDebug(`Auth check retry ${retryCount + 1}/${maxRetries}`);
+          setTimeout(() => checkAuth(retryCount + 1, maxRetries), 800);
+          return;
         } else {
           logDebug('Auth check failed:', data.message || 'Unknown error');
           // Токен недействителен - очищаем локальное хранилище
           localStorage.removeItem('token');
           setUser(null);
           setError(data.message || 'Ошибка аутентификации');
+          setLoading(false);
+          setInitialized(true);
         }
       } catch (err) {
+        if (retryCount < maxRetries) {
+          // Попробуем повторить через короткую паузу при ошибке соединения
+          logDebug(`Auth check retry ${retryCount + 1}/${maxRetries} after error`);
+          setTimeout(() => checkAuth(retryCount + 1, maxRetries), 800);
+          return;
+        }
         console.error('Ошибка проверки аутентификации:', err);
         setError('Ошибка проверки статуса аутентификации');
         setUser(null);
       } finally {
-        setLoading(false);
-        setInitialized(true);
+        // Убедимся, что состояние загрузки сбрасывается только если еще не было сброшено
+        if ((retryCount >= maxRetries || !localStorage.getItem('token')) && loading) {
+          setLoading(false);
+          setInitialized(true);
+        }
       }
     };
 

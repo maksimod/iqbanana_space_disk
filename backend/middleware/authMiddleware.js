@@ -72,10 +72,11 @@ const authMiddleware = (req, res, next) => {
     // Добавляем информацию о пользователе в request
     req.user = {
       id: user.id,
-      username: user.username
+      username: user.username,
+      isAdmin: user.username === 'admin'
     };
     
-    logger.info(`Успешная аутентификация пользователя: ${user.username}`);
+    logger.info(`Успешная аутентификация пользователя: ${user.username}${req.user.isAdmin ? ' (администратор)' : ''}`);
     
     next();
   } catch (error) {

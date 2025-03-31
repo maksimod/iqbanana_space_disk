@@ -9,8 +9,15 @@
       "id": 1,
       "username": "admin",
       "password": "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4",
-      "token": "77b0529ed845102abe4c2a0a103d49d52467d6d096d0c9d8a48ad5c1683ed882",
+      "token": "74275df02c40bd5c7c92602db0b0c1ed9716634a4c9b613817f4ae3a56ade7fe",
       "created": "2025-03-28T20:28:24.459Z"
+    },
+    {
+      "id": 2,
+      "username": "user1",
+      "password": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "token": null,
+      "created": "2025-03-31T10:29:57.863Z"
     }
   ]
 }

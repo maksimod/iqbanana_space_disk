@@ -381,12 +381,14 @@ const FilesView = () => {
     }
     
     const result = await deleteFile(currentDisk, file.path);
-    if (result) {
+    if (result && result.success) {
       toast.showSuccess('Файл успешно удален');
       loadFiles();
       loadDisks();
       // Сбрасываем результаты поиска после удаления
       setSearchResults(null);
+    } else if (result && result.requiresAdmin) {
+      toast.showError('Недостаточно прав для удаления. Запросите разрешение у администратора');
     }
   };
 

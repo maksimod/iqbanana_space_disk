@@ -31,7 +31,6 @@ const LoginForm = ({ onToggleForm }) => {
       <h2>Вход в систему</h2>
       <form className="auth-form" onSubmit={handleSubmit}>
         {formError && <div className="auth-error">{formError}</div>}
-        {authError && <div className="auth-error">Auth context error: {authError}</div>}
         
         <div className="form-group">
           <label htmlFor="username">Имя пользователя</label>

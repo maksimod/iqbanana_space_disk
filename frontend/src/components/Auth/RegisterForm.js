@@ -37,13 +37,12 @@ const RegisterForm = ({ onToggleForm }) => {
       <h2>Регистрация</h2>
       <form className="auth-form" onSubmit={handleSubmit}>
         {formError && <div className="auth-error">{formError}</div>}
-        {authError && <div className="auth-error">Auth context error: {authError}</div>}
         
         <div className="form-group">
-          <label htmlFor="username">Имя пользователя</label>
+          <label htmlFor="register-username">Имя пользователя</label>
           <input
             type="text"
-            id="username"
+            id="register-username"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             disabled={loading}
@@ -53,10 +52,10 @@ const RegisterForm = ({ onToggleForm }) => {
         </div>
         
         <div className="form-group">
-          <label htmlFor="password">Пароль</label>
+          <label htmlFor="register-password">Пароль</label>
           <input
             type="password"
-            id="password"
+            id="register-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             disabled={loading}
@@ -66,14 +65,14 @@ const RegisterForm = ({ onToggleForm }) => {
         </div>
         
         <div className="form-group">
-          <label htmlFor="confirmPassword">Подтвердите пароль</label>
+          <label htmlFor="confirm-password">Подтвердите пароль</label>
           <input
             type="password"
-            id="confirmPassword"
+            id="confirm-password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
             disabled={loading}
-            placeholder="Подтвердите пароль"
+            placeholder="Повторите пароль"
             required
           />
         </div>

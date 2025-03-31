@@ -79,15 +79,39 @@ const useApi = () => {
    * Удаление файла или директории
    */
   const deleteFile = useCallback(async (disk, filePath) => {
-    return await fetchData(`/disks/${disk}/files`, {
-      method: 'DELETE',
-      headers: {
-        'Content-Type': 'application/json',
-        ...getAuthHeaders()
-      },
-      body: JSON.stringify({ filePath }),
-    });
-  }, [fetchData, getAuthHeaders]);
+    try {
+      const response = await fetch(getApiUrl(`/disks/${disk}/files`), {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
+        body: JSON.stringify({ filePath }),
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        // Проверяем, связана ли ошибка с правами доступа
+        if (response.status === 403 && data.requiresAdmin) {
+          return {
+            success: false,
+            requiresAdmin: true,
+            error: data.error || 'Недостаточно прав для удаления'
+          };
+        }
+        
+        setError(data.error || `Ошибка HTTP: ${response.status}`);
+        return null;
+      }
+      
+      return data;
+    } catch (error) {
+      console.error('Ошибка при удалении файла:', error);
+      setError('Не удалось удалить файл: ' + (error.message || 'Неизвестная ошибка'));
+      return null;
+    }
+  }, [getApiUrl, getAuthHeaders, setError]);
 
   /**
    * Создание новой папки

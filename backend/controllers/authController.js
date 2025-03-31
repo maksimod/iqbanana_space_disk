@@ -172,7 +172,10 @@ exports.login = (req, res) => {
     // Отправляем ответ с токеном (без пароля)
     const { password: _, ...userWithoutPassword } = user;
     
-    logger.info(`Успешный вход пользователя: ${username}`);
+    // Добавляем флаг администратора
+    userWithoutPassword.isAdmin = username === 'admin';
+    
+    logger.info(`Успешный вход пользователя: ${username}${userWithoutPassword.isAdmin ? ' (администратор)' : ''}`);
     
     return res.status(200).json({
       success: true,
@@ -212,6 +215,9 @@ exports.checkAuth = (req, res) => {
     
     // Отправляем данные пользователя (без пароля)
     const { password: _, ...userWithoutPassword } = user;
+    
+    // Добавляем флаг администратора
+    userWithoutPassword.isAdmin = user.username === 'admin';
     
     return res.status(200).json({
       success: true,
