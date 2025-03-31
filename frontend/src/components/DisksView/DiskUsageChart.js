@@ -3,16 +3,25 @@ import { formatFileSize, calculateUsagePercent } from '../../utils/formatters';
 
 /**
  * Компонент для визуализации использования диска в виде круговой диаграммы
+ * Теперь поддерживает отображение пользовательских файлов вместо общего использования
  */
-const DiskUsageChart = ({ used, total, free }) => {
+const DiskUsageChart = ({ used, total, free, userFilesSize }) => {
+  // Используем пользовательские файлы, если доступны, иначе используем общее значение used
+  const displayedUsed = userFilesSize !== undefined ? userFilesSize : used;
+  
+  // Обработка NaN и undefined значений
+  const safeUsed = isNaN(displayedUsed) || displayedUsed === undefined ? 0 : displayedUsed;
+  const safeTotal = isNaN(total) || total === undefined ? 0 : total;
+  const safeFree = isNaN(free) || free === undefined ? 0 : free;
+  
   // Рассчитываем угол для заполненной части
-  const usedPercent = calculateUsagePercent(used, total);
+  const usedPercent = calculateUsagePercent(safeUsed, safeTotal);
   const angle = (usedPercent / 100) * 360;
 
   // Явно форматируем размеры здесь
-  const formattedTotal = formatFileSize(total);
-  const formattedUsed = formatFileSize(used);
-  const formattedFree = formatFileSize(free);
+  const formattedTotal = formatFileSize(safeTotal);
+  const formattedUsed = formatFileSize(safeUsed);
+  const formattedFree = formatFileSize(safeFree);
 
   // Цвета для диаграммы в зависимости от заполненности
   const getChartColor = (percent) => {

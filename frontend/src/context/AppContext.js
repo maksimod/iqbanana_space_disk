@@ -1,6 +1,7 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import useApi from '../hooks/useApi';
 import useLocalStorage from '../hooks/useLocalStorage';
+import { useToast } from './ToastContext';
 
 // Создание контекста
 const AppContext = createContext();
@@ -15,6 +16,7 @@ export const AppProvider = ({ children }) => {
   const [currentPath, setCurrentPath] = useLocalStorage('currentPath', '');
   const [files, setFiles] = useState([]);
   const { loading, error, fetchDisks, fetchFiles, setError } = useApi();
+  const toast = useToast();
 
   // Загрузка списка дисков при монтировании компонента
   useEffect(() => {
@@ -44,8 +46,18 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  // Выбор диска
+  // Выбор диска с проверкой доступности
   const handleDiskSelect = (diskName) => {
+    // Найти диск в списке по имени
+    const selectedDisk = disks.find(disk => disk.name === diskName);
+    
+    // Проверить доступность диска
+    if (selectedDisk && (selectedDisk.error || selectedDisk.status === 'offline' || selectedDisk.status === 'error')) {
+      toast.showWarning(`Диск ${diskName} недоступен. ${selectedDisk.error || 'Проверьте подключение и повторите попытку.'}`);
+      return;
+    }
+    
+    // Если диск доступен, устанавливаем его как текущий
     setCurrentDisk(diskName);
     setCurrentPath('');
   };

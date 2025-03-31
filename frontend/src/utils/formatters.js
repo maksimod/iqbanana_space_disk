@@ -4,7 +4,8 @@
  * @return {string} форматированный размер
  */
 export const formatFileSize = (bytes) => {
-  if (bytes === 0) return '0 Bytes';
+  // Handle NaN, undefined or invalid values
+  if (isNaN(bytes) || bytes === undefined || bytes === null || bytes === 0) return '0 Bytes';
   
   const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
   const k = 1024;
@@ -21,6 +22,9 @@ export const formatFileSize = (bytes) => {
  * @return {number} процент использования
  */
 export const calculateUsagePercent = (used, total) => {
-  if (!total) return 0;
+  // Handle NaN or invalid values
+  if (isNaN(used) || used === undefined) used = 0;
+  if (isNaN(total) || total === undefined || total === 0) return 0;
+  
   return Math.round((used / total) * 100);
 };

@@ -68,10 +68,11 @@
   border: 2px solid var(--error-border);
   background-color: var(--error-background, #fff8f8);
   position: relative;
+  cursor: not-allowed;
 }
 
 .disk-card-error:hover {
-  transform: translateY(-5px);
+  transform: none;
   box-shadow: 0 4px 12px rgba(207, 53, 53, 0.2);
 }
 
@@ -157,6 +158,13 @@
 .usage-detail .value {
   font-weight: 500;
   color: var(--secondary-color);
+}
+
+.usage-detail .value-note {
+  font-size: 10px;
+  color: var(--gray-color);
+  font-style: italic;
+  margin-left: 4px;
 }
 
 @media (max-width: 768px) {

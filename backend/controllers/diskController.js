@@ -57,6 +57,7 @@ const getDisks = async (req, res, next) => {
             total: 0,
             free: 0,
             used: 0,
+            userFilesSize: 0,
             status: 'offline'
           };
         }
@@ -80,6 +81,7 @@ const getDisks = async (req, res, next) => {
             total: 0,
             free: 0,
             used: 0,
+            userFilesSize: 0,
             status: 'error'
           };
         }
@@ -92,12 +94,32 @@ const getDisks = async (req, res, next) => {
         // вместо выполнения длительной операции du
         const usedKB = totalKB - freeKB;
         
-        // Конвертируем в байты
-        const total = totalKB * 1024;
-        const free = freeKB * 1024;
-        const used = usedKB * 1024;
+        // Конвертируем в байты и обрабатываем NaN значения
+        const total = isNaN(totalKB) ? 0 : totalKB * 1024;
+        const free = isNaN(freeKB) ? 0 : freeKB * 1024;
+        const used = isNaN(usedKB) ? 0 : usedKB * 1024;
         
-        logger.info(`Диск ${name} - данные из df: total=${formatBytes(total)}, free=${formatBytes(free)}, used=${formatBytes(used)}`);
+        // Вычисляем размер пользовательских файлов, исключая системные
+        let userFilesSize = 0;
+        try {
+          // Используем du с исключением системных файлов
+          const { stdout: duOutput } = await withTimeout(
+            execPromise(`find "${mountPoint}" -type f -not -path "*/\\.*" -not -path "*/.tmp_chunks*" -not -name ".disk_uuid" -exec du -sk {} \\; | awk '{sum += $1} END {print sum}'`),
+            5000, // Увеличиваем таймаут для этой операции
+            `Таймаут при подсчете пользовательских файлов на диске ${name}`
+          );
+          
+          // Обрабатываем возможные NaN значения
+          const parsedSize = parseInt(duOutput.trim(), 10);
+          userFilesSize = isNaN(parsedSize) ? 0 : parsedSize * 1024; // Конвертируем KB в байты
+          logger.info(`Размер пользовательских файлов на диске ${name}: ${formatBytes(userFilesSize)}`);
+        } catch (error) {
+          logger.warn(`Не удалось получить размер пользовательских файлов для ${name}`, error);
+          // Если не удалось получить размер пользовательских файлов, используем 0
+          userFilesSize = 0;
+        }
+        
+        logger.info(`Диск ${name} - данные из df: total=${formatBytes(total)}, free=${formatBytes(free)}, used=${formatBytes(used)}, userFiles=${formatBytes(userFilesSize)}`);
         
         return {
           name,
@@ -105,6 +127,7 @@ const getDisks = async (req, res, next) => {
           total,
           free,
           used,
+          userFilesSize,
           status: 'online'
         };
       } catch (error) {
@@ -120,6 +143,7 @@ const getDisks = async (req, res, next) => {
           total: 0,
           free: 0,
           used: 0,
+          userFilesSize: 0,
           status: 'error'
         };
       }
