@@ -83,16 +83,18 @@ setup_nfs_exports() {
             continue
         fi
         
-        # Проверяем существование диска
+        # Проверяем существование диска - улучшенный метод
         echo -e "${YELLOW}Проверка существования диска /dev/$disk на сервере $server...${NC}"
-        disk_exists=$(remote_exec "$server" "$port" "[ -e /dev/$disk ] && echo 'exists' || echo 'not_exists'")
-        echo -e "${YELLOW}Результат проверки: $disk_exists${NC}"
+        # Первая проверка - просто выполнить ls на диске
+        disk_check=$(remote_exec "$server" "$port" "ls -l /dev/$disk 2>/dev/null | wc -l")
         
-        if [ "$disk_exists" != "exists" ]; then
+        if [[ "$disk_check" == "0" ]] || [[ -z "$disk_check" ]]; then
             echo -e "${RED}ОШИБКА: Диск /dev/$disk не существует на сервере $server${NC}"
             echo -e "${YELLOW}Список доступных дисков:${NC}"
             remote_exec "$server" "$port" "ls -l /dev/sd* 2>/dev/null || echo 'Диски не найдены'"
             continue
+        else
+            echo -e "${GREEN}✓ Диск /dev/$disk существует на сервере $server${NC}"
         fi
         
         # Настройка сервера
@@ -189,16 +191,13 @@ mount_nfs_shares() {
     # Добавляем комментарий о NFS монтированиях
     echo "# NFS монтирования" >> /etc/fstab
     
-    # Массив для хранения информации о монтированиях для backend
-    declare -a BACKEND_DISKS
-    
     # Проверка, установлен ли nfs-common
     if ! command -v mount.nfs &> /dev/null; then
         echo "Утилита nfs-common не установлена. Устанавливаем..."
         apt-get update && apt-get install -y nfs-common
     fi
     
-    # Сначала обрабатываем настроенные RAID-массивы, если они есть
+    # Сначала обрабатываем настроенные RAID-массива, если они есть
     if [ -n "${CONFIGURED_RAIDS}" ]; then
         for raid_mount in "${CONFIGURED_RAIDS[@]}"; do
             IFS=':' read -r server mount_path letter <<< "$raid_mount"
@@ -206,6 +205,9 @@ mount_nfs_shares() {
             BACKEND_DISKS+=("$letter:$mount_path")
         done
     fi
+    
+    # Выполняем реагрузку systemd демона перед монтированием
+    systemctl daemon-reload
     
     # Затем обрабатываем обычные диски
     for disk_config in "${DISKS_TO_MOUNT[@]}"; do
@@ -228,14 +230,18 @@ mount_nfs_shares() {
             umount -f -l $mount_point 2>/dev/null || true
         fi
         
-        # Монтирование
+        # Добавление в fstab (перед монтированием)
+        echo "$server:/mnt/storage/$disk $mount_point nfs rw,sync,no_subtree_check,no_root_squash,nofail 0 0" >> /etc/fstab
+        
+        # Применяем изменения fstab
+        systemctl daemon-reload
+        
+        # Монтирование с базовыми опциями NFS
         echo "Монтирование $server:/mnt/storage/$disk в $mount_point (Буква: $letter)"
-        mount -t nfs -o $NFS_MOUNT_OPTIONS $server:/mnt/storage/$disk $mount_point
+        mount $mount_point
         
         if mount | grep -q " on $mount_point "; then
             echo -e "${GREEN}✓ Успешно смонтирован /mnt/storage/$disk с сервера $server (Буква: $letter)${NC}"
-            # Добавление в fstab
-            echo "$server:/mnt/storage/$disk $mount_point nfs $NFS_MOUNT_OPTIONS 0 0" >> /etc/fstab
             # Добавление в массив для конфигурации backend
             BACKEND_DISKS+=("$letter:$mount_point")
         else
@@ -244,6 +250,9 @@ mount_nfs_shares() {
             showmount -e $server
         fi
     done
+    
+    # Перезагрузка systemd для применения изменений fstab
+    systemctl daemon-reload
     
     # Экспорт массива дисков для backend
     export BACKEND_DISKS

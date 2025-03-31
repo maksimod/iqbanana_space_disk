@@ -26,11 +26,13 @@ remote_exec() {
     echo -e "${YELLOW}Команда: $command${NC}"
     
     # Выполняем команду через SSH с использованием прокси
-    local output=$(sshpass -p "$server_password" ssh -p "$port" -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@$SSH_HOST "$command")
+    output=$(sshpass -p "$server_password" ssh -p "$port" -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@$SSH_HOST "$command")
     local result=$?
     
     if [ $result -eq 0 ]; then
         echo -e "${GREEN}✓ Команда успешно выполнена на сервере $server${NC}"
+        echo "$output"
+        # Возвращаем вывод команды как результат функции
         echo "$output"
     else
         echo -e "${RED}✗ Ошибка выполнения команды на сервере $server${NC}"
