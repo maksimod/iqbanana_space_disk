@@ -83,11 +83,16 @@ const getFiles = (req, res, next) => {
       }
       
       try {
+        // Фильтруем файлы, удаляя .tmp_chunks и .disk_uuid
+        const filteredFiles = files.filter(file => {
+          return !file.name.includes('.tmp_chunks') && file.name !== '.disk_uuid';
+        });
+        
         // Для лучшей отладки логируем содержимое директории
-        logger.info(`Найдено ${files.length} файлов в директории ${fullPath}`);
+        logger.info(`Найдено ${files.length} файлов в директории ${fullPath}, отображается ${filteredFiles.length} после фильтрации`);
         
         // Массив для хранения промисов получения размеров файлов
-        const fileSizePromises = files.map(file => {
+        const fileSizePromises = filteredFiles.map(file => {
           const isDirectory = file.isDirectory();
           const filePath = path.join(fullPath, file.name);
           
@@ -181,6 +186,16 @@ const uploadFile = (req, res) => {
 const deleteFile = (req, res, next) => {
   const { disk } = req.params;
   const { filePath } = req.body;
+  
+  // Защита от удаления системных файлов
+  if (filePath.includes('.tmp_chunks') || filePath === '.disk_uuid') {
+    logger.warn(`Попытка удаления системного файла: ${filePath}`);
+    return res.status(403).json({ 
+      success: false,
+      error: 'Системные файлы не могут быть удалены',
+      protectedFile: true
+    });
+  }
   
   // Проверка на права администратора
   if (!req.user.isAdmin) {

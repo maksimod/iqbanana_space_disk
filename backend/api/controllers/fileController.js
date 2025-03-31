@@ -252,7 +252,7 @@ const searchFiles = async (req, res) => {
         typeFilter = '-type d';
       }
       
-      command = `find "${mountPoint}" ${typeFilter} -regextype posix-extended -regex ".*${pattern}.*" -printf "%P\\n" 2>/dev/null`;
+      command = `find "${mountPoint}" ${typeFilter} -regextype posix-extended -regex ".*${pattern}.*" -not -name ".disk_uuid" -not -path "*.tmp_chunks*" -printf "%P\\n" 2>/dev/null`;
     } else {
       let typeFilter = '';
       if (type === 'files') {
@@ -261,7 +261,7 @@ const searchFiles = async (req, res) => {
         typeFilter = '-type d';
       }
       
-      command = `find "${mountPoint}" ${typeFilter} -name "*${pattern}*" -printf "%P\\n" 2>/dev/null`;
+      command = `find "${mountPoint}" ${typeFilter} -name "*${pattern}*" -not -name ".disk_uuid" -not -path "*.tmp_chunks*" -printf "%P\\n" 2>/dev/null`;
     }
     
     const { stdout } = await execPromise(command);
@@ -269,6 +269,8 @@ const searchFiles = async (req, res) => {
     const results = stdout
       .split('\n')
       .filter(line => line.trim())
+      // Фильтруем служебные файлы
+      .filter(line => !line.includes('.tmp_chunks') && line !== '.disk_uuid')
       .map(filePath => ({
         path: filePath,
         name: path.basename(filePath)
@@ -396,6 +398,16 @@ const deleteFiles = async (req, res) => {
     
     for (const filePath of filesToDelete) {
       try {
+        // Protect system files from deletion
+        if (filePath.includes('.tmp_chunks') || filePath === '.disk_uuid') {
+          logger.warn(`Попытка удаления системного файла предотвращена: ${filePath}`);
+          errors.push({
+            path: filePath,
+            error: 'Системные файлы не могут быть удалены'
+          });
+          continue;
+        }
+        
         const fullPath = path.join(mountPoint, filePath);
         await fsPromises.unlink(fullPath);
         results.push(filePath);

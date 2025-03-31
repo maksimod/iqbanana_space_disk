@@ -16,8 +16,12 @@ const FileSearch = ({ files, onSearchResults }) => {
     }
     
     const lowerSearchTerm = searchTerm.toLowerCase();
+    
+    // Фильтруем файлы с учетом исключения служебных файлов
     const results = files.filter(file => 
-      file.name.toLowerCase().includes(lowerSearchTerm)
+      file.name.toLowerCase().includes(lowerSearchTerm) && 
+      !file.name.includes('.tmp_chunks') && 
+      file.name !== '.disk_uuid'
     );
     
     onSearchResults(results);

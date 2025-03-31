@@ -63,6 +63,66 @@
   color: var(--error-border);
 }
 
+/* Стили для недоступных дисков */
+.disk-card-error {
+  border: 2px solid var(--error-border);
+  background-color: var(--error-background, #fff8f8);
+  position: relative;
+}
+
+.disk-card-error:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 4px 12px rgba(207, 53, 53, 0.2);
+}
+
+.disk-error-content {
+  display: flex;
+  align-items: center;
+  margin-top: var(--spacing);
+  padding: var(--spacing);
+  border-radius: var(--border-radius-sm);
+  background-color: rgba(255, 255, 255, 0.5);
+}
+
+.disk-error-icon {
+  font-size: 24px;
+  color: var(--error-color, #e74c3c);
+  margin-right: var(--spacing);
+  flex-shrink: 0;
+}
+
+.disk-error-message {
+  flex: 1;
+}
+
+.disk-status-text {
+  font-weight: bold;
+  color: var(--error-color, #e74c3c);
+  margin-bottom: 4px;
+}
+
+.disk-error-details {
+  font-size: 12px;
+  color: var(--gray-dark);
+  line-height: 1.4;
+}
+
+.disk-error-action {
+  margin-left: var(--spacing);
+  font-size: 20px;
+  color: var(--gray-color);
+  opacity: 0.7;
+}
+
+.disk-plug-icon {
+  transition: transform 0.3s ease;
+}
+
+.disk-card-error:hover .disk-plug-icon {
+  transform: rotate(15deg);
+  color: var(--primary-color);
+}
+
 /* Стили для круговой диаграммы */
 .disk-usage-chart {
   display: flex;

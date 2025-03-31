@@ -23,19 +23,33 @@ const useApi = () => {
   }, []);
 
   /**
-   * Общая функция для выполнения запросов
+   * Общая функция для выполнения запросов с таймаутом
    */
-  const fetchData = useCallback(async (endpoint, options = {}) => {
+  const fetchData = useCallback(async (endpoint, options = {}, timeoutMs = 5000) => {
     setLoading(true);
     setError('');
+    
+    // Создаем контроллер для возможности отмены запроса
+    const controller = new AbortController();
+    const { signal } = controller;
+    
+    // Устанавливаем таймаут
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+      console.warn(`Запрос к ${endpoint} отменён по таймауту (${timeoutMs}ms)`);
+    }, timeoutMs);
     
     try {
       const response = await fetch(getApiUrl(endpoint), {
         headers: {
           ...getAuthHeaders()
         },
+        signal,
         ...options
       });
+      
+      // Очищаем таймаут после получения ответа
+      clearTimeout(timeoutId);
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -45,8 +59,16 @@ const useApi = () => {
       const data = await response.json();
       return data;
     } catch (err) {
-      console.error(`Ошибка API (${endpoint}):`, err);
-      setError(err.message || 'Произошла ошибка при выполнении запроса');
+      // Очищаем таймаут в случае ошибки
+      clearTimeout(timeoutId);
+      
+      if (err.name === 'AbortError') {
+        console.error(`Таймаут запроса к API (${endpoint})`);
+        setError(`Превышено время ожидания ответа от сервера`);
+      } else {
+        console.error(`Ошибка API (${endpoint}):`, err);
+        setError(err.message || 'Произошла ошибка при выполнении запроса');
+      }
       return null;
     } finally {
       setLoading(false);
@@ -54,14 +76,15 @@ const useApi = () => {
   }, [getApiUrl, getAuthHeaders]);
 
   /**
-   * Получение списка дисков
+   * Получение списка дисков с коротким таймаутом для ускорения загрузки при недоступных дисках
    */
   const fetchDisks = useCallback(async () => {
+    // Используем более короткий таймаут для списка дисков (3 секунды)
     return await fetchData('/disks', {
       headers: {
         ...getAuthHeaders()
       }
-    });
+    }, 3000);
   }, [fetchData, getAuthHeaders]);
 
   /**

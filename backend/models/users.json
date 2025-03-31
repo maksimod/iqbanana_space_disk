@@ -9,14 +9,14 @@
       "id": 1,
       "username": "admin",
       "password": "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4",
-      "token": "ae9c3ba98c2828c96e3ae0b31a784cc9d0288f0cb10b9ed18f7d6ea439b774dc",
+      "token": null,
       "created": "2025-03-28T20:28:24.459Z"
     },
     {
       "id": 2,
       "username": "user1",
       "password": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
-      "token": null,
+      "token": "7298922918bbdc70463ecf569ce713be747fb5e9bb00304b43a9e8152367c494",
       "created": "2025-03-31T10:29:57.863Z"
     }
   ]
