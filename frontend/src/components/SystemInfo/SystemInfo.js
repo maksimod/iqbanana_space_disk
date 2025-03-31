@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FaServer, FaMemory, FaInfoCircle, FaHdd } from 'react-icons/fa';
+import { FaServer, FaMemory, FaInfoCircle, FaHdd, FaSync } from 'react-icons/fa';
 import { formatFileSize } from '../../utils/formatters';
 import { useAuth } from '../../context/AuthContext';
 import './systemInfo.css';
@@ -9,34 +9,58 @@ const SystemInfo = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [expanded, setExpanded] = useState(false);
-  const { getAuthHeaders } = useAuth();
+  const { getAuthHeaders, user } = useAuth();
+  
+  const fetchSystemInfo = async (retryCount = 0, maxRetries = 2) => {
+    setLoading(true);
+    setError(null);
+    try {
+      console.log('Fetching system info...');
+      const response = await fetch('/api/v1/system/info', {
+        headers: {
+          ...getAuthHeaders()
+        }
+      });
+      
+      if (!response.ok) {
+        if (retryCount < maxRetries) {
+          console.log(`Retry ${retryCount + 1}/${maxRetries} for system info`);
+          setTimeout(() => fetchSystemInfo(retryCount + 1, maxRetries), 1000);
+          return;
+        }
+        throw new Error('Не удалось получить информацию о системе');
+      }
+      
+      const data = await response.json();
+      console.log('System info loaded successfully');
+      setSystemInfo(data);
+      setError(null);
+      setLoading(false);
+    } catch (err) {
+      console.error('Ошибка при загрузке системной информации:', err);
+      if (retryCount < maxRetries) {
+        console.log(`Retry ${retryCount + 1}/${maxRetries} after error`);
+        setTimeout(() => fetchSystemInfo(retryCount + 1, maxRetries), 1000);
+        return;
+      }
+      setError(err.message);
+      setLoading(false);
+    } finally {
+      // No need for conditional loading state reset here
+      // as we're explicitly setting it after success or final error
+    }
+  };
   
   useEffect(() => {
-    const fetchSystemInfo = async () => {
-      try {
-        const response = await fetch('/api/v1/system/info', {
-          headers: {
-            ...getAuthHeaders()
-          }
-        });
-        if (!response.ok) {
-          throw new Error('Не удалось получить информацию о системе');
-        }
-        const data = await response.json();
-        setSystemInfo(data);
-      } catch (err) {
-        console.error('Ошибка при загрузке системной информации:', err);
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    };
-    
     fetchSystemInfo();
-  }, [getAuthHeaders]);
+  }, [user, getAuthHeaders]); // Dependency on user ensures reloading after login
   
   const toggleExpanded = () => {
     setExpanded(!expanded);
+  };
+  
+  const handleRetry = () => {
+    fetchSystemInfo();
   };
   
   if (loading) {
@@ -44,7 +68,14 @@ const SystemInfo = () => {
   }
   
   if (error) {
-    return <div className="system-info-error">{error}</div>;
+    return (
+      <div className="system-info-error">
+        {error}
+        <button onClick={handleRetry} className="retry-button">
+          <FaSync /> Повторить
+        </button>
+      </div>
+    );
   }
   
   if (!systemInfo) {
