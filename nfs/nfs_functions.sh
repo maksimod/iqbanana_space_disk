@@ -67,7 +67,7 @@ setup_nfs_exports() {
         
         # Проверяем, является ли это RAID-конфигурацией
         if is_raid_config "$disk_config"; then
-            # Это RAID-конфигурация, пропускаем
+            echo -e "${YELLOW}Пропускаем RAID-конфигурацию: $disk_config${NC}"
             continue
         fi
         
@@ -84,9 +84,14 @@ setup_nfs_exports() {
         fi
         
         # Проверяем существование диска
+        echo -e "${YELLOW}Проверка существования диска /dev/$disk на сервере $server...${NC}"
         disk_exists=$(remote_exec "$server" "$port" "[ -e /dev/$disk ] && echo 'exists' || echo 'not_exists'")
+        echo -e "${YELLOW}Результат проверки: $disk_exists${NC}"
+        
         if [ "$disk_exists" != "exists" ]; then
             echo -e "${RED}ОШИБКА: Диск /dev/$disk не существует на сервере $server${NC}"
+            echo -e "${YELLOW}Список доступных дисков:${NC}"
+            remote_exec "$server" "$port" "ls -l /dev/sd* 2>/dev/null || echo 'Диски не найдены'"
             continue
         fi
         
@@ -107,11 +112,15 @@ setup_nfs_exports() {
         UUID=\$(blkid -s UUID -o value /dev/$disk 2>/dev/null)
         FS_TYPE=\$(blkid -o value -s TYPE /dev/$disk 2>/dev/null)
         
+        echo \"Тип файловой системы: \$FS_TYPE\"
+        echo \"UUID диска: \$UUID\"
+        
         if [ -z \"\$FS_TYPE\" ]; then
             echo \"Диск /dev/$disk не содержит файловой системы. Создаем XFS...\"
             mkfs.xfs -f /dev/$disk
             FS_TYPE=\"xfs\"
             UUID=\$(blkid -s UUID -o value /dev/$disk)
+            echo \"Новый UUID диска: \$UUID\"
         fi
         
         if [ -z \"\$UUID\" ]; then
@@ -123,6 +132,7 @@ setup_nfs_exports() {
         
         # Размонтируем диск если он уже смонтирован
         if mount | grep -q \"/dev/$disk on\"; then
+            echo \"Размонтирование существующего /dev/$disk\"
             umount -f -l /dev/$disk 2>/dev/null || true
         fi
         
@@ -230,6 +240,8 @@ mount_nfs_shares() {
             BACKEND_DISKS+=("$letter:$mount_point")
         else
             echo -e "${RED}✗ Ошибка монтирования /mnt/storage/$disk с сервера $server${NC}"
+            echo -e "${YELLOW}Проверка доступности NFS:${NC}"
+            showmount -e $server
         fi
     done
     
@@ -249,9 +261,12 @@ update_backend_config() {
         
         # Создаем строки для конфигурации дисков
         DISKS_CONFIG=""
-        for disk_entry in "${BACKEND_DISKS[@]}"; do
-            IFS=':' read -r letter mount_point <<< "$disk_entry"
-            DISKS_CONFIG="${DISKS_CONFIG}            '$letter:': '$mount_point',\n"
+        for disk_config in "${DISKS_TO_MOUNT[@]}"; do
+            if ! is_raid_config "$disk_config"; then
+                IFS=':' read -r server disk letter <<< "$disk_config"
+                mount_point="$MOUNT_BASE/$server/$(basename /mnt/storage/$disk)"
+                DISKS_CONFIG="${DISKS_CONFIG}            '$letter:': '$mount_point',\n"
+            fi
         done
         
         # Удаляем запятую с последней строки

@@ -23,15 +23,19 @@ remote_exec() {
     
     # Добавляем отладочную информацию
     echo -e "${YELLOW}Выполнение команды на сервере $server через прокси $SSH_HOST:${port}${NC}"
+    echo -e "${YELLOW}Команда: $command${NC}"
     
     # Выполняем команду через SSH с использованием прокси
-    sshpass -p "$server_password" ssh -p "$port" -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@$SSH_HOST "$command"
+    local output=$(sshpass -p "$server_password" ssh -p "$port" -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@$SSH_HOST "$command")
     local result=$?
     
     if [ $result -eq 0 ]; then
         echo -e "${GREEN}✓ Команда успешно выполнена на сервере $server${NC}"
+        echo "$output"
     else
         echo -e "${RED}✗ Ошибка выполнения команды на сервере $server${NC}"
+        echo -e "${RED}Код ошибки: $result${NC}"
+        echo "$output"
     fi
     
     return $result
@@ -56,6 +60,12 @@ check_server() {
     # Пробуем подключиться к серверу через прокси
     if sshpass -p "$server_password" ssh -p "$port" -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@$SSH_HOST "echo 'OK'"; then
         echo -e "${GREEN}✓ Сервер $server доступен${NC}"
+        
+        # Проверяем наличие дисков
+        echo -e "${YELLOW}Проверка дисков на сервере $server...${NC}"
+        local disk_check_cmd="ls -l /dev/sd* 2>/dev/null || echo 'Диски не найдены'"
+        sshpass -p "$server_password" ssh -p "$port" -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@$SSH_HOST "$disk_check_cmd"
+        
         return 0
     else
         echo -e "${RED}✗ Сервер $server недоступен${NC}"
