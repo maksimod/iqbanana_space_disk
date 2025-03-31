@@ -97,6 +97,25 @@ setup_nfs_exports() {
             echo -e "${GREEN}✓ Диск /dev/$disk существует на сервере $server${NC}"
         fi
         
+        # Сначала проверяем и устанавливаем NFS сервер если нужно
+        echo -e "${YELLOW}Проверка наличия NFS сервера на $server...${NC}"
+        nfs_installed=$(remote_exec "$server" "$port" "command -v exportfs &>/dev/null && echo 'installed' || echo 'not_installed'")
+        
+        if [[ "$nfs_installed" != *"installed"* ]]; then
+            echo -e "${YELLOW}Установка NFS сервера на $server...${NC}"
+            remote_exec "$server" "$port" "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nfs-kernel-server"
+            
+            # Проверяем, что NFS сервер установлен
+            nfs_check=$(remote_exec "$server" "$port" "systemctl is-active nfs-kernel-server || systemctl is-active nfs-server || echo 'not_running'")
+            if [[ "$nfs_check" == "not_running" ]]; then
+                echo -e "${RED}Ошибка: NFS сервер не запущен на $server после установки${NC}"
+                echo -e "${YELLOW}Пытаемся запустить сервис вручную...${NC}"
+                remote_exec "$server" "$port" "systemctl start nfs-kernel-server || systemctl start nfs-server"
+            fi
+        else
+            echo -e "${GREEN}✓ NFS сервер уже установлен на $server${NC}"
+        fi
+        
         # Настройка сервера
         server_cmd="
         echo \"Настройка диска $disk на сервере $server\"
@@ -150,6 +169,9 @@ setup_nfs_exports() {
             mv /tmp/fstab.new /etc/fstab
             echo \"UUID=\$UUID /mnt/storage/$disk \$FS_TYPE $MOUNT_OPTIONS 0 0\" >> /etc/fstab
             
+            # Сохраняем UUID диска для последующего использования в монтировании NFS
+            echo \"\$UUID\" > /mnt/storage/$disk/.disk_uuid
+            
             # Настройка прав доступа
             chmod -R 777 /mnt/storage/$disk
         else
@@ -157,10 +179,19 @@ setup_nfs_exports() {
             exit 1
         fi
         
+        # Убеждаемся, что NFS-server установлен
+        if ! command -v exportfs &>/dev/null; then
+            echo \"Установка NFS сервера...\"
+            apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nfs-kernel-server
+            systemctl start nfs-kernel-server
+        fi
+        
         # Настройка NFS экспорта
-        grep -v \"/mnt/storage/$disk $CLIENT_IP\" /etc/exports > /tmp/exports.new || echo \"# NFS exports\" > /tmp/exports.new
-        mv /tmp/exports.new /etc/exports
-        echo \"/mnt/storage/$disk $CLIENT_IP(rw,sync,no_subtree_check,no_root_squash,insecure)\" >> /etc/exports
+        mkdir -p /etc/exports.d
+        echo \"/mnt/storage/$disk $CLIENT_IP(rw,sync,no_subtree_check,no_root_squash,insecure)\" > /etc/exports.d/$disk.exports
+        
+        # Объединяем все файлы экспортов
+        cat /etc/exports.d/*.exports > /etc/exports
         
         # Перезапуск NFS
         exportfs -ra
@@ -174,6 +205,8 @@ setup_nfs_exports() {
         # Выполнение команды на сервере
         if ! remote_exec "$server" "$port" "$server_cmd"; then
             echo -e "${RED}Ошибка при настройке сервера $server${NC}"
+            echo -e "${YELLOW}Проверка статуса NFS сервера...${NC}"
+            remote_exec "$server" "$port" "systemctl status nfs-kernel-server || systemctl status nfs-server"
             continue
         fi
     done
@@ -206,7 +239,7 @@ mount_nfs_shares() {
         done
     fi
     
-    # Выполняем реагрузку systemd демона перед монтированием
+    # Выполняем перезагрузку systemd демона перед монтированием
     systemctl daemon-reload
     
     # Затем обрабатываем обычные диски
@@ -219,6 +252,33 @@ mount_nfs_shares() {
         # Обработка обычного диска
         IFS=':' read -r server disk letter <<< "$disk_config"
         
+        # Получаем порт для сервера
+        local port=$(echo "${SSH_PORTS[@]}" | grep -o "$server:[0-9]*" | cut -d':' -f2)
+        if [ -z "$port" ]; then
+            echo -e "${RED}Ошибка: Не найден порт для сервера $server${NC}"
+            continue
+        fi
+        
+        # Проверяем доступность NFS на сервере перед монтированием
+        echo -e "${YELLOW}Проверка доступности NFS на сервере $server...${NC}"
+        nfs_available=$(remote_exec "$server" "$port" "command -v exportfs &>/dev/null && echo 'available' || echo 'not_available'")
+        
+        if [[ "$nfs_available" != *"available"* ]]; then
+            echo -e "${RED}ОШИБКА: NFS сервер не доступен на $server${NC}"
+            echo -e "${YELLOW}Пытаемся установить NFS сервер...${NC}"
+            remote_exec "$server" "$port" "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nfs-kernel-server && systemctl start nfs-kernel-server"
+            sleep 5  # Даем время для запуска сервиса
+        fi
+        
+        # Получаем UUID диска с сервера
+        disk_uuid=$(remote_exec "$server" "$port" "cat /mnt/storage/$disk/.disk_uuid 2>/dev/null || echo ''")
+        
+        if [ -z "$disk_uuid" ]; then
+            echo -e "${YELLOW}Предупреждение: Не удалось получить UUID для диска $disk на сервере $server. Будет использовано стандартное монтирование.${NC}"
+        else
+            echo -e "${GREEN}Получен UUID диска $disk: $disk_uuid${NC}"
+        fi
+        
         mount_point="$MOUNT_BASE/$server/$(basename /mnt/storage/$disk)"
         
         # Создание точки монтирования
@@ -230,24 +290,74 @@ mount_nfs_shares() {
             umount -f -l $mount_point 2>/dev/null || true
         fi
         
-        # Добавление в fstab (перед монтированием)
-        echo "$server:/mnt/storage/$disk $mount_point nfs rw,sync,no_subtree_check,no_root_squash,nofail 0 0" >> /etc/fstab
+        # Проверка экспортов NFS перед монтированием
+        echo -e "${YELLOW}Проверка экспортов NFS на сервере $server...${NC}"
+        remote_exec "$server" "$port" "exportfs -rv"
+        
+        # Добавление в fstab с корректными опциями монтирования
+        if [ -n "$disk_uuid" ]; then
+            # Добавление комментария с UUID для справки
+            echo "# Диск $server:/mnt/storage/$disk (UUID: $disk_uuid)" >> /etc/fstab
+        fi
+        echo "$server:/mnt/storage/$disk $mount_point nfs $NFS_MOUNT_OPTIONS 0 0" >> /etc/fstab
         
         # Применяем изменения fstab
         systemctl daemon-reload
         
-        # Монтирование с базовыми опциями NFS
+        # Монтирование через mount с опциями вручную
         echo "Монтирование $server:/mnt/storage/$disk в $mount_point (Буква: $letter)"
-        mount $mount_point
+        
+        # Проверка порта NFS
+        echo -e "${YELLOW}Проверка открытых портов NFS на сервере $server...${NC}"
+        remote_exec "$server" "$port" "ss -tulnp | grep -E 'nfs|mount'"
+        
+        # Пробуем смонтировать с таймаутом и более подробной диагностикой
+        mount -t nfs -o $NFS_MOUNT_OPTIONS,timeo=10 $server:/mnt/storage/$disk $mount_point
         
         if mount | grep -q " on $mount_point "; then
             echo -e "${GREEN}✓ Успешно смонтирован /mnt/storage/$disk с сервера $server (Буква: $letter)${NC}"
+            if [ -n "$disk_uuid" ]; then
+                echo -e "${GREEN}Диск имеет UUID: $disk_uuid${NC}"
+            fi
             # Добавление в массив для конфигурации backend
             BACKEND_DISKS+=("$letter:$mount_point")
         else
             echo -e "${RED}✗ Ошибка монтирования /mnt/storage/$disk с сервера $server${NC}"
             echo -e "${YELLOW}Проверка доступности NFS:${NC}"
-            showmount -e $server
+            showmount -e $server 2>/dev/null || echo "Не удалось запросить экспорты NFS с сервера $server"
+            
+            # Попытка перезапуска NFS на сервере
+            echo -e "${YELLOW}Попытка перезапуска NFS сервера на $server...${NC}"
+            remote_exec "$server" "$port" "systemctl restart nfs-kernel-server || systemctl restart nfs-server"
+            sleep 5
+            
+            # Повторная попытка монтирования
+            echo -e "${YELLOW}Повторная попытка монтирования...${NC}"
+            mount -t nfs -o $NFS_MOUNT_OPTIONS $server:/mnt/storage/$disk $mount_point
+            
+            if mount | grep -q " on $mount_point "; then
+                echo -e "${GREEN}✓ Успешно смонтирован /mnt/storage/$disk с сервера $server при повторной попытке (Буква: $letter)${NC}"
+                # Добавление в массив для конфигурации backend
+                BACKEND_DISKS+=("$letter:$mount_point")
+            else
+                echo -e "${RED}✗ Не удалось смонтировать диск даже после перезапуска NFS сервера${NC}"
+                # Последняя отчаянная попытка - чистый NFS экспорт
+                echo -e "${YELLOW}Создание чистого NFS экспорта на сервере...${NC}"
+                remote_exec "$server" "$port" "
+                    mkdir -p /etc/exports.d
+                    echo '/mnt/storage/$disk $CLIENT_IP(rw,sync,no_subtree_check,no_root_squash,insecure)' > /etc/exports
+                    exportfs -ra
+                    systemctl restart nfs-kernel-server || systemctl restart nfs-server
+                "
+                sleep 5
+                mount -t nfs -o $NFS_MOUNT_OPTIONS $server:/mnt/storage/$disk $mount_point
+                
+                if mount | grep -q " on $mount_point "; then
+                    echo -e "${GREEN}✓ Успешно смонтирован /mnt/storage/$disk с сервера $server после сброса экспортов (Буква: $letter)${NC}"
+                    # Добавление в массив для конфигурации backend
+                    BACKEND_DISKS+=("$letter:$mount_point")
+                fi
+            fi
         fi
     done
     
