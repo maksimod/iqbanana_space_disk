@@ -295,10 +295,6 @@ mount_nfs_shares() {
         remote_exec "$server" "$port" "exportfs -rv"
         
         # Добавление в fstab с корректными опциями монтирования
-        if [ -n "$disk_uuid" ]; then
-            # Добавление комментария с UUID для справки
-            echo "# Диск $server:/mnt/storage/$disk (UUID: $disk_uuid)" >> /etc/fstab
-        fi
         echo "$server:/mnt/storage/$disk $mount_point nfs $NFS_MOUNT_OPTIONS 0 0" >> /etc/fstab
         
         # Применяем изменения fstab

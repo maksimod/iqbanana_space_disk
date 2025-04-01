@@ -16,7 +16,10 @@ const config = {
 
   // Пути к смонтированным дискам на веб-сервере
   disks: {
-            'C:': '/mnt/data_storage/192.168.0.102/sdb',
+            'A:': '/mnt/data_storage/192.168.0.106/sda',
+            'B:': '/mnt/data_storage/192.168.0.106/sdb',
+            'C:': '/mnt/data_storage/192.168.0.102/sda',
+            'D:': '/mnt/data_storage/192.168.0.102/sdb',
   },
 
   // Настройки производительности для файловых операций
