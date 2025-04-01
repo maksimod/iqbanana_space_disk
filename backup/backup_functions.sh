@@ -453,13 +453,46 @@ setup_automatic_backups() {
         return 1
     fi
     
-    # Проверяем, существует ли уже такая запись в crontab
-    if remote_exec "$server" "$port" "crontab -l 2>/dev/null | grep -q '$script_path'"; then
-        log_info "Задание cron для бэкапа уже существует"
+    # Тщательно проверяем, существует ли уже такая запись в crontab
+    if remote_exec "$server" "$port" "crontab -l 2>/dev/null | grep -F '$script_path'"; then
+        log_info "Обнаружена существующая запись для скрипта $script_path в crontab."
+        
+        # Создаем временный файл для обновленного crontab
+        local temp_file=$(mktemp)
+        
+        # Получаем текущий crontab и удаляем все записи с нашим скриптом
+        remote_exec "$server" "$port" "crontab -l 2>/dev/null | grep -v '$script_path'" > "$temp_file"
+        
+        # Добавляем новую запись
+        echo "$cron_entry" >> "$temp_file"
+        
+        # Отправляем обновленный файл на сервер
+        if ! remote_exec "$server" "$port" "cat > /tmp/new_crontab.tmp" < "$temp_file"; then
+            log_error "Не удалось отправить обновленный файл crontab на сервер"
+            rm -f "$temp_file"
+            return 1
+        fi
+        
+        # Устанавливаем обновленный crontab
+        if ! remote_exec "$server" "$port" "crontab /tmp/new_crontab.tmp"; then
+            log_error "Не удалось установить обновленный crontab"
+            remote_exec "$server" "$port" "rm -f /tmp/new_crontab.tmp"
+            rm -f "$temp_file"
+            return 1
+        fi
+        
+        # Очищаем временные файлы
+        remote_exec "$server" "$port" "rm -f /tmp/new_crontab.tmp"
+        rm -f "$temp_file"
+        
+        log_info "Существующая запись обновлена с частотой: $frequency"
         return 0
     fi
     
-    # Создаем пустой файл для новой задачи cron
+    # Если записи нет, добавляем новую
+    log_info "Добавление новой записи для скрипта $script_path в crontab"
+    
+    # Создаем файл с новой записью
     local temp_file=$(mktemp)
     echo "$cron_entry" > "$temp_file"
     
