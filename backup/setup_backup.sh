@@ -66,13 +66,22 @@ fi
 REMOTE_SCRIPT_PATH="/root/backup_runner.sh"
 log_info "Создание скрипта запуска бэкапа на сервере $BACKUP_SERVER"
 
+# Получаем UUID исходного диска
+SOURCE_UUID=$(remote_exec "$BACKUP_SERVER" "$server_port" "blkid -s UUID -o value /dev/$SOURCE_DISK")
+if [ -z "$SOURCE_UUID" ]; then
+    log_error "Не удалось получить UUID для диска /dev/$SOURCE_DISK"
+    exit 1
+fi
+log_info "UUID источника: $SOURCE_UUID"
+
 # Создаем скрипт бэкапа
 cat > /tmp/backup_runner.sh << 'EOF'
 #!/bin/bash
 
 # Переменные окружения
 export BORG_PASSPHRASE="###BORG_PASSPHRASE###"
-SOURCE_DISK="###SOURCE_DISK###"
+SOURCE_UUID="###SOURCE_UUID###"
+SOURCE_DISK="###SOURCE_DISK###"  # Оставляем для обратной совместимости
 REPO_PATH="###REPO_PATH###"
 MAX_BACKUPS=###MAX_BACKUPS###
 LOG_FILE="###LOG_FILE###"
@@ -120,67 +129,44 @@ log_error() {
     log_message "ERROR" "$1"
 }
 
+# Функция для поиска точки монтирования по UUID
+find_mount_point() {
+    local uuid=$1
+    local mount_point=$(findmnt -n -o TARGET --source UUID="$uuid")
+    echo "$mount_point"
+}
+
 # Функция для создания бэкапа
 create_backup() {
     local backup_name="$(date +%Y-%m-%d_%H-%M-%S)"
-    log_info "Создание бэкапа диска /dev/$SOURCE_DISK с именем $backup_name"
     
-    # Записываем стартовую метку прогресса
-    log_progress "0"
+    # Получаем текущую точку монтирования по UUID
+    local mount_point=$(find_mount_point "$SOURCE_UUID")
     
-    # Получаем размер диска
-    local disk_size=$(get_disk_size)
-    
-    # Создаем бэкап диска с отслеживанием прогресса
-    # Используем pv для отображения прогресса
-    if command -v pv >/dev/null 2>&1; then
-        # Вариант с pv (показывает прогресс)
-        log_info "Запуск бэкапа с мониторингом прогресса"
-        
-        (
-            # Запускаем в фоне процесс мониторинга для обновления прогресса
-            (
-                while ps -p $$ >/dev/null 2>&1; do
-                    if [ -e "/tmp/backup_progress" ]; then
-                        percent=$(cat /tmp/backup_progress)
-                        log_progress "$percent"
-                    fi
-                    sleep 10
-                done
-            ) &
-            
-            # Запускаем процесс бэкапа с pv для отслеживания прогресса
-            dd if=/dev/$SOURCE_DISK bs=1M status=none | \
-            pv -n -s $disk_size | \
-            tee >(echo "0" > /tmp/backup_progress; awk -v size=$disk_size 'BEGIN {getline; bytes=$1} {printf "%d\n", (bytes/size)*100 > "/tmp/backup_progress"}') | \
-            borg create --read-special $REPO_PATH::$backup_name -
-            
-            # Удаляем временный файл прогресса
-            rm -f /tmp/backup_progress
-            
-            # Явно убиваем фоновый процесс мониторинга
-            pkill -P $$
-            
-            return ${PIPESTATUS[2]}
-        )
-    else
-        # Запасной вариант без pv, просто используем --progress
-        log_info "Утилита pv не найдена, используем встроенный индикатор прогресса"
-        
-        # Создаем бэкап с встроенным прогрессом Borg
-        if ! borg create --verbose --stats --progress --read-special "$REPO_PATH::$backup_name" "/dev/$SOURCE_DISK"; then
-            log_error "Не удалось создать бэкап диска /dev/$SOURCE_DISK"
-            return 1
-        fi
+    # Проверяем, смонтирован ли диск
+    if [ -z "$mount_point" ]; then
+        log_error "Диск с UUID $SOURCE_UUID не смонтирован. Бэкап не может быть выполнен."
+        return 1
     fi
     
+    log_info "Создание бэкапа файловой системы $mount_point (UUID: $SOURCE_UUID) с именем $backup_name"
+
+    # Записываем стартовую метку прогресса
+    log_progress "0"
+
+    # Создаем бэкап файловой системы
+    if ! borg create --verbose --stats --progress --exclude-caches "$REPO_PATH::$backup_name" "$mount_point"; then
+        log_error "Не удалось создать бэкап файловой системы $mount_point"
+        return 1
+    fi
+
     # Записываем финальную метку прогресса
     log_progress "100"
-    log_info "Бэкап диска /dev/$SOURCE_DISK успешно создан с именем $backup_name"
-    
+    log_info "Бэкап файловой системы $mount_point успешно создан с именем $backup_name"
+
     # Очистка старых бэкапов
     prune_old_backups
-    
+
     return 0
 }
 
@@ -205,11 +191,6 @@ log_progress() {
     echo "[$timestamp] [PROGRESS] $percent% выполнено" >> "$LOG_FILE"
 }
 
-# Функция для получения размера диска в байтах
-get_disk_size() {
-    blockdev --getsize64 "/dev/$SOURCE_DISK"
-}
-
 # Записываем начало выполнения в лог
 echo "=========================================" >> "$LOG_FILE"
 echo "Запуск бэкапа $(date)" >> "$LOG_FILE"
@@ -224,6 +205,7 @@ EOF
 
 # Заменяем переменные в скрипте
 sed -i "s|###BORG_PASSPHRASE###|$BORG_PASSPHRASE|g" /tmp/backup_runner.sh
+sed -i "s|###SOURCE_UUID###|$SOURCE_UUID|g" /tmp/backup_runner.sh
 sed -i "s|###SOURCE_DISK###|$SOURCE_DISK|g" /tmp/backup_runner.sh
 sed -i "s|###REPO_PATH###|$REPO_PATH|g" /tmp/backup_runner.sh
 sed -i "s|###MAX_BACKUPS###|$MAX_BACKUPS|g" /tmp/backup_runner.sh
