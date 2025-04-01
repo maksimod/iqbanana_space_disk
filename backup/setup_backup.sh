@@ -43,6 +43,9 @@ if ! install_borg "$BACKUP_SERVER" "$server_port"; then
     exit 1
 fi
 
+# Устанавливаем pv для отображения прогресса
+remote_exec "$BACKUP_SERVER" "$server_port" "which pv > /dev/null || apt-get -y install pv"
+
 # Подготавливаем диск назначения
 if ! prepare_target_disk "$BACKUP_SERVER" "$server_port" "$TARGET_DISK" "$TARGET_MOUNT"; then
     log_error "Не удалось подготовить диск назначения $TARGET_DISK"
@@ -116,17 +119,73 @@ log_error() {
     log_message "ERROR" "$1"
 }
 
+log_progress() {
+    local percent=$1
+    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    echo "[$timestamp] [PROGRESS] $percent% выполнено" >> "$LOG_FILE"
+}
+
+# Функция для получения размера диска в байтах
+get_disk_size() {
+    blockdev --getsize64 "/dev/$SOURCE_DISK"
+}
+
 # Функция для создания бэкапа
 create_backup() {
     local backup_name="$(date +%Y-%m-%d_%H-%M-%S)"
     log_info "Создание бэкапа диска /dev/$SOURCE_DISK с именем $backup_name"
     
-    # Создаем бэкап диска
-    if ! borg create --verbose --stats --read-special "$REPO_PATH::$backup_name" "/dev/$SOURCE_DISK"; then
-        log_error "Не удалось создать бэкап диска /dev/$SOURCE_DISK"
-        return 1
+    # Записываем стартовую метку прогресса
+    log_progress "0"
+    
+    # Получаем размер диска
+    local disk_size=$(get_disk_size)
+    
+    # Создаем бэкап диска с отслеживанием прогресса
+    # Используем pv для отображения прогресса
+    if command -v pv >/dev/null 2>&1; then
+        # Вариант с pv (показывает прогресс)
+        log_info "Запуск бэкапа с мониторингом прогресса"
+        
+        (
+            # Запускаем в фоне процесс мониторинга для обновления прогресса
+            (
+                while ps -p $$ >/dev/null 2>&1; do
+                    if [ -e "/tmp/backup_progress" ]; then
+                        percent=$(cat /tmp/backup_progress)
+                        log_progress "$percent"
+                    fi
+                    sleep 10
+                done
+            ) &
+            
+            # Запускаем процесс бэкапа с pv для отслеживания прогресса
+            dd if=/dev/$SOURCE_DISK bs=1M status=none | \
+            pv -n -s $disk_size | \
+            tee >(echo "0" > /tmp/backup_progress; awk -v size=$disk_size 'BEGIN {getline; bytes=$1} {printf "%d\n", (bytes/size)*100 > "/tmp/backup_progress"}') | \
+            borg create --read-special $REPO_PATH::$backup_name -
+            
+            # Удаляем временный файл прогресса
+            rm -f /tmp/backup_progress
+            
+            # Явно убиваем фоновый процесс мониторинга
+            pkill -P $$
+            
+            return ${PIPESTATUS[2]}
+        )
+    else
+        # Запасной вариант без pv, просто используем --progress
+        log_info "Утилита pv не найдена, используем встроенный индикатор прогресса"
+        
+        # Создаем бэкап с встроенным прогрессом Borg
+        if ! borg create --verbose --stats --progress --read-special "$REPO_PATH::$backup_name" "/dev/$SOURCE_DISK"; then
+            log_error "Не удалось создать бэкап диска /dev/$SOURCE_DISK"
+            return 1
+        fi
     fi
     
+    # Записываем финальную метку прогресса
+    log_progress "100"
     log_info "Бэкап диска /dev/$SOURCE_DISK успешно создан с именем $backup_name"
     
     # Очистка старых бэкапов
