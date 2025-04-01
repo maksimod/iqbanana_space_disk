@@ -106,7 +106,7 @@ timestamp=$(date "+%Y-%m-%d %H:%M:%S")
 if [ -e "$LOCK_FILE" ]; then
     # Получаем PID предыдущего процесса
     LOCK_PID=$(cat "$LOCK_FILE")
-    
+
     # Проверяем, активен ли еще процесс
     if ps -p $LOCK_PID > /dev/null; then
         echo "[$timestamp] [WARNING] Предыдущий процесс бэкапа (PID: $LOCK_PID) еще выполняется. Выход."
@@ -126,13 +126,17 @@ log_message() {
     local level=$1
     local message=$2
     local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
-    
+
     echo "[$timestamp] [$level] $message"
     echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
 }
 
 log_info() {
     log_message "INFO" "$1"
+}
+
+log_warning() {
+    log_message "WARNING" "$1"
 }
 
 log_error() {
@@ -142,41 +146,122 @@ log_error() {
 # Функция для поиска точки монтирования по UUID
 find_mount_point() {
     local uuid=$1
-    local mount_point=$(findmnt -n -o TARGET --source UUID="$uuid")
+    local mount_point=$(findmnt -n -o TARGET --source UUID="$uuid" 2>/dev/null)
     echo "$mount_point"
+}
+
+# Функция для проверки и восстановления блокировки репозитория Borg
+check_and_fix_borg_lock() {
+    # Проверяем наличие блокировки в репозитории
+    if [ -f "$REPO_PATH/lock.roster" ] || [ -d "$REPO_PATH/lock" ]; then
+        log_warning "Обнаружена активная блокировка репозитория Borg. Попытка восстановления..."
+        
+        # Сначала пытаемся мягко снять блокировку
+        if borg break-lock "$REPO_PATH"; then
+            log_info "Блокировка репозитория успешно снята."
+            return 0
+        else
+            log_error "Не удалось снять блокировку репозитория с помощью borg break-lock."
+            
+            # Если borg break-lock не помогает, принудительно удаляем файлы блокировки
+            log_warning "Принудительное удаление файлов блокировки..."
+            rm -f "$REPO_PATH/lock.roster" 2>/dev/null
+            rm -rf "$REPO_PATH/lock" 2>/dev/null
+            
+            # Проверяем, удалось ли удалить блокировку
+            if [ ! -f "$REPO_PATH/lock.roster" ] && [ ! -d "$REPO_PATH/lock" ]; then
+                log_info "Файлы блокировки репозитория успешно удалены."
+                return 0
+            else
+                log_error "Не удалось удалить файлы блокировки репозитория."
+                return 1
+            fi
+        fi
+    else
+        # Блокировки нет, всё в порядке
+        return 0
+    fi
 }
 
 # Функция для создания бэкапа
 create_backup() {
     local backup_name="$(date +%Y-%m-%d_%H-%M-%S)"
     
-    # Получаем текущую точку монтирования по UUID
-    local mount_point=$(find_mount_point "$SOURCE_UUID")
+    # Пробуем оба метода: по UUID и по имени устройства
+    local mount_point=""
+    local device_path=""
     
-    # Проверяем, смонтирован ли диск
-    if [ -z "$mount_point" ]; then
-        log_error "Диск с UUID $SOURCE_UUID не смонтирован. Бэкап не может быть выполнен."
+    # 1. Проверяем точку монтирования по UUID
+    if [ -n "$SOURCE_UUID" ]; then
+        mount_point=$(find_mount_point "$SOURCE_UUID")
+        if [ -n "$mount_point" ]; then
+            log_info "Найдена точка монтирования по UUID $SOURCE_UUID: $mount_point"
+        else
+            log_warning "Точка монтирования по UUID $SOURCE_UUID не найдена"
+        fi
+    fi
+    
+    # 2. Проверяем существование устройства
+    if [ -e "/dev/$SOURCE_DISK" ]; then
+        device_path="/dev/$SOURCE_DISK"
+        log_info "Устройство $device_path существует"
+    else
+        log_warning "Устройство /dev/$SOURCE_DISK не существует"
+    fi
+    
+    # Проверяем и восстанавливаем блокировку репозитория
+    if ! check_and_fix_borg_lock; then
+        log_error "Не удалось восстановить блокировку репозитория. Бэкап не может быть выполнен."
         return 1
     fi
     
-    log_info "Создание бэкапа файловой системы $mount_point (UUID: $SOURCE_UUID) с именем $backup_name"
-
-    # Записываем стартовую метку прогресса
-    log_progress "0"
-
-    # Создаем бэкап файловой системы
-    if ! borg create --verbose --stats --progress --exclude-caches "$REPO_PATH::$backup_name" "$mount_point"; then
-        log_error "Не удалось создать бэкап файловой системы $mount_point"
+    # Экспортируем переменные среды для Borg
+    export BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK=yes
+    export BORG_RELOCATED_REPO_ACCESS_IS_OK=yes
+    
+    # Решаем, какой метод использовать для бэкапа
+    if [ -n "$mount_point" ]; then
+        # Бэкап файловой системы, если она смонтирована
+        log_info "Создание бэкапа файловой системы $mount_point с именем $backup_name"
+        
+        # Проверяем, что точка монтирования доступна
+        if ! [ -d "$mount_point" ] || ! [ -r "$mount_point" ]; then
+            log_error "Точка монтирования $mount_point недоступна или нет прав на чтение"
+            return 1
+        fi
+        
+        # Записываем стартовую метку прогресса
+        log_progress "0"
+        
+        # Создаем бэкап файловой системы с увеличенным тайм-аутом и добавлением опции --lock-wait
+        if ! borg create --verbose --stats --progress --exclude-caches --lock-wait 60 "$REPO_PATH::$backup_name" "$mount_point"; then
+            log_error "Не удалось создать бэкап файловой системы $mount_point"
+            return 1
+        fi
+    elif [ -n "$device_path" ]; then
+        # Бэкап устройства, если оно существует
+        log_info "Создание бэкапа устройства $device_path с именем $backup_name"
+        
+        # Записываем стартовую метку прогресса
+        log_progress "0"
+        
+        # Создаем бэкап устройства с увеличенным тайм-аутом и добавлением опции --lock-wait
+        if ! borg create --verbose --stats --progress --read-special --lock-wait 60 "$REPO_PATH::$backup_name" "$device_path"; then
+            log_error "Не удалось создать бэкап устройства $device_path"
+            return 1
+        fi
+    else
+        log_error "Ни точка монтирования по UUID $SOURCE_UUID, ни устройство /dev/$SOURCE_DISK не найдены"
         return 1
     fi
-
+    
     # Записываем финальную метку прогресса
     log_progress "100"
-    log_info "Бэкап файловой системы $mount_point успешно создан с именем $backup_name"
-
+    log_info "Бэкап успешно создан с именем $backup_name"
+    
     # Очистка старых бэкапов
     prune_old_backups
-
+    
     return 0
 }
 
@@ -185,7 +270,7 @@ prune_old_backups() {
     log_info "Очистка старых бэкапов"
     
     # Удаляем старые бэкапы, оставляя только MAX_BACKUPS последних
-    if ! borg prune --keep-last=$MAX_BACKUPS --verbose "$REPO_PATH"; then
+    if ! borg prune --keep-last=$MAX_BACKUPS --verbose --lock-wait 60 "$REPO_PATH"; then
         log_error "Не удалось очистить старые бэкапы"
         return 1
     fi

@@ -15,11 +15,11 @@ TARGET_DISK="sda"
 
 # Частота автоматических бэкапов
 # Допустимые значения: hourly, daily, weekly, monthly
-BACKUP_FREQUENCY="hourly"
+BACKUP_FREQUENCY="daily"
 
 # Максимальное количество бэкапов, которое может храниться
 # После достижения этого числа самый старый бэкап будет удален
-MAX_BACKUPS=12
+MAX_BACKUPS=24
 
 # Имя бэкап репозитория
 REPO_NAME="disk_backup"
