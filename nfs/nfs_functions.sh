@@ -62,6 +62,33 @@ setup_raid_arrays() {
 setup_nfs_exports() {
     echo -e "${GREEN}Настройка NFS экспортов...${NC}"
     
+    # Принудительное размонтирование всех дисков на всех серверах
+    echo -e "${YELLOW}Принудительное размонтирование всех дисков...${NC}"
+    for port_entry in "${SSH_PORTS[@]}"; do
+        server=$(echo $port_entry | cut -d':' -f1)
+        port=$(echo $port_entry | cut -d':' -f2)
+        
+        echo -e "${YELLOW}Размонтирование дисков на сервере $server...${NC}"
+        remote_exec "$server" "$port" "
+            # Размонтируем все несистемные диски
+            for mount_point in \$(mount | grep '/mnt/storage/' | awk '{print \$3}'); do
+                echo \"Размонтирование \$mount_point\"
+                umount -f -l \$mount_point 2>/dev/null || true
+            done
+            
+            # Размонтируем все NFS шар
+            for mount_point in \$(mount | grep 'nfs' | awk '{print \$3}'); do
+                echo \"Размонтирование NFS \$mount_point\"
+                umount -f -l \$mount_point 2>/dev/null || true
+            done
+            
+            # Очищаем все старые экспорты
+            rm -f /etc/exports.d/*.exports
+            echo \"\" > /etc/exports
+            exportfs -ra
+        "
+    done
+    
     for disk_config in "${DISKS_TO_MOUNT[@]}"; do
         echo -e "${YELLOW}Обработка конфигурации: $disk_config${NC}"
         
@@ -119,6 +146,13 @@ setup_nfs_exports() {
         # Настройка сервера
         server_cmd="
         echo \"Настройка диска $disk на сервере $server\"
+        
+        # Размонтируем все несистемные диски перед очисткой fstab
+        echo \"Размонтирование всех несистемных дисков...\"
+        for mount_point in \$(mount | grep '/mnt/storage/' | awk '{print \$3}'); do
+            echo \"Размонтирование \$mount_point\"
+            umount -f -l \$mount_point 2>/dev/null || true
+        done
         
         # Очистка fstab от несистемных записей
         echo \"Очистка fstab от несистемных монтирований...\"
@@ -214,10 +248,23 @@ setup_nfs_exports() {
         
         echo \"Монтирование /dev/$disk (\$FS_TYPE, UUID=\$UUID) в /mnt/storage/$disk\"
         
-        # Размонтируем диск если он уже смонтирован
-        if mount | grep -q \"/dev/$disk on\"; then
-            echo \"Размонтирование существующего /dev/$disk\"
-            umount -f -l /dev/$disk 2>/dev/null || true
+        # Размонтируем все существующие монтирования диска
+        echo \"Размонтирование всех существующих монтирований диска /dev/$disk\"
+        umount -f -l /dev/$disk 2>/dev/null || true
+        umount -f -l /mnt/storage/$disk 2>/dev/null || true
+        
+        # Проверяем, не монтируется ли диск в другую точку
+        current_mount=\$(mount | grep \"/dev/$disk\" | awk '{print \$3}')
+        if [ -n \"\$current_mount\" ]; then
+            echo \"Внимание: Диск /dev/$disk монтируется в \$current_mount\"
+            umount -f -l \$current_mount 2>/dev/null || true
+        fi
+        
+        # Проверяем, не монтируется ли другой диск в нашу точку монтирования
+        current_device=\$(mount | grep \"/mnt/storage/$disk\" | awk '{print \$1}')
+        if [ -n \"\$current_device\" ]; then
+            echo \"Внимание: Точка /mnt/storage/$disk занята устройством \$current_device\"
+            umount -f -l /mnt/storage/$disk 2>/dev/null || true
         fi
         
         # Монтируем диск
@@ -225,7 +272,7 @@ setup_nfs_exports() {
         
         # Проверка монтирования
         if mount | grep -q \"/dev/$disk on /mnt/storage/$disk\"; then
-            echo \"✓ Диск /dev/$disk успешно смонтирован\"
+            echo \"✓ Диск /dev/$disk успешно смонтирован в /mnt/storage/$disk\"
             
             # Обновляем fstab
             grep -v \"/mnt/storage/$disk\" /etc/fstab > /tmp/fstab.new
@@ -238,7 +285,7 @@ setup_nfs_exports() {
             # Настройка прав доступа
             chmod -R 777 /mnt/storage/$disk
         else
-            echo \"✗ Ошибка монтирования диска /dev/$disk\"
+            echo \"✗ Ошибка монтирования диска /dev/$disk в /mnt/storage/$disk\"
             exit 1
         fi
         
@@ -251,6 +298,13 @@ setup_nfs_exports() {
         
         # Настройка NFS экспорта
         mkdir -p /etc/exports.d
+        
+        # Очищаем все старые экспорты
+        echo \"Очистка старых NFS экспортов...\"
+        rm -f /etc/exports.d/*.exports
+        echo \"\" > /etc/exports
+        
+        # Добавляем только нужный экспорт
         echo \"/mnt/storage/$disk $CLIENT_IP(rw,sync,no_subtree_check,no_root_squash,insecure)\" > /etc/exports.d/$disk.exports
         
         # Объединяем все файлы экспортов
@@ -278,6 +332,13 @@ setup_nfs_exports() {
 # Функция для монтирования NFS шар
 mount_nfs_shares() {
     echo -e "${GREEN}Монтирование NFS шар...${NC}"
+    
+    # Размонтируем все существующие NFS шар перед очисткой fstab
+    echo -e "${YELLOW}Размонтирование всех существующих NFS шар...${NC}"
+    for mount_point in $(mount | grep "nfs" | awk '{print $3}'); do
+        echo "Размонтирование $mount_point"
+        umount -f -l $mount_point 2>/dev/null || true
+    done
     
     # Очистка fstab от всех несистемных записей
     echo -e "${YELLOW}Очистка fstab от всех несистемных монтирований...${NC}"
@@ -411,11 +472,20 @@ mount_nfs_shares() {
             umount -f -l $mount_point 2>/dev/null || true
         fi
         
+        # Проверяем, не монтируется ли другой NFS шар в эту точку
+        current_nfs=$(mount | grep " on $mount_point " | grep "nfs")
+        if [ -n "$current_nfs" ]; then
+            echo "Внимание: Точка $mount_point занята другим NFS шаром"
+            umount -f -l $mount_point 2>/dev/null || true
+        fi
+        
         # Проверка экспортов NFS перед монтированием
         echo -e "${YELLOW}Проверка экспортов NFS на сервере $server...${NC}"
         remote_exec "$server" "$port" "exportfs -rv"
         
         # Добавление в fstab с корректными опциями монтирования
+        grep -v "$mount_point" /etc/fstab > /tmp/fstab.new
+        mv /tmp/fstab.new /etc/fstab
         echo "$server:/mnt/storage/$disk $mount_point nfs $NFS_MOUNT_OPTIONS 0 0" >> /etc/fstab
         
         # Применяем изменения fstab

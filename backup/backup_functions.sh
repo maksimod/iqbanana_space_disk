@@ -12,10 +12,13 @@ NC='\033[0m' # No Color
 
 # Загрузка конфигурации
 load_config() {
+    # Устанавливаем значение по умолчанию для LOG_FILE до загрузки конфигурации
+    LOG_FILE="${SCRIPT_DIR}/backup.log"
+    
     if [ -f "${SCRIPT_DIR}/backup_config.sh" ]; then
         source "${SCRIPT_DIR}/backup_config.sh"
     else
-        log_error "Конфигурационный файл не найден: ${SCRIPT_DIR}/backup_config.sh"
+        echo -e "${RED}Ошибка: Конфигурационный файл не найден: ${SCRIPT_DIR}/backup_config.sh${NC}"
         exit 1
     fi
     
@@ -23,7 +26,41 @@ load_config() {
     if [ -f "${SCRIPT_DIR}/../nfs/.env" ]; then
         source "${SCRIPT_DIR}/../nfs/.env"
     else
-        log_warning "Файл .env не найден. Будут использованы значения по умолчанию."
+        echo -e "${YELLOW}Предупреждение: Файл .env не найден. Будут использованы значения по умолчанию.${NC}"
+    fi
+    
+    # Проверяем и устанавливаем SSH_HOST, если он не определен
+    if [ -z "$SSH_HOST" ]; then
+        if [ -n "$DEFAULT_SSH_HOST" ]; then
+            SSH_HOST="$DEFAULT_SSH_HOST"
+            echo -e "${YELLOW}Предупреждение: SSH_HOST не найден в .env, используем значение из backup_config.sh: $SSH_HOST${NC}"
+        else
+            # Пытаемся найти в storage_config.sh
+            if [ -f "${SCRIPT_DIR}/../nfs/storage_config.sh" ]; then
+                SSH_HOST_FROM_CONFIG=$(grep -E "^SSH_HOST=" "${SCRIPT_DIR}/../nfs/storage_config.sh" | cut -d'"' -f2)
+                if [ -n "$SSH_HOST_FROM_CONFIG" ]; then
+                    SSH_HOST="$SSH_HOST_FROM_CONFIG"
+                    echo -e "${YELLOW}Предупреждение: SSH_HOST не найден в .env, используем значение из storage_config.sh: $SSH_HOST${NC}"
+                else
+                    echo -e "${RED}Ошибка: SSH_HOST не найден ни в .env, ни в storage_config.sh${NC}"
+                    exit 1
+                fi
+            else
+                echo -e "${RED}Ошибка: SSH_HOST не определен, и файл storage_config.sh не найден${NC}"
+                exit 1
+            fi
+        fi
+    fi
+    
+    # Проверяем, что SSH_PORTS определен
+    if [ -z "$SSH_PORTS" ] || [ ${#SSH_PORTS[@]} -eq 0 ]; then
+        echo -e "${YELLOW}Предупреждение: SSH_PORTS не определен в .env, используем значения из backup_config.sh${NC}"
+        # Устанавливаем SSH_PORTS на основе BACKUP_SERVER, если он определен
+        if [ -n "$BACKUP_SERVER" ]; then
+            # Стандартный порт SSH с номером порта по умолчанию
+            SSH_PORTS=("$BACKUP_SERVER:2223")
+            echo -e "${YELLOW}Автоматически установлено: SSH_PORTS=($BACKUP_SERVER:2223)${NC}"
+        fi
     fi
     
     # Настройка BORG_PASSPHRASE
@@ -80,6 +117,46 @@ install_borg() {
     return 0
 }
 
+# Функция для проверки используемости диска
+is_disk_in_use() {
+    local server=$1
+    local port=$2
+    local disk=$3
+    
+    # Проверяем, используется ли диск в данный момент
+    local in_use=$(remote_exec "$server" "$port" "lsblk -o NAME,MOUNTPOINT -n | grep $disk | grep -v '^$disk ' | awk '{print \$2}' | grep -v '^$'")
+    
+    if [ -n "$in_use" ]; then
+        return 0  # Диск используется
+    else
+        return 1  # Диск не используется
+    fi
+}
+
+# Функция для запроса подтверждения
+ask_confirmation() {
+    local message=$1
+    local default=${2:-"n"}  # По умолчанию "n"
+    
+    if [ "$default" = "y" ]; then
+        echo -n -e "$message [Y/n]: "
+        read -r response
+        if [[ -z "$response" || "$response" =~ ^[Yy] ]]; then
+            return 0
+        else
+            return 1
+        fi
+    else
+        echo -n -e "$message [y/N]: "
+        read -r response
+        if [[ "$response" =~ ^[Yy] ]]; then
+            return 0
+        else
+            return 1
+        fi
+    fi
+}
+
 # Функция для подготовки диска назначения
 prepare_target_disk() {
     local server=$1
@@ -95,18 +172,36 @@ prepare_target_disk() {
         return 1
     fi
     
-    # Проверяем, смонтирован ли уже диск
-    if remote_exec "$server" "$port" "mount | grep -q '/dev/$disk'"; then
-        # Получаем текущую точку монтирования
-        local current_mount=$(remote_exec "$server" "$port" "mount | grep '/dev/$disk' | awk '{print \$3}'")
-        
+    # Получаем текущую точку монтирования
+    local current_mount=$(remote_exec "$server" "$port" "mount | grep -w '/dev/$disk' | awk '{print \$3}'")
+    
+    # Проверяем, смонтирован ли диск
+    if [ -n "$current_mount" ]; then
         if [ "$current_mount" != "$mount_point" ]; then
-            log_warning "Диск /dev/$disk уже смонтирован в $current_mount, а не в $mount_point"
-            log_info "Отмонтирование диска /dev/$disk"
+            log_warning "Диск /dev/$disk смонтирован в $current_mount, а должен быть в $mount_point"
             
-            if ! remote_exec "$server" "$port" "umount /dev/$disk"; then
-                log_error "Не удалось отмонтировать диск /dev/$disk"
-                return 1
+            # Проверяем, используется ли диск
+            if is_disk_in_use "$server" "$port" "$disk"; then
+                log_warning "Диск /dev/$disk активно используется. Содержимое:"
+                remote_exec "$server" "$port" "ls -la '$current_mount' 2>/dev/null | head -n 5" || true
+                
+                # Запрашиваем подтверждение для размонтирования
+                if ask_confirmation "${YELLOW}ВНИМАНИЕ! Диск /dev/$disk уже используется. Размонтировать и подготовить для использования в качестве диска бэкапа?${NC}"; then
+                    log_info "Отмонтирование диска /dev/$disk по запросу пользователя"
+                    if ! remote_exec "$server" "$port" "umount '$current_mount'"; then
+                        log_error "Не удалось отмонтировать диск /dev/$disk. Возможно, он используется."
+                        return 1
+                    fi
+                else
+                    log_info "Операция отменена пользователем"
+                    return 1
+                fi
+            else
+                log_info "Отмонтирование диска /dev/$disk"
+                if ! remote_exec "$server" "$port" "umount '$current_mount'"; then
+                    log_error "Не удалось отмонтировать диск /dev/$disk"
+                    return 1
+                fi
             fi
         else
             log_info "Диск /dev/$disk уже смонтирован в $mount_point"
@@ -119,10 +214,17 @@ prepare_target_disk() {
     
     # Проверяем, есть ли на диске файловая система
     if ! remote_exec "$server" "$port" "blkid /dev/$disk" &>/dev/null; then
-        log_warning "На диске /dev/$disk нет файловой системы. Создаем ext4..."
+        log_warning "На диске /dev/$disk нет файловой системы."
         
-        if ! remote_exec "$server" "$port" "mkfs.ext4 -F /dev/$disk"; then
-            log_error "Не удалось создать файловую систему на диске /dev/$disk"
+        # Запрашиваем подтверждение для форматирования
+        if ask_confirmation "${YELLOW}ВНИМАНИЕ! Диск /dev/$disk не отформатирован. Форматировать с файловой системой ext4?${NC}"; then
+            log_info "Форматирование диска /dev/$disk с файловой системой ext4..."
+            if ! remote_exec "$server" "$port" "mkfs.ext4 -F /dev/$disk"; then
+                log_error "Не удалось создать файловую систему на диске /dev/$disk"
+                return 1
+            fi
+        else
+            log_info "Форматирование отменено пользователем"
             return 1
         fi
     fi
@@ -141,8 +243,9 @@ prepare_target_disk() {
     
     # Проверяем, есть ли уже запись в fstab
     if ! remote_exec "$server" "$port" "grep -q '$mount_point' /etc/fstab"; then
-        # Добавляем запись в fstab
-        remote_exec "$server" "$port" "echo 'UUID=$disk_uuid $mount_point ext4 defaults 0 2' >> /etc/fstab"
+        # Добавляем запись в fstab с опцией nofail, чтобы система загружалась даже без диска
+        remote_exec "$server" "$port" "echo 'UUID=$disk_uuid $mount_point ext4 defaults,nofail 0 2' >> /etc/fstab"
+        log_info "Добавлена опция nofail в fstab - система загрузится даже при отсутствии диска бэкапа"
     fi
     
     log_info "Диск /dev/$disk успешно подготовлен и смонтирован в $mount_point"
@@ -303,6 +406,12 @@ setup_automatic_backups() {
             ;;
     esac
     
+    # Проверяем права на скрипт
+    if ! remote_exec "$server" "$port" "test -x $script_path"; then
+        log_error "Скрипт $script_path не имеет прав на выполнение"
+        return 1
+    fi
+    
     # Создаем временный файл с новой записью crontab
     local temp_cron=$(mktemp)
     
@@ -318,9 +427,46 @@ setup_automatic_backups() {
         # Добавляем нашу запись в crontab
         echo "$cron_entry" >> "$temp_cron"
         
-        # Отправляем файл на сервер и устанавливаем новый crontab
-        scp -P "$port" "$temp_cron" "root@$SSH_HOST:/tmp/backup_cron.tmp"
-        remote_exec "$server" "$port" "crontab /tmp/backup_cron.tmp && rm /tmp/backup_cron.tmp"
+        # Отправляем файл на сервер через SSH прокси
+        if ! remote_exec "$server" "$port" "cat > /tmp/backup_cron.tmp" < "$temp_cron"; then
+            log_error "Не удалось отправить файл crontab на сервер"
+            rm -f "$temp_cron"
+            return 1
+        fi
+        
+        # Проверяем, что файл создан и не пустой
+        if ! remote_exec "$server" "$port" "test -s /tmp/backup_cron.tmp"; then
+            log_error "Временный файл crontab пуст или не создан"
+            remote_exec "$server" "$port" "rm -f /tmp/backup_cron.tmp"
+            rm -f "$temp_cron"
+            return 1
+        fi
+        
+        # Проверяем права на временный файл
+        if ! remote_exec "$server" "$port" "chmod 600 /tmp/backup_cron.tmp"; then
+            log_error "Не удалось установить права на временный файл crontab"
+            remote_exec "$server" "$port" "rm -f /tmp/backup_cron.tmp"
+            rm -f "$temp_cron"
+            return 1
+        fi
+        
+        # Устанавливаем новый crontab и удаляем временный файл
+        if ! remote_exec "$server" "$port" "crontab /tmp/backup_cron.tmp"; then
+            log_error "Не удалось установить новый crontab. Проверьте права доступа и формат файла."
+            remote_exec "$server" "$port" "rm -f /tmp/backup_cron.tmp"
+            rm -f "$temp_cron"
+            return 1
+        fi
+        
+        # Проверяем, что crontab установлен
+        if ! remote_exec "$server" "$port" "crontab -l | grep -q '$script_path'"; then
+            log_error "Запись не добавлена в crontab после установки"
+            rm -f "$temp_cron"
+            return 1
+        fi
+        
+        # Удаляем временный файл
+        remote_exec "$server" "$port" "rm -f /tmp/backup_cron.tmp"
         
         log_info "Автоматические бэкапы настроены с частотой: $frequency"
     fi

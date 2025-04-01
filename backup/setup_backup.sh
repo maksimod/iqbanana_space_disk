@@ -4,14 +4,15 @@
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "${SCRIPT_DIR}/backup_functions.sh"
 
+# Сначала загружаем конфигурацию
+load_config
+
+# Только после загрузки конфигурации используем переменные из нее
 # Инициализация лог-файла
 touch "$LOG_FILE"
 echo "=========================================" >> "$LOG_FILE"
 echo "Запуск настройки бэкапов $(date)" >> "$LOG_FILE"
 echo "=========================================" >> "$LOG_FILE"
-
-# Загружаем конфигурацию
-load_config
 
 # Проверяем доступность сервера
 for port_entry in "${SSH_PORTS[@]}"; do
@@ -119,17 +120,6 @@ log_error() {
     log_message "ERROR" "$1"
 }
 
-log_progress() {
-    local percent=$1
-    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
-    echo "[$timestamp] [PROGRESS] $percent% выполнено" >> "$LOG_FILE"
-}
-
-# Функция для получения размера диска в байтах
-get_disk_size() {
-    blockdev --getsize64 "/dev/$SOURCE_DISK"
-}
-
 # Функция для создания бэкапа
 create_backup() {
     local backup_name="$(date +%Y-%m-%d_%H-%M-%S)"
@@ -208,6 +198,18 @@ prune_old_backups() {
     return 0
 }
 
+# Функция для отображения прогресса
+log_progress() {
+    local percent=$1
+    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    echo "[$timestamp] [PROGRESS] $percent% выполнено" >> "$LOG_FILE"
+}
+
+# Функция для получения размера диска в байтах
+get_disk_size() {
+    blockdev --getsize64 "/dev/$SOURCE_DISK"
+}
+
 # Записываем начало выполнения в лог
 echo "=========================================" >> "$LOG_FILE"
 echo "Запуск бэкапа $(date)" >> "$LOG_FILE"
@@ -228,7 +230,12 @@ sed -i "s|###MAX_BACKUPS###|$MAX_BACKUPS|g" /tmp/backup_runner.sh
 sed -i "s|###LOG_FILE###|/root/backup.log|g" /tmp/backup_runner.sh
 
 # Копируем скрипт на сервер
-scp -P "$server_port" /tmp/backup_runner.sh "root@$SSH_HOST:$REMOTE_SCRIPT_PATH"
+if ! remote_exec "$BACKUP_SERVER" "$server_port" "cat > $REMOTE_SCRIPT_PATH" < /tmp/backup_runner.sh; then
+    log_error "Не удалось скопировать скрипт бэкапа на сервер"
+    rm -f /tmp/backup_runner.sh
+    exit 1
+fi
+
 remote_exec "$BACKUP_SERVER" "$server_port" "chmod +x $REMOTE_SCRIPT_PATH"
 
 # Удаляем временный файл
