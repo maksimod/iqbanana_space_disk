@@ -120,6 +120,69 @@ setup_nfs_exports() {
         server_cmd="
         echo \"Настройка диска $disk на сервере $server\"
         
+        # Очистка fstab от несистемных записей
+        echo \"Очистка fstab от несистемных монтирований...\"
+        cp /etc/fstab /etc/fstab.backup_\$(date +\"%Y%m%d%H%M%S\")
+        
+        # Временный файл для нового fstab
+        TMP_FSTAB=\$(mktemp)
+        
+        # Определяем корневое устройство
+        ROOT_MOUNT=\$(findmnt -n -o SOURCE /)
+        ROOT_DISK=\$(lsblk -no pkname \"\$ROOT_MOUNT\" 2>/dev/null | xargs -I{} echo \"/dev/{}\")
+        
+        # Сохраняем только системные монтирования и комментарии
+        cat /etc/fstab | while read -r line; do
+            # Пропускаем пустые строки и комментарии
+            if [[ -z \"\$line\" || \"\$line\" =~ ^\s*# ]]; then
+                echo \"\$line\" >> \"\$TMP_FSTAB\"
+                continue
+            fi
+            
+            # Извлекаем устройство из строки fstab
+            device=\$(echo \"\$line\" | awk '{print \$1}')
+            mountpoint=\$(echo \"\$line\" | awk '{print \$2}')
+            
+            # Если устройство начинается с UUID=, получаем соответствующее блочное устройство
+            if [[ \"\$device\" =~ ^UUID= ]]; then
+                uuid=\$(echo \"\$device\" | cut -d= -f2)
+                device=\$(blkid -U \"\$uuid\" 2>/dev/null || echo \"\")
+            fi
+            
+            # Пропускаем несистемные монтирования
+            if [[ \"\$line\" =~ /mnt/storage || \"\$mountpoint\" =~ ^/mnt ]]; then
+                echo \"Удаляем из fstab: \$line\"
+                continue
+            fi
+            
+            # Проверяем, является ли это системным монтированием
+            if [[ -z \"\$device\" || \"\$device\" = \"\$ROOT_MOUNT\" || \"\$mountpoint\" = \"/\" || \"\$mountpoint\" =~ ^/(boot|home|usr|var)$ ]]; then
+                echo \"Сохраняем системное монтирование: \$line\"
+                echo \"\$line\" >> \"\$TMP_FSTAB\"
+                continue
+            fi
+            
+            # Для всех других устройств проверяем, являются ли они частью корневого диска
+            if [[ \"\$device\" =~ ^/dev/ ]]; then
+                disk_name=\$(lsblk -no pkname \"\$device\" 2>/dev/null)
+                if [ -n \"\$disk_name\" ] && [ \"/dev/\$disk_name\" = \"\$ROOT_DISK\" ]; then
+                    echo \"Сохраняем монтирование на системном диске: \$line\"
+                    echo \"\$line\" >> \"\$TMP_FSTAB\"
+                    continue
+                fi
+            fi
+            
+            # Если не определились - сохраняем как комментарий
+            echo \"Закомментировано неопределенное монтирование: \$line\"
+            echo \"# \$line\" >> \"\$TMP_FSTAB\"
+        done
+        
+        # Копируем обновленный fstab
+        cp \"\$TMP_FSTAB\" /etc/fstab
+        rm \"\$TMP_FSTAB\"
+        
+        echo \"✓ fstab очищен от несистемных монтирований\"
+        
         # Проверяем существование диска
         if [ ! -e \"/dev/$disk\" ]; then
             echo \"ОШИБКА: Диск /dev/$disk не существует!\"
@@ -216,10 +279,68 @@ setup_nfs_exports() {
 mount_nfs_shares() {
     echo -e "${GREEN}Монтирование NFS шар...${NC}"
     
-    # Очистка fstab от старых записей
+    # Очистка fstab от всех несистемных записей
+    echo -e "${YELLOW}Очистка fstab от всех несистемных монтирований...${NC}"
     cp /etc/fstab /etc/fstab.backup_$(date +"%Y%m%d%H%M%S")
-    grep -v "$MOUNT_BASE" /etc/fstab > /tmp/fstab.new
-    cp /tmp/fstab.new /etc/fstab
+    
+    # Временный файл для нового fstab
+    TMP_FSTAB=$(mktemp)
+    
+    # Определяем корневое устройство
+    ROOT_MOUNT=$(findmnt -n -o SOURCE /)
+    ROOT_DISK=$(lsblk -no pkname "$ROOT_MOUNT" 2>/dev/null | xargs -I{} echo "/dev/{}")
+    
+    # Сохраняем только системные монтирования и комментарии
+    cat /etc/fstab | while read -r line; do
+        # Пропускаем пустые строки и комментарии
+        if [[ -z "$line" || "$line" =~ ^\s*# ]]; then
+            echo "$line" >> "$TMP_FSTAB"
+            continue
+        fi
+        
+        # Извлекаем устройство из строки fstab
+        device=$(echo "$line" | awk '{print $1}')
+        mountpoint=$(echo "$line" | awk '{print $2}')
+        
+        # Если устройство начинается с UUID=, получаем соответствующее блочное устройство
+        if [[ "$device" =~ ^UUID= ]]; then
+            uuid=$(echo "$device" | cut -d= -f2)
+            device=$(blkid -U "$uuid" 2>/dev/null || echo "")
+        fi
+        
+        # Пропускаем несистемные монтирования и NFS
+        if [[ "$line" =~ /mnt/storage || "$line" =~ nfs || "$mountpoint" =~ ^/mnt ]]; then
+            echo -e "${YELLOW}Удаляем из fstab: $line${NC}"
+            continue
+        fi
+        
+        # Проверяем, является ли это системным монтированием
+        if [[ -z "$device" || "$device" = "$ROOT_MOUNT" || "$mountpoint" = "/" || "$mountpoint" =~ ^/(boot|home|usr|var)$ ]]; then
+            echo -e "${GREEN}Сохраняем системное монтирование: $line${NC}"
+            echo "$line" >> "$TMP_FSTAB"
+            continue
+        fi
+        
+        # Для всех других устройств проверяем, являются ли они частью корневого диска
+        if [[ "$device" =~ ^/dev/ ]]; then
+            disk_name=$(lsblk -no pkname "$device" 2>/dev/null)
+            if [ -n "$disk_name" ] && [ "/dev/$disk_name" = "$ROOT_DISK" ]; then
+                echo -e "${GREEN}Сохраняем монтирование на системном диске: $line${NC}"
+                echo "$line" >> "$TMP_FSTAB"
+                continue
+            fi
+        fi
+        
+        # Если не определились - сохраняем как комментарий
+        echo -e "${YELLOW}Закомментировано неопределенное монтирование: $line${NC}"
+        echo "# $line" >> "$TMP_FSTAB"
+    done
+    
+    # Копируем обновленный fstab
+    cp "$TMP_FSTAB" /etc/fstab
+    rm "$TMP_FSTAB"
+    
+    echo -e "${GREEN}✓ fstab очищен от несистемных монтирований${NC}"
     
     # Добавляем комментарий о NFS монтированиях
     echo "# NFS монтирования" >> /etc/fstab
