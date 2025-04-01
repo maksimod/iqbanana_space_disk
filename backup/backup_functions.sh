@@ -455,76 +455,35 @@ setup_automatic_backups() {
     
     log_info "Настройка crontab для запуска бэкапов: $cron_entry"
     
-    # Создаем временный файл локально
-    local temp_file=$(mktemp)
-    
-    # Ищем прямым методом - существует ли уже запись для бэкапов
-    if remote_exec "$server" "$port" "crontab -l 2>/dev/null | grep -q \"$script_path\""; then
-        log_info "Найдена существующая запись для бэкапов, обновляем"
+    # Прямая модификация crontab на сервере - самый надежный метод
+    remote_exec "$server" "$port" "
+        # Получаем текущий crontab во временный файл, гарантируя его корректное создание
+        crontab -l > /tmp/current_crontab 2>/dev/null || echo '# Crontab file' > /tmp/current_crontab
         
-        # Сначала получаем текущий crontab с сервера без строк с нашим скриптом
-        remote_exec "$server" "$port" "crontab -l 2>/dev/null | grep -v \"$script_path\"" > "$temp_file" || echo "" > "$temp_file"
+        # Удаляем старые записи и добавляем новую
+        grep -v \"$script_path\" /tmp/current_crontab > /tmp/new_crontab || echo '# Crontab file' > /tmp/new_crontab
+        echo \"$cron_entry\" >> /tmp/new_crontab
         
-        # Если файл пустой, добавляем комментарий
-        if [ ! -s "$temp_file" ]; then
-            echo "# Crontab для автоматических бэкапов" > "$temp_file"
-        fi
-    else
-        log_info "Не найдено существующих записей для бэкапов, создаем новую"
+        # Проверяем файл перед установкой
+        echo 'Содержимое нового crontab:'
+        cat /tmp/new_crontab
         
-        # Получаем текущий crontab, если есть
-        remote_exec "$server" "$port" "crontab -l 2>/dev/null" > "$temp_file" || echo "" > "$temp_file"
+        # Устанавливаем новый crontab
+        crontab /tmp/new_crontab
         
-        # Если файл пустой, добавляем комментарий
-        if [ ! -s "$temp_file" ]; then
-            echo "# Crontab для автоматических бэкапов" > "$temp_file"
-        fi
-    fi
-    
-    # Добавляем новую запись для бэкапов
-    echo "$cron_entry" >> "$temp_file"
-    
-    log_info "Новое содержимое crontab:"
-    cat "$temp_file"
-    
-    # Создаем временные файлы на сервере
-    remote_exec "$server" "$port" "touch /tmp/crontab.new /tmp/crontab.bak"
-    
-    # Сохраняем текущий crontab как бэкап
-    remote_exec "$server" "$port" "crontab -l > /tmp/crontab.bak 2>/dev/null || echo '# Crontab backup' > /tmp/crontab.bak"
-    
-    # Отправляем новый crontab на сервер
-    if ! remote_exec "$server" "$port" "cat > /tmp/crontab.new" < "$temp_file"; then
-        log_error "Не удалось отправить новый crontab на сервер"
-        rm -f "$temp_file"
-        return 1
-    fi
-    
-    # Проверяем содержимое crontab перед установкой
-    log_info "Содержимое нового crontab на сервере:"
-    remote_exec "$server" "$port" "cat /tmp/crontab.new"
-    
-    # Устанавливаем новый crontab
-    if ! remote_exec "$server" "$port" "crontab /tmp/crontab.new"; then
-        log_error "Не удалось установить новый crontab"
-        log_info "Восстанавливаем предыдущий crontab"
-        remote_exec "$server" "$port" "crontab /tmp/crontab.bak"
-        remote_exec "$server" "$port" "rm -f /tmp/crontab.new /tmp/crontab.bak"
-        rm -f "$temp_file"
-        return 1
-    fi
+        # Проверяем результат
+        echo 'Установленный crontab:'
+        crontab -l
+        
+        # Очищаем временные файлы
+        rm -f /tmp/current_crontab /tmp/new_crontab
+    "
     
     # Проверяем, что запись добавлена
-    if ! remote_exec "$server" "$port" "crontab -l | grep -q \"$script_path\""; then
-        log_error "Запись не была добавлена в crontab"
-        remote_exec "$server" "$port" "rm -f /tmp/crontab.new /tmp/crontab.bak"
-        rm -f "$temp_file"
+    if ! remote_exec "$server" "$port" "crontab -l | grep -q '$script_path'"; then
+        log_error "Запись не добавлена в crontab после установки"
         return 1
     fi
-    
-    # Очищаем временные файлы
-    remote_exec "$server" "$port" "rm -f /tmp/crontab.new /tmp/crontab.bak"
-    rm -f "$temp_file"
     
     log_info "Автоматические бэкапы настроены с частотой: $frequency"
     return 0

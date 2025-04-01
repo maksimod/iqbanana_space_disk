@@ -67,11 +67,21 @@ REMOTE_SCRIPT_PATH="/root/backup_runner.sh"
 log_info "Создание скрипта запуска бэкапа на сервере $BACKUP_SERVER"
 
 # Получаем UUID исходного диска
-SOURCE_UUID=$(remote_exec "$BACKUP_SERVER" "$server_port" "blkid -s UUID -o value /dev/$SOURCE_DISK")
+log_info "Получение UUID диска /dev/$SOURCE_DISK на сервере $BACKUP_SERVER..."
+# Запускаем команду и очищаем вывод от любых лишних данных
+SOURCE_UUID_OUTPUT=$(remote_exec "$BACKUP_SERVER" "$server_port" "blkid -s UUID -o value /dev/$SOURCE_DISK")
+
+# Извлекаем UUID из вывода - берем ТОЛЬКО ПЕРВОЕ совпадение шаблона
+SOURCE_UUID=$(echo "$SOURCE_UUID_OUTPUT" | grep -o -E '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -1)
+
 if [ -z "$SOURCE_UUID" ]; then
     log_error "Не удалось получить UUID для диска /dev/$SOURCE_DISK"
     exit 1
 fi
+
+# Очищаем от любых возможных пробелов и переносов строк
+SOURCE_UUID=$(echo "$SOURCE_UUID" | tr -d '[:space:]')
+
 log_info "UUID источника: $SOURCE_UUID"
 
 # Создаем скрипт бэкапа
@@ -203,15 +213,30 @@ create_backup
 rm -f "$LOCK_FILE"
 EOF
 
-# Заменяем переменные в скрипте - используем экранирование для специальных символов
+# Заменяем переменные в скрипте
+log_info "Заменяем переменные в скрипте бэкапа..."
+log_info "UUID диска: $SOURCE_UUID"
+
+# Прямые замены для всех переменных кроме UUID
 sed -i "s|###BORG_PASSPHRASE###|${BORG_PASSPHRASE}|g" /tmp/backup_runner.sh
-# Экранируем UUID, чтобы избежать проблем с sed (исправленная версия)
-SOURCE_UUID_ESCAPED=$(printf '%s\n' "$SOURCE_UUID" | sed 's:[\/&\.]:\\&:g')
-sed -i "s|###SOURCE_UUID###|${SOURCE_UUID_ESCAPED}|g" /tmp/backup_runner.sh
 sed -i "s|###SOURCE_DISK###|${SOURCE_DISK}|g" /tmp/backup_runner.sh
 sed -i "s|###REPO_PATH###|${REPO_PATH}|g" /tmp/backup_runner.sh
 sed -i "s|###MAX_BACKUPS###|${MAX_BACKUPS}|g" /tmp/backup_runner.sh
 sed -i "s|###LOG_FILE###|/root/backup.log|g" /tmp/backup_runner.sh
+
+# Специальная замена для UUID - используем точную замену всей строки
+sed -i "s|SOURCE_UUID=\"###SOURCE_UUID###\"|SOURCE_UUID=\"${SOURCE_UUID}\"|g" /tmp/backup_runner.sh
+
+# Проверяем, что все плейсхолдеры были заменены
+if grep -q "###" /tmp/backup_runner.sh; then
+    log_error "Некоторые плейсхолдеры не были заменены в скрипте:"
+    grep "###" /tmp/backup_runner.sh
+    exit 1
+fi
+
+# Проверяем содержимое скрипта
+log_info "Проверка содержимого скрипта бэкапа:"
+grep "SOURCE_UUID" /tmp/backup_runner.sh
 
 # Копируем скрипт на сервер
 if ! remote_exec "$BACKUP_SERVER" "$server_port" "cat > $REMOTE_SCRIPT_PATH" < /tmp/backup_runner.sh; then
