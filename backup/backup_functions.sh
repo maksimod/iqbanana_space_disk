@@ -172,8 +172,14 @@ prepare_target_disk() {
         return 1
     fi
     
-    # Получаем текущую точку монтирования
-    local current_mount=$(remote_exec "$server" "$port" "mount | grep -w '/dev/$disk' | awk '{print \$3}'")
+    # Проверяем, не настроен ли уже этот диск для бэкапа
+    if remote_exec "$server" "$port" "test -d '$mount_point/$REPO_NAME/data'" &>/dev/null; then
+        log_info "Диск /dev/$disk уже настроен для бэкапа в $mount_point"
+        return 0
+    fi
+    
+    # Получаем текущую точку монтирования (исправлено)
+    local current_mount=$(remote_exec "$server" "$port" "mount | grep -w '/dev/$disk' | awk '{print \$3}' | grep -v '^$' | head -n1")
     
     # Проверяем, смонтирован ли диск
     if [ -n "$current_mount" ]; then
@@ -213,13 +219,46 @@ prepare_target_disk() {
     remote_exec "$server" "$port" "mkdir -p $mount_point"
     
     # Проверяем, есть ли на диске файловая система
-    if ! remote_exec "$server" "$port" "blkid /dev/$disk" &>/dev/null; then
+    local fs_type=$(remote_exec "$server" "$port" "blkid -s TYPE -o value /dev/$disk 2>/dev/null")
+    
+    if [ -z "$fs_type" ]; then
         log_warning "На диске /dev/$disk нет файловой системы."
         
+        # Запрашиваем выбор файловой системы
+        echo -e "${YELLOW}Выберите файловую систему для форматирования диска /dev/$disk:${NC}"
+        echo "1) ext4 (рекомендуется для обычных дисков)"
+        echo "2) xfs (лучше для больших файлов и больших дисков)"
+        echo "3) btrfs (поддерживает снапшоты и сжатие)"
+        echo -n "Введите номер выбранной файловой системы [1]: "
+        read fs_choice
+        
+        case "$fs_choice" in
+            2)
+                fs_type="xfs"
+                ;;
+            3)
+                fs_type="btrfs"
+                ;;
+            *)
+                fs_type="ext4"
+                ;;
+        esac
+        
         # Запрашиваем подтверждение для форматирования
-        if ask_confirmation "${YELLOW}ВНИМАНИЕ! Диск /dev/$disk не отформатирован. Форматировать с файловой системой ext4?${NC}"; then
-            log_info "Форматирование диска /dev/$disk с файловой системой ext4..."
-            if ! remote_exec "$server" "$port" "mkfs.ext4 -F /dev/$disk"; then
+        if ask_confirmation "${YELLOW}ВНИМАНИЕ! Диск /dev/$disk не отформатирован. Форматировать с файловой системой ${fs_type}?${NC}"; then
+            log_info "Форматирование диска /dev/$disk с файловой системой ${fs_type}..."
+            
+            # Устанавливаем необходимые пакеты для форматирования
+            case "$fs_type" in
+                xfs)
+                    remote_exec "$server" "$port" "which mkfs.xfs > /dev/null || apt-get -y install xfsprogs"
+                    ;;
+                btrfs)
+                    remote_exec "$server" "$port" "which mkfs.btrfs > /dev/null || apt-get -y install btrfs-progs"
+                    ;;
+            esac
+            
+            if ! remote_exec "$server" "$port" "mkfs.$fs_type -f /dev/$disk"; then
                 log_error "Не удалось создать файловую систему на диске /dev/$disk"
                 return 1
             fi
@@ -227,6 +266,8 @@ prepare_target_disk() {
             log_info "Форматирование отменено пользователем"
             return 1
         fi
+    else
+        log_info "На диске /dev/$disk обнаружена файловая система: $fs_type"
     fi
     
     # Монтируем диск
@@ -244,8 +285,8 @@ prepare_target_disk() {
     # Проверяем, есть ли уже запись в fstab
     if ! remote_exec "$server" "$port" "grep -q '$mount_point' /etc/fstab"; then
         # Добавляем запись в fstab с опцией nofail, чтобы система загружалась даже без диска
-        remote_exec "$server" "$port" "echo 'UUID=$disk_uuid $mount_point ext4 defaults,nofail 0 2' >> /etc/fstab"
-        log_info "Добавлена опция nofail в fstab - система загрузится даже при отсутствии диска бэкапа"
+        remote_exec "$server" "$port" "echo 'UUID=$disk_uuid $mount_point $fs_type defaults,nofail 0 2' >> /etc/fstab"
+        log_info "Добавлена запись в fstab с файловой системой $fs_type и опцией nofail - система загрузится даже при отсутствии диска бэкапа"
     fi
     
     log_info "Диск /dev/$disk успешно подготовлен и смонтирован в $mount_point"
@@ -412,67 +453,47 @@ setup_automatic_backups() {
         return 1
     fi
     
-    # Создаем временный файл с новой записью crontab
-    local temp_cron=$(mktemp)
-    
-    # Получаем текущий crontab и добавляем нашу запись
-    if remote_exec "$server" "$port" "crontab -l" &>/dev/null; then
-        remote_exec "$server" "$port" "crontab -l" > "$temp_cron"
-    fi
-    
-    # Проверяем, существует ли уже такая запись
-    if grep -q "$script_path" "$temp_cron"; then
+    # Проверяем, существует ли уже такая запись в crontab
+    if remote_exec "$server" "$port" "crontab -l 2>/dev/null | grep -q '$script_path'"; then
         log_info "Задание cron для бэкапа уже существует"
-    else
-        # Добавляем нашу запись в crontab
-        echo "$cron_entry" >> "$temp_cron"
-        
-        # Отправляем файл на сервер через SSH прокси
-        if ! remote_exec "$server" "$port" "cat > /tmp/backup_cron.tmp" < "$temp_cron"; then
-            log_error "Не удалось отправить файл crontab на сервер"
-            rm -f "$temp_cron"
-            return 1
-        fi
-        
-        # Проверяем, что файл создан и не пустой
-        if ! remote_exec "$server" "$port" "test -s /tmp/backup_cron.tmp"; then
-            log_error "Временный файл crontab пуст или не создан"
-            remote_exec "$server" "$port" "rm -f /tmp/backup_cron.tmp"
-            rm -f "$temp_cron"
-            return 1
-        fi
-        
-        # Проверяем права на временный файл
-        if ! remote_exec "$server" "$port" "chmod 600 /tmp/backup_cron.tmp"; then
-            log_error "Не удалось установить права на временный файл crontab"
-            remote_exec "$server" "$port" "rm -f /tmp/backup_cron.tmp"
-            rm -f "$temp_cron"
-            return 1
-        fi
-        
-        # Устанавливаем новый crontab и удаляем временный файл
-        if ! remote_exec "$server" "$port" "crontab /tmp/backup_cron.tmp"; then
-            log_error "Не удалось установить новый crontab. Проверьте права доступа и формат файла."
-            remote_exec "$server" "$port" "rm -f /tmp/backup_cron.tmp"
-            rm -f "$temp_cron"
-            return 1
-        fi
-        
-        # Проверяем, что crontab установлен
-        if ! remote_exec "$server" "$port" "crontab -l | grep -q '$script_path'"; then
-            log_error "Запись не добавлена в crontab после установки"
-            rm -f "$temp_cron"
-            return 1
-        fi
-        
-        # Удаляем временный файл
-        remote_exec "$server" "$port" "rm -f /tmp/backup_cron.tmp"
-        
-        log_info "Автоматические бэкапы настроены с частотой: $frequency"
+        return 0
     fi
     
-    # Удаляем временный файл
-    rm -f "$temp_cron"
+    # Создаем пустой файл для новой задачи cron
+    local temp_file=$(mktemp)
+    echo "$cron_entry" > "$temp_file"
     
+    # Отправляем файл на сервер
+    if ! remote_exec "$server" "$port" "cat > /tmp/new_cron_entry.tmp" < "$temp_file"; then
+        log_error "Не удалось отправить файл с новой задачей cron на сервер"
+        rm -f "$temp_file"
+        return 1
+    fi
+    
+    # Проверяем содержимое файла
+    log_info "Новая задача cron:"
+    remote_exec "$server" "$port" "cat /tmp/new_cron_entry.tmp"
+    
+    # Используем команду для добавления новой записи в crontab напрямую
+    log_info "Добавление задачи в crontab..."
+    if ! remote_exec "$server" "$port" "crontab -l 2>/dev/null | { cat; cat /tmp/new_cron_entry.tmp; } | crontab -"; then
+        log_error "Не удалось добавить задачу в crontab"
+        remote_exec "$server" "$port" "rm -f /tmp/new_cron_entry.tmp"
+        rm -f "$temp_file"
+        return 1
+    fi
+    
+    # Проверяем, что запись добавлена
+    if ! remote_exec "$server" "$port" "crontab -l | grep -q '$script_path'"; then
+        log_error "Запись не добавлена в crontab после установки"
+        rm -f "$temp_file"
+        return 1
+    fi
+    
+    # Очищаем временные файлы
+    remote_exec "$server" "$port" "rm -f /tmp/new_cron_entry.tmp"
+    rm -f "$temp_file"
+    
+    log_info "Автоматические бэкапы настроены с частотой: $frequency"
     return 0
 } 
