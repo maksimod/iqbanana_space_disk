@@ -453,78 +453,77 @@ setup_automatic_backups() {
         return 1
     fi
     
-    # Тщательно проверяем, существует ли уже такая запись в crontab
-    if remote_exec "$server" "$port" "crontab -l 2>/dev/null | grep -F '$script_path'"; then
-        log_info "Обнаружена существующая запись для скрипта $script_path в crontab."
+    log_info "Настройка crontab для запуска бэкапов: $cron_entry"
+    
+    # Создаем временный файл локально
+    local temp_file=$(mktemp)
+    
+    # Ищем прямым методом - существует ли уже запись для бэкапов
+    if remote_exec "$server" "$port" "crontab -l 2>/dev/null | grep -q \"$script_path\""; then
+        log_info "Найдена существующая запись для бэкапов, обновляем"
         
-        # Создаем временный файл для обновленного crontab
-        local temp_file=$(mktemp)
+        # Сначала получаем текущий crontab с сервера без строк с нашим скриптом
+        remote_exec "$server" "$port" "crontab -l 2>/dev/null | grep -v \"$script_path\"" > "$temp_file" || echo "" > "$temp_file"
         
-        # Получаем текущий crontab и удаляем все записи с нашим скриптом
-        remote_exec "$server" "$port" "crontab -l 2>/dev/null | grep -v '$script_path'" > "$temp_file"
-        
-        # Добавляем новую запись
-        echo "$cron_entry" >> "$temp_file"
-        
-        # Отправляем обновленный файл на сервер
-        if ! remote_exec "$server" "$port" "cat > /tmp/new_crontab.tmp" < "$temp_file"; then
-            log_error "Не удалось отправить обновленный файл crontab на сервер"
-            rm -f "$temp_file"
-            return 1
+        # Если файл пустой, добавляем комментарий
+        if [ ! -s "$temp_file" ]; then
+            echo "# Crontab для автоматических бэкапов" > "$temp_file"
         fi
+    else
+        log_info "Не найдено существующих записей для бэкапов, создаем новую"
         
-        # Устанавливаем обновленный crontab
-        if ! remote_exec "$server" "$port" "crontab /tmp/new_crontab.tmp"; then
-            log_error "Не удалось установить обновленный crontab"
-            remote_exec "$server" "$port" "rm -f /tmp/new_crontab.tmp"
-            rm -f "$temp_file"
-            return 1
+        # Получаем текущий crontab, если есть
+        remote_exec "$server" "$port" "crontab -l 2>/dev/null" > "$temp_file" || echo "" > "$temp_file"
+        
+        # Если файл пустой, добавляем комментарий
+        if [ ! -s "$temp_file" ]; then
+            echo "# Crontab для автоматических бэкапов" > "$temp_file"
         fi
-        
-        # Очищаем временные файлы
-        remote_exec "$server" "$port" "rm -f /tmp/new_crontab.tmp"
-        rm -f "$temp_file"
-        
-        log_info "Существующая запись обновлена с частотой: $frequency"
-        return 0
     fi
     
-    # Если записи нет, добавляем новую
-    log_info "Добавление новой записи для скрипта $script_path в crontab"
+    # Добавляем новую запись для бэкапов
+    echo "$cron_entry" >> "$temp_file"
     
-    # Создаем файл с новой записью
-    local temp_file=$(mktemp)
-    echo "$cron_entry" > "$temp_file"
+    log_info "Новое содержимое crontab:"
+    cat "$temp_file"
     
-    # Отправляем файл на сервер
-    if ! remote_exec "$server" "$port" "cat > /tmp/new_cron_entry.tmp" < "$temp_file"; then
-        log_error "Не удалось отправить файл с новой задачей cron на сервер"
+    # Создаем временные файлы на сервере
+    remote_exec "$server" "$port" "touch /tmp/crontab.new /tmp/crontab.bak"
+    
+    # Сохраняем текущий crontab как бэкап
+    remote_exec "$server" "$port" "crontab -l > /tmp/crontab.bak 2>/dev/null || echo '# Crontab backup' > /tmp/crontab.bak"
+    
+    # Отправляем новый crontab на сервер
+    if ! remote_exec "$server" "$port" "cat > /tmp/crontab.new" < "$temp_file"; then
+        log_error "Не удалось отправить новый crontab на сервер"
         rm -f "$temp_file"
         return 1
     fi
     
-    # Проверяем содержимое файла
-    log_info "Новая задача cron:"
-    remote_exec "$server" "$port" "cat /tmp/new_cron_entry.tmp"
+    # Проверяем содержимое crontab перед установкой
+    log_info "Содержимое нового crontab на сервере:"
+    remote_exec "$server" "$port" "cat /tmp/crontab.new"
     
-    # Используем команду для добавления новой записи в crontab напрямую
-    log_info "Добавление задачи в crontab..."
-    if ! remote_exec "$server" "$port" "crontab -l 2>/dev/null | { cat; cat /tmp/new_cron_entry.tmp; } | crontab -"; then
-        log_error "Не удалось добавить задачу в crontab"
-        remote_exec "$server" "$port" "rm -f /tmp/new_cron_entry.tmp"
+    # Устанавливаем новый crontab
+    if ! remote_exec "$server" "$port" "crontab /tmp/crontab.new"; then
+        log_error "Не удалось установить новый crontab"
+        log_info "Восстанавливаем предыдущий crontab"
+        remote_exec "$server" "$port" "crontab /tmp/crontab.bak"
+        remote_exec "$server" "$port" "rm -f /tmp/crontab.new /tmp/crontab.bak"
         rm -f "$temp_file"
         return 1
     fi
     
     # Проверяем, что запись добавлена
-    if ! remote_exec "$server" "$port" "crontab -l | grep -q '$script_path'"; then
-        log_error "Запись не добавлена в crontab после установки"
+    if ! remote_exec "$server" "$port" "crontab -l | grep -q \"$script_path\""; then
+        log_error "Запись не была добавлена в crontab"
+        remote_exec "$server" "$port" "rm -f /tmp/crontab.new /tmp/crontab.bak"
         rm -f "$temp_file"
         return 1
     fi
     
     # Очищаем временные файлы
-    remote_exec "$server" "$port" "rm -f /tmp/new_cron_entry.tmp"
+    remote_exec "$server" "$port" "rm -f /tmp/crontab.new /tmp/crontab.bak"
     rm -f "$temp_file"
     
     log_info "Автоматические бэкапы настроены с частотой: $frequency"

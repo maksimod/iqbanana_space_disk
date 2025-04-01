@@ -203,12 +203,14 @@ create_backup
 rm -f "$LOCK_FILE"
 EOF
 
-# Заменяем переменные в скрипте
-sed -i "s|###BORG_PASSPHRASE###|$BORG_PASSPHRASE|g" /tmp/backup_runner.sh
-sed -i "s|###SOURCE_UUID###|$SOURCE_UUID|g" /tmp/backup_runner.sh
-sed -i "s|###SOURCE_DISK###|$SOURCE_DISK|g" /tmp/backup_runner.sh
-sed -i "s|###REPO_PATH###|$REPO_PATH|g" /tmp/backup_runner.sh
-sed -i "s|###MAX_BACKUPS###|$MAX_BACKUPS|g" /tmp/backup_runner.sh
+# Заменяем переменные в скрипте - используем экранирование для специальных символов
+sed -i "s|###BORG_PASSPHRASE###|${BORG_PASSPHRASE}|g" /tmp/backup_runner.sh
+# Экранируем UUID, чтобы избежать проблем с sed (исправленная версия)
+SOURCE_UUID_ESCAPED=$(printf '%s\n' "$SOURCE_UUID" | sed 's:[\/&\.]:\\&:g')
+sed -i "s|###SOURCE_UUID###|${SOURCE_UUID_ESCAPED}|g" /tmp/backup_runner.sh
+sed -i "s|###SOURCE_DISK###|${SOURCE_DISK}|g" /tmp/backup_runner.sh
+sed -i "s|###REPO_PATH###|${REPO_PATH}|g" /tmp/backup_runner.sh
+sed -i "s|###MAX_BACKUPS###|${MAX_BACKUPS}|g" /tmp/backup_runner.sh
 sed -i "s|###LOG_FILE###|/root/backup.log|g" /tmp/backup_runner.sh
 
 # Копируем скрипт на сервер
