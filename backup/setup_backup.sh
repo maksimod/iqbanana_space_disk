@@ -84,6 +84,60 @@ SOURCE_UUID=$(echo "$SOURCE_UUID" | tr -d '[:space:]')
 
 log_info "UUID источника: $SOURCE_UUID"
 
+# Функция для определения имени устройства по UUID
+get_device_by_uuid() {
+    local server=$1
+    local port=$2
+    local uuid=$3
+    local output=$(remote_exec "$server" "$port" "blkid | grep -i \"$uuid\" | cut -d: -f1")
+    # Извлекаем только строку с путем устройства
+    local device=$(echo "$output" | grep -o '/dev/[a-z0-9]*' | head -n 1)
+    echo "$device"
+}
+
+# Определяем диски по UUID
+if [ -n "$SOURCE_UUID" ]; then
+    SOURCE_DEVICE=$(get_device_by_uuid "$BACKUP_SERVER" "$server_port" "$SOURCE_UUID")
+    if [ -z "$SOURCE_DEVICE" ]; then
+        log_error "Не удалось найти устройство с UUID $SOURCE_UUID"
+        # Пытаемся использовать имя устройства как запасной вариант
+        SOURCE_DEVICE="/dev/$SOURCE_DISK"
+        log_warning "Используем имя устройства $SOURCE_DEVICE вместо UUID"
+    else
+        log_info "Найдено устройство $SOURCE_DEVICE с UUID $SOURCE_UUID"
+    fi
+else
+    # Если UUID не указан, используем имя устройства
+    SOURCE_DEVICE="/dev/$SOURCE_DISK"
+    log_warning "UUID источника не найден, используем имя устройства $SOURCE_DEVICE"
+    
+    # Пытаемся получить UUID по имени устройства
+    SOURCE_UUID=$(remote_exec "$BACKUP_SERVER" "$server_port" "blkid -s UUID -o value $SOURCE_DEVICE" | grep -o -E '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -n 1)
+    if [ -n "$SOURCE_UUID" ]; then
+        log_info "Определен UUID $SOURCE_UUID для устройства $SOURCE_DEVICE"
+    fi
+fi
+
+if [ -n "$TARGET_UUID" ]; then
+    TARGET_DEVICE=$(get_device_by_uuid "$BACKUP_SERVER" "$server_port" "$TARGET_UUID")
+    if [ -z "$TARGET_DEVICE" ]; then
+        log_error "Не удалось найти устройство с UUID $TARGET_UUID"
+        TARGET_DEVICE="/dev/$TARGET_DISK"
+        log_warning "Используем имя устройства $TARGET_DEVICE вместо UUID"
+    else
+        log_info "Найдено устройство $TARGET_DEVICE с UUID $TARGET_UUID"
+    fi
+else
+    TARGET_DEVICE="/dev/$TARGET_DISK"
+    log_warning "UUID целевого диска не найден, используем имя устройства $TARGET_DEVICE"
+    
+    # Пытаемся получить UUID по имени устройства
+    TARGET_UUID=$(remote_exec "$BACKUP_SERVER" "$server_port" "blkid -s UUID -o value $TARGET_DEVICE" | grep -o -E '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -n 1)
+    if [ -n "$TARGET_UUID" ]; then
+        log_info "Определен UUID $TARGET_UUID для устройства $TARGET_DEVICE"
+    fi
+fi
+
 # Создаем скрипт бэкапа
 cat > /tmp/backup_runner.sh << 'EOF'
 #!/bin/bash

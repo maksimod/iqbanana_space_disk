@@ -279,15 +279,33 @@ prepare_target_disk() {
     # Обновляем fstab для автоматического монтирования при перезагрузке
     log_info "Настройка автоматического монтирования диска /dev/$disk при перезагрузке"
     
-    # Получаем UUID диска
-    local disk_uuid=$(remote_exec "$server" "$port" "blkid -s UUID -o value /dev/$disk")
+    # Получаем UUID диска без вывода отладочной информации (решение проблемы)
+    local disk_uuid=$(remote_exec "$server" "$port" "blkid -s UUID -o value /dev/$disk" | grep -o -E '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -n 1)
     
-    # Проверяем, есть ли уже запись в fstab
-    if ! remote_exec "$server" "$port" "grep -q '$mount_point' /etc/fstab"; then
-        # Добавляем запись в fstab с опцией nofail, чтобы система загружалась даже без диска
-        remote_exec "$server" "$port" "echo 'UUID=$disk_uuid $mount_point $fs_type defaults,nofail 0 2' >> /etc/fstab"
-        log_info "Добавлена запись в fstab с файловой системой $fs_type и опцией nofail - система загрузится даже при отсутствии диска бэкапа"
+    # Проверяем полученный UUID
+    if [ -z "$disk_uuid" ]; then
+        log_error "Не удалось получить UUID для диска /dev/$disk"
+        return 1
     fi
+    
+    log_info "Получен UUID диска: $disk_uuid"
+    
+    # Удаляем старые записи этой точки монтирования из fstab
+    log_info "Удаление старых записей для $mount_point из fstab"
+    remote_exec "$server" "$port" "sed -i '\\,\\s$mount_point\\s,d' /etc/fstab"
+    
+    # Проверяем, есть ли запись для диска по UUID
+    if remote_exec "$server" "$port" "grep -q 'UUID=$disk_uuid' /etc/fstab"; then
+        log_warning "Запись с UUID=$disk_uuid уже существует в fstab. Удаляем."
+        remote_exec "$server" "$port" "sed -i '/UUID=$disk_uuid/d' /etc/fstab"
+    fi
+    
+    # Добавляем запись в fstab с опцией nofail
+    log_info "Добавление новой записи для точки монтирования $mount_point в fstab"
+    remote_exec "$server" "$port" "echo 'UUID=$disk_uuid $mount_point $fs_type defaults,nofail 0 2' >> /etc/fstab"
+    
+    log_info "Запись в fstab успешно добавлена. Проверка fstab:"
+    remote_exec "$server" "$port" "tail -n 5 /etc/fstab | grep -v '^#'"
     
     log_info "Диск /dev/$disk успешно подготовлен и смонтирован в $mount_point"
     return 0
@@ -301,10 +319,32 @@ init_borg_repo() {
     
     log_info "Инициализация репозитория Borg в $repo_path на сервере $server"
     
-    # Проверяем, существует ли уже репозиторий
-    if remote_exec "$server" "$port" "test -d $repo_path/data" &>/dev/null; then
-        log_info "Репозиторий Borg уже существует в $repo_path"
+    # Проверяем, существует ли уже репозиторий (более надежная проверка)
+    if remote_exec "$server" "$port" "BORG_PASSPHRASE='$BORG_PASSPHRASE' borg list $repo_path 2>/dev/null" &>/dev/null; then
+        log_info "Репозиторий Borg уже существует и доступен в $repo_path"
         return 0
+    fi
+    
+    # Проверяем, существует ли директория репозитория
+    if remote_exec "$server" "$port" "test -d $repo_path" &>/dev/null; then
+        # Проверяем, есть ли проблемы с репозиторием
+        log_warning "Директория $repo_path существует, но репозиторий недоступен или повреждён"
+        
+        # Пытаемся восстановить блокировку
+        if remote_exec "$server" "$port" "test -d $repo_path/lock || test -f $repo_path/lock.roster" &>/dev/null; then
+            log_warning "Обнаружена блокировка репозитория. Попытка очистки..."
+            remote_exec "$server" "$port" "BORG_PASSPHRASE='$BORG_PASSPHRASE' borg break-lock $repo_path"
+            
+            # Проверяем, помогла ли очистка блокировки
+            if remote_exec "$server" "$port" "BORG_PASSPHRASE='$BORG_PASSPHRASE' borg list $repo_path 2>/dev/null" &>/dev/null; then
+                log_info "Блокировка репозитория успешно снята. Репозиторий доступен."
+                return 0
+            fi
+        fi
+        
+        # Если репозиторий ещё не создан или поврежден, переименовываем его
+        log_warning "Репозиторий недоступен даже после снятия блокировки. Переименовываем директорию."
+        remote_exec "$server" "$port" "mv $repo_path ${repo_path}_bak_$(date +%Y%m%d%H%M%S)"
     fi
     
     # Создаем директорию для репозитория
