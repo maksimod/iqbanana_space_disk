@@ -76,7 +76,7 @@ setup_nfs_exports() {
                 umount -f -l \$mount_point 2>/dev/null || true
             done
             
-            # Размонтируем все NFS шар
+            # Размонтируем все NFS шары
             for mount_point in \$(mount | grep 'nfs' | awk '{print \$3}'); do
                 echo \"Размонтирование NFS \$mount_point\"
                 umount -f -l \$mount_point 2>/dev/null || true
@@ -98,43 +98,71 @@ setup_nfs_exports() {
             continue
         fi
         
-        # Обработка обычного диска
-        IFS=':' read -r server disk letter <<< "$disk_config"
+        # Обработка обычного диска - в формате server:uuid
+        IFS=':' read -r server uuid <<< "$disk_config"
         
-        echo -e "${GREEN}===== Настройка сервера $server для диска $disk =====${NC}"
+        echo -e "${GREEN}===== Настройка сервера $server для диска с UUID $uuid =====${NC}"
         
         # Получаем порт для сервера
-        local port=$(echo "${SSH_PORTS[@]}" | grep -o "$server:[0-9]*" | cut -d':' -f2)
+        port=$(get_server_port "$server")
         if [ -z "$port" ]; then
             echo -e "${RED}Ошибка: Не найден порт для сервера $server${NC}"
             continue
         fi
         
-        # Проверяем существование диска - улучшенный метод
-        echo -e "${YELLOW}Проверка существования диска /dev/$disk на сервере $server...${NC}"
-        # Первая проверка - просто выполнить ls на диске
-        disk_check=$(remote_exec "$server" "$port" "ls -l /dev/$disk 2>/dev/null | wc -l")
+        # Определяем имя физического устройства по UUID
+        echo -e "${YELLOW}Определение физического устройства по UUID на сервере $server...${NC}"
         
-        if [[ "$disk_check" == "0" ]] || [[ -z "$disk_check" ]]; then
-            echo -e "${RED}ОШИБКА: Диск /dev/$disk не существует на сервере $server${NC}"
+        # Создаем временный файл для команды и результата
+        local tmp_cmd_file=$(mktemp)
+        local tmp_result_file=$(mktemp)
+        
+        # Записываем команду во временный файл
+        echo "blkid | grep -i $uuid | awk -F: '{print \$1}' | xargs basename" > "$tmp_cmd_file"
+        
+        # Выполняем команду на сервере и сохраняем результат в файл
+        remote_exec "$server" "$port" "$(cat $tmp_cmd_file)" > "$tmp_result_file"
+        
+        # Извлекаем только строку имени диска из результата
+        physical_disk=$(cat "$tmp_result_file" | grep -v "Выполнение команды" | grep -v "✓ Команда успешно" | tail -1 | tr -d '\n')
+        
+        # Удаляем временные файлы
+        rm -f "$tmp_cmd_file" "$tmp_result_file"
+        
+        # Проверяем, содержит ли результат 'sd' (признак имени диска)
+        if [[ ! "$physical_disk" =~ sd ]]; then
+            echo -e "${YELLOW}Результат не содержит корректное имя диска, запрашиваем явно список устройств...${NC}"
+            
+            # Запросим напрямую все устройства и попробуем найти нужное
+            tmp_result_file=$(mktemp)
+            remote_exec "$server" "$port" "for d in /dev/sd*; do echo \"\$d \$(blkid -s UUID -o value \$d 2>/dev/null)\"; done" > "$tmp_result_file"
+            
+            # Извлекаем диск по UUID
+            physical_disk=$(cat "$tmp_result_file" | grep -i "$uuid" | awk '{print $1}' | xargs basename)
+            rm -f "$tmp_result_file"
+        fi
+        
+        # Проверяем полученный результат
+        if [[ -z "$physical_disk" || ! "$physical_disk" =~ sd ]]; then
+            echo -e "${RED}ОШИБКА: Не удалось найти устройство с UUID $uuid на сервере $server${NC}"
             echo -e "${YELLOW}Список доступных дисков:${NC}"
-            remote_exec "$server" "$port" "ls -l /dev/sd* 2>/dev/null || echo 'Диски не найдены'"
+            remote_exec "$server" "$port" "blkid -s UUID"
             continue
         else
-            echo -e "${GREEN}✓ Диск /dev/$disk существует на сервере $server${NC}"
+            echo -e "${GREEN}✓ Найдено устройство $physical_disk с UUID $uuid на сервере $server${NC}"
         fi
         
         # Сначала проверяем и устанавливаем NFS сервер если нужно
         echo -e "${YELLOW}Проверка наличия NFS сервера на $server...${NC}"
-        nfs_installed=$(remote_exec "$server" "$port" "command -v exportfs &>/dev/null && echo 'installed' || echo 'not_installed'")
+        nfs_installed=$(remote_exec "$server" "$port" "command -v exportfs &>/dev/null && echo 'installed' || echo 'not_installed'" | grep installed)
         
-        if [[ "$nfs_installed" != *"installed"* ]]; then
+        if [[ -z "$nfs_installed" ]]; then
             echo -e "${YELLOW}Установка NFS сервера на $server...${NC}"
             remote_exec "$server" "$port" "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nfs-kernel-server"
             
             # Проверяем, что NFS сервер установлен
-            nfs_check=$(remote_exec "$server" "$port" "systemctl is-active nfs-kernel-server || systemctl is-active nfs-server || echo 'not_running'")
-            if [[ "$nfs_check" == "not_running" ]]; then
+            nfs_check=$(remote_exec "$server" "$port" "systemctl is-active nfs-kernel-server || systemctl is-active nfs-server || echo 'not_running'" | grep -v "not_running")
+            if [[ -z "$nfs_check" ]]; then
                 echo -e "${RED}Ошибка: NFS сервер не запущен на $server после установки${NC}"
                 echo -e "${YELLOW}Пытаемся запустить сервис вручную...${NC}"
                 remote_exec "$server" "$port" "systemctl start nfs-kernel-server || systemctl start nfs-server"
@@ -143,188 +171,158 @@ setup_nfs_exports() {
             echo -e "${GREEN}✓ NFS сервер уже установлен на $server${NC}"
         fi
         
-        # Настройка сервера
-        server_cmd="
-        echo \"Настройка диска $disk на сервере $server\"
+        # Создаем скрипт для настройки сервера, который будет перемонтировать диск с sdb на UUID
+        remote_script_file="/tmp/setup_nfs_export_${uuid}.sh"
         
-        # Размонтируем все несистемные диски перед очисткой fstab
-        echo \"Размонтирование всех несистемных дисков...\"
-        for mount_point in \$(mount | grep '/mnt/storage/' | awk '{print \$3}'); do
-            echo \"Размонтирование \$mount_point\"
-            umount -f -l \$mount_point 2>/dev/null || true
-        done
+        echo -e "${YELLOW}Создание скрипта для настройки сервера...${NC}"
+        cat << EOF > "/tmp/setup_nfs_script.sh"
+#!/bin/bash
+set -e
+
+echo "Настройка сервера для использования UUID вместо имени физического диска"
+
+# Проверка существования диска
+if [ ! -e "/dev/$physical_disk" ]; then
+    echo "ОШИБКА: Диск /dev/$physical_disk не существует!"
+    exit 1
+fi
+
+# Проверяем UUID диска
+DISK_UUID=\$(blkid -s UUID -o value /dev/$physical_disk 2>/dev/null)
+if [ "\$DISK_UUID" != "$uuid" ]; then
+    echo "ВНИМАНИЕ: UUID диска (\$DISK_UUID) не соответствует указанному ($uuid)"
+fi
+
+# Смотрим текущие монтирования
+echo "Текущие монтирования:"
+mount | grep "/mnt/storage/"
+
+# Смотрим текущие экспорты
+echo "Текущие экспорты:"
+cat /etc/exports
+
+# Создаем новую директорию для монтирования по UUID
+echo "Создание директории /mnt/storage/$uuid для монтирования по UUID"
+mkdir -p /mnt/storage/$uuid
+
+# Размонтируем все пути, связанные с этим диском
+umount -f -l /dev/$physical_disk 2>/dev/null || true
+umount -f -l /mnt/storage/$physical_disk 2>/dev/null || true
+umount -f -l /mnt/storage/sdb 2>/dev/null || true
+umount -f -l /mnt/storage/$uuid 2>/dev/null || true
+
+# Монтируем диск в новую директорию по UUID
+echo "Монтирование /dev/$physical_disk в /mnt/storage/$uuid"
+FS_TYPE=\$(blkid -o value -s TYPE /dev/$physical_disk 2>/dev/null)
+mount -t \$FS_TYPE -o rw,noatime,nodiratime /dev/$physical_disk /mnt/storage/$uuid
+chmod -R 777 /mnt/storage/$uuid
+
+# Проверяем, что монтирование успешно
+if ! mount | grep -q "/mnt/storage/$uuid"; then
+    echo "ОШИБКА: Монтирование не удалось!"
+    exit 1
+fi
+
+# Обновляем fstab
+echo "Обновление fstab для использования UUID"
+FSTAB_TMP=\$(mktemp)
+grep -v "/mnt/storage/" /etc/fstab > \$FSTAB_TMP
+echo "UUID=\$DISK_UUID /mnt/storage/$uuid \$FS_TYPE rw,noatime,nodiratime 0 0" >> \$FSTAB_TMP
+mv \$FSTAB_TMP /etc/fstab
+
+# Обновляем NFS экспорты
+echo "Обновление NFS экспортов для использования UUID"
+EXPORTS_TMP=\$(mktemp)
+grep -v "/mnt/storage/" /etc/exports > \$EXPORTS_TMP
+echo "/mnt/storage/$uuid 192.168.0.103(rw,sync,no_subtree_check,no_root_squash,insecure)" >> \$EXPORTS_TMP
+mv \$EXPORTS_TMP /etc/exports
+
+# Перезапускаем NFS для применения изменений
+exportfs -ra
+systemctl restart nfs-kernel-server || systemctl restart nfs-server
+
+# Проверяем статус экспортов
+echo "Новые экспорты:"
+exportfs -v
+
+echo "Готово! Сервер настроен для использования UUID вместо имени диска"
+EOF
         
-        # Очистка fstab от несистемных записей
-        echo \"Очистка fstab от несистемных монтирований...\"
-        cp /etc/fstab /etc/fstab.backup_\$(date +\"%Y%m%d%H%M%S\")
+        # Копируем скрипт на сервер
+        echo -e "${YELLOW}Копирование скрипта на сервер $server...${NC}"
+        scp -P "$port" -o StrictHostKeyChecking=no -i "$SSH_KEY_PATH" /tmp/setup_nfs_script.sh "${SSH_USER}@${server}:${remote_script_file}" > /dev/null 2>&1
         
-        # Временный файл для нового fstab
-        TMP_FSTAB=\$(mktemp)
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}Ошибка при копировании скрипта на сервер!${NC}"
+            echo -e "${YELLOW}Пробуем альтернативный способ...${NC}"
+            
+            # Пробуем через временный файл и remote_exec
+            tmp_script=$(mktemp)
+            cat /tmp/setup_nfs_script.sh > "$tmp_script"
+            remote_exec "$server" "$port" "cat > ${remote_script_file} << 'EOFSCRIPT'
+$(cat $tmp_script)
+EOFSCRIPT"
+            rm -f "$tmp_script"
+        fi
         
-        # Определяем корневое устройство
-        ROOT_MOUNT=\$(findmnt -n -o SOURCE /)
-        ROOT_DISK=\$(lsblk -no pkname \"\$ROOT_MOUNT\" 2>/dev/null | xargs -I{} echo \"/dev/{}\")
+        # Делаем скрипт исполняемым и запускаем его
+        echo -e "${YELLOW}Запуск скрипта на сервере $server...${NC}"
+        remote_exec "$server" "$port" "chmod +x ${remote_script_file} && sudo ${remote_script_file}"
         
-        # Сохраняем только системные монтирования и комментарии
-        cat /etc/fstab | while read -r line; do
-            # Пропускаем пустые строки и комментарии
-            if [[ -z \"\$line\" || \"\$line\" =~ ^\s*# ]]; then
-                echo \"\$line\" >> \"\$TMP_FSTAB\"
-                continue
-            fi
+        # Удаляем временные файлы
+        rm -f /tmp/setup_nfs_script.sh
+        remote_exec "$server" "$port" "rm -f ${remote_script_file}" > /dev/null 2>&1
+        
+        echo -e "${GREEN}✓ Сервер $server успешно настроен для использования UUID вместо имени диска${NC}"
+    done
+    
+    # Проверяем успешность настройки экспортов
+    echo -e "${YELLOW}Проверка настройки NFS экспортов на всех серверах...${NC}"
+    for port_entry in "${SSH_PORTS[@]}"; do
+        server=$(echo $port_entry | cut -d':' -f1)
+        port=$(echo $port_entry | cut -d':' -f2)
+        
+        echo -e "${YELLOW}Экспорты NFS на сервере $server:${NC}"
+        exports=$(remote_exec "$server" "$port" "exportfs -v" | grep -v "Выполнение команды" | grep -v "✓ Команда успешно")
+        
+        # Проверяем, есть ли экспорты с /mnt/storage/sdb (неправильный формат)
+        if echo "$exports" | grep -q "/mnt/storage/sd"; then
+            echo -e "${RED}ВНИМАНИЕ: Обнаружены экспорты с использованием имени физического диска вместо UUID!${NC}"
+            echo "$exports" | grep "/mnt/storage/sd"
             
-            # Извлекаем устройство из строки fstab
-            device=\$(echo \"\$line\" | awk '{print \$1}')
-            mountpoint=\$(echo \"\$line\" | awk '{print \$2}')
-            
-            # Если устройство начинается с UUID=, получаем соответствующее блочное устройство
-            if [[ \"\$device\" =~ ^UUID= ]]; then
-                uuid=\$(echo \"\$device\" | cut -d= -f2)
-                device=\$(blkid -U \"\$uuid\" 2>/dev/null || echo \"\")
-            fi
-            
-            # Пропускаем несистемные монтирования
-            if [[ \"\$line\" =~ /mnt/storage || \"\$mountpoint\" =~ ^/mnt ]]; then
-                echo \"Удаляем из fstab: \$line\"
-                continue
-            fi
-            
-            # Проверяем, является ли это системным монтированием
-            if [[ -z \"\$device\" || \"\$device\" = \"\$ROOT_MOUNT\" || \"\$mountpoint\" = \"/\" || \"\$mountpoint\" =~ ^/(boot|home|usr|var)$ ]]; then
-                echo \"Сохраняем системное монтирование: \$line\"
-                echo \"\$line\" >> \"\$TMP_FSTAB\"
-                continue
-            fi
-            
-            # Для всех других устройств проверяем, являются ли они частью корневого диска
-            if [[ \"\$device\" =~ ^/dev/ ]]; then
-                disk_name=\$(lsblk -no pkname \"\$device\" 2>/dev/null)
-                if [ -n \"\$disk_name\" ] && [ \"/dev/\$disk_name\" = \"\$ROOT_DISK\" ]; then
-                    echo \"Сохраняем монтирование на системном диске: \$line\"
-                    echo \"\$line\" >> \"\$TMP_FSTAB\"
-                    continue
+            # Исправляем экспорты
+            for uuid in "${DISKS_TO_MOUNT[@]}"; do
+                IFS=':' read -r disk_server disk_uuid <<< "$uuid"
+                if [ "$disk_server" = "$server" ]; then
+                    echo -e "${YELLOW}Исправление экспортов для UUID $disk_uuid на сервере $server...${NC}"
+                    
+                    # Получаем диск по UUID
+                    physical_disk=$(remote_exec "$server" "$port" "blkid | grep -i $disk_uuid | awk -F: '{print \$1}' | xargs basename" | grep -v "Выполнение команды" | grep -v "✓ Команда успешно" | tail -1 | tr -d '\n')
+                    
+                    if [ -n "$physical_disk" ]; then
+                        echo -e "${YELLOW}Найден диск $physical_disk с UUID $disk_uuid${NC}"
+                        
+                        # Исправляем экспорты
+                        remote_exec "$server" "$port" "
+                            # Исправляем экспорты
+                            sed -i 's|/mnt/storage/$physical_disk|/mnt/storage/$disk_uuid|g' /etc/exports
+                            
+                            # Создаем директорию для UUID, если не существует
+                            mkdir -p /mnt/storage/$disk_uuid
+                            
+                            # Перемонтируем диск
+                            umount -f -l /mnt/storage/$physical_disk 2>/dev/null || true
+                            FS_TYPE=\$(blkid -o value -s TYPE /dev/$physical_disk 2>/dev/null)
+                            mount -t \$FS_TYPE -o rw,noatime,nodiratime /dev/$physical_disk /mnt/storage/$disk_uuid
+                            
+                            # Обновляем экспорты
+                            exportfs -ra
+                        "
+                    fi
                 fi
-            fi
-            
-            # Если не определились - сохраняем как комментарий
-            echo \"Закомментировано неопределенное монтирование: \$line\"
-            echo \"# \$line\" >> \"\$TMP_FSTAB\"
-        done
-        
-        # Копируем обновленный fstab
-        cp \"\$TMP_FSTAB\" /etc/fstab
-        rm \"\$TMP_FSTAB\"
-        
-        echo \"✓ fstab очищен от несистемных монтирований\"
-        
-        # Проверяем существование диска
-        if [ ! -e \"/dev/$disk\" ]; then
-            echo \"ОШИБКА: Диск /dev/$disk не существует!\"
-            exit 1
-        fi
-        
-        # Создаем точку монтирования
-        mkdir -p /mnt/storage/$disk
-        
-        # Проверяем UUID диска
-        UUID=\$(blkid -s UUID -o value /dev/$disk 2>/dev/null)
-        FS_TYPE=\$(blkid -o value -s TYPE /dev/$disk 2>/dev/null)
-        
-        echo \"Тип файловой системы: \$FS_TYPE\"
-        echo \"UUID диска: \$UUID\"
-        
-        if [ -z \"\$FS_TYPE\" ]; then
-            echo \"Диск /dev/$disk не содержит файловой системы. Создаем XFS...\"
-            mkfs.xfs -f /dev/$disk
-            FS_TYPE=\"xfs\"
-            UUID=\$(blkid -s UUID -o value /dev/$disk)
-            echo \"Новый UUID диска: \$UUID\"
-        fi
-        
-        if [ -z \"\$UUID\" ]; then
-            echo \"ОШИБКА: Не удалось получить UUID для диска /dev/$disk\"
-            exit 1
-        fi
-        
-        echo \"Монтирование /dev/$disk (\$FS_TYPE, UUID=\$UUID) в /mnt/storage/$disk\"
-        
-        # Размонтируем все существующие монтирования диска
-        echo \"Размонтирование всех существующих монтирований диска /dev/$disk\"
-        umount -f -l /dev/$disk 2>/dev/null || true
-        umount -f -l /mnt/storage/$disk 2>/dev/null || true
-        
-        # Проверяем, не монтируется ли диск в другую точку
-        current_mount=\$(mount | grep \"/dev/$disk\" | awk '{print \$3}')
-        if [ -n \"\$current_mount\" ]; then
-            echo \"Внимание: Диск /dev/$disk монтируется в \$current_mount\"
-            umount -f -l \$current_mount 2>/dev/null || true
-        fi
-        
-        # Проверяем, не монтируется ли другой диск в нашу точку монтирования
-        current_device=\$(mount | grep \"/mnt/storage/$disk\" | awk '{print \$1}')
-        if [ -n \"\$current_device\" ]; then
-            echo \"Внимание: Точка /mnt/storage/$disk занята устройством \$current_device\"
-            umount -f -l /mnt/storage/$disk 2>/dev/null || true
-        fi
-        
-        # Монтируем диск
-        mount -t \$FS_TYPE -o $MOUNT_OPTIONS /dev/$disk /mnt/storage/$disk
-        
-        # Проверка монтирования
-        if mount | grep -q \"/dev/$disk on /mnt/storage/$disk\"; then
-            echo \"✓ Диск /dev/$disk успешно смонтирован в /mnt/storage/$disk\"
-            
-            # Обновляем fstab
-            grep -v \"/mnt/storage/$disk\" /etc/fstab > /tmp/fstab.new
-            mv /tmp/fstab.new /etc/fstab
-            echo \"UUID=\$UUID /mnt/storage/$disk \$FS_TYPE $MOUNT_OPTIONS 0 0\" >> /etc/fstab
-            
-            # Сохраняем UUID диска для последующего использования в монтировании NFS
-            echo \"\$UUID\" > /mnt/storage/$disk/.disk_uuid
-            
-            # Настройка прав доступа
-            chmod -R 777 /mnt/storage/$disk
+            done
         else
-            echo \"✗ Ошибка монтирования диска /dev/$disk в /mnt/storage/$disk\"
-            exit 1
-        fi
-        
-        # Убеждаемся, что NFS-server установлен
-        if ! command -v exportfs &>/dev/null; then
-            echo \"Установка NFS сервера...\"
-            apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nfs-kernel-server
-            systemctl start nfs-kernel-server
-        fi
-        
-        # Настройка NFS экспорта
-        mkdir -p /etc/exports.d
-        
-        # Очищаем все старые экспорты
-        echo \"Очистка старых NFS экспортов...\"
-        rm -f /etc/exports.d/*.exports
-        echo \"\" > /etc/exports
-        
-        # Добавляем только нужный экспорт
-        echo \"/mnt/storage/$disk $CLIENT_IP(rw,sync,no_subtree_check,no_root_squash,insecure)\" > /etc/exports.d/$disk.exports
-        
-        # Объединяем все файлы экспортов
-        cat /etc/exports.d/*.exports > /etc/exports
-        
-        # Перезапуск NFS
-        exportfs -ra
-        systemctl restart nfs-kernel-server
-        
-        # Проверка экспортов
-        echo \"Экспорты NFS:\"
-        exportfs -v
-        "
-        
-        # Выполнение команды на сервере
-        if ! remote_exec "$server" "$port" "$server_cmd"; then
-            echo -e "${RED}Ошибка при настройке сервера $server${NC}"
-            echo -e "${YELLOW}Проверка статуса NFS сервера...${NC}"
-            remote_exec "$server" "$port" "systemctl status nfs-kernel-server || systemctl status nfs-server"
-            continue
+            echo -e "${GREEN}✓ Экспорты на сервере $server настроены корректно${NC}"
         fi
     done
 }
@@ -333,293 +331,452 @@ setup_nfs_exports() {
 mount_nfs_shares() {
     echo -e "${GREEN}Монтирование NFS шар...${NC}"
     
-    # Размонтируем все существующие NFS шар перед очисткой fstab
+    # Сначала размонтируем все старые NFS шары
     echo -e "${YELLOW}Размонтирование всех существующих NFS шар...${NC}"
-    for mount_point in $(mount | grep "nfs" | awk '{print $3}'); do
-        echo "Размонтирование $mount_point"
-        umount -f -l $mount_point 2>/dev/null || true
+    
+    # Размонтирование всех NFS-монтирований
+    for mount_point in $(mount | grep -E 'nfs|type nfs' | awk '{print $3}'); do
+        echo "Размонтирование $mount_point..."
+        umount -f -l "$mount_point" 2>/dev/null || true
     done
     
-    # Очистка fstab от всех несистемных записей
-    echo -e "${YELLOW}Очистка fstab от всех несистемных монтирований...${NC}"
-    cp /etc/fstab /etc/fstab.backup_$(date +"%Y%m%d%H%M%S")
-    
-    # Временный файл для нового fstab
-    TMP_FSTAB=$(mktemp)
-    
-    # Определяем корневое устройство
-    ROOT_MOUNT=$(findmnt -n -o SOURCE /)
-    ROOT_DISK=$(lsblk -no pkname "$ROOT_MOUNT" 2>/dev/null | xargs -I{} echo "/dev/{}")
-    
-    # Сохраняем только системные монтирования и комментарии
-    cat /etc/fstab | while read -r line; do
-        # Пропускаем пустые строки и комментарии
-        if [[ -z "$line" || "$line" =~ ^\s*# ]]; then
-            echo "$line" >> "$TMP_FSTAB"
-            continue
-        fi
-        
-        # Извлекаем устройство из строки fstab
-        device=$(echo "$line" | awk '{print $1}')
-        mountpoint=$(echo "$line" | awk '{print $2}')
-        
-        # Если устройство начинается с UUID=, получаем соответствующее блочное устройство
-        if [[ "$device" =~ ^UUID= ]]; then
-            uuid=$(echo "$device" | cut -d= -f2)
-            device=$(blkid -U "$uuid" 2>/dev/null || echo "")
-        fi
-        
-        # Пропускаем несистемные монтирования и NFS
-        if [[ "$line" =~ /mnt/storage || "$line" =~ nfs || "$mountpoint" =~ ^/mnt ]]; then
-            echo -e "${YELLOW}Удаляем из fstab: $line${NC}"
-            continue
-        fi
-        
-        # Проверяем, является ли это системным монтированием
-        if [[ -z "$device" || "$device" = "$ROOT_MOUNT" || "$mountpoint" = "/" || "$mountpoint" =~ ^/(boot|home|usr|var)$ ]]; then
-            echo -e "${GREEN}Сохраняем системное монтирование: $line${NC}"
-            echo "$line" >> "$TMP_FSTAB"
-            continue
-        fi
-        
-        # Для всех других устройств проверяем, являются ли они частью корневого диска
-        if [[ "$device" =~ ^/dev/ ]]; then
-            disk_name=$(lsblk -no pkname "$device" 2>/dev/null)
-            if [ -n "$disk_name" ] && [ "/dev/$disk_name" = "$ROOT_DISK" ]; then
-                echo -e "${GREEN}Сохраняем монтирование на системном диске: $line${NC}"
-                echo "$line" >> "$TMP_FSTAB"
-                continue
-            fi
-        fi
-        
-        # Если не определились - сохраняем как комментарий
-        echo -e "${YELLOW}Закомментировано неопределенное монтирование: $line${NC}"
-        echo "# $line" >> "$TMP_FSTAB"
-    done
-    
-    # Копируем обновленный fstab
-    cp "$TMP_FSTAB" /etc/fstab
-    rm "$TMP_FSTAB"
-    
-    echo -e "${GREEN}✓ fstab очищен от несистемных монтирований${NC}"
-    
-    # Добавляем комментарий о NFS монтированиях
-    echo "# NFS монтирования" >> /etc/fstab
-    
-    # Проверка, установлен ли nfs-common
-    if ! command -v mount.nfs &> /dev/null; then
-        echo "Утилита nfs-common не установлена. Устанавливаем..."
-        apt-get update && apt-get install -y nfs-common
-    fi
-    
-    # Сначала обрабатываем настроенные RAID-массива, если они есть
-    if [ -n "${CONFIGURED_RAIDS}" ]; then
-        for raid_mount in "${CONFIGURED_RAIDS[@]}"; do
-            IFS=':' read -r server mount_path letter <<< "$raid_mount"
-            echo "Обработка RAID-монтирования: $raid_mount"
-            BACKEND_DISKS+=("$letter:$mount_path")
+    # Размонтирование всех старых точек монтирования на всякий случай
+    if [ -d /mnt/storage/ ]; then
+        for mount_point in $(mount | grep "/mnt/storage/" | awk '{print $3}'); do
+            echo "Размонтирование старого пути $mount_point..."
+            umount -f -l "$mount_point" 2>/dev/null || true
         done
     fi
     
-    # Выполняем перезагрузку systemd демона перед монтированием
-    systemctl daemon-reload
+    # Очистка /etc/fstab от всех NFS-монтирований
+    echo -e "${YELLOW}Очистка fstab от NFS монтирований...${NC}"
+    tmp_fstab=$(mktemp)
+    grep -v ' nfs ' /etc/fstab > "$tmp_fstab"
+    cp "$tmp_fstab" /etc/fstab
+    rm -f "$tmp_fstab"
     
-    # Затем обрабатываем обычные диски
+    MOUNTED_DISKS=()
+    
     for disk_config in "${DISKS_TO_MOUNT[@]}"; do
-        # Пропускаем RAID-конфигурации
+        # Проверяем, является ли это RAID-конфигурацией
         if is_raid_config "$disk_config"; then
+            echo -e "${YELLOW}Пропускаем RAID-конфигурацию $disk_config${NC}"
             continue
         fi
         
-        # Обработка обычного диска
-        IFS=':' read -r server disk letter <<< "$disk_config"
-        
-        # Получаем порт для сервера
-        local port=$(echo "${SSH_PORTS[@]}" | grep -o "$server:[0-9]*" | cut -d':' -f2)
-        if [ -z "$port" ]; then
-            echo -e "${RED}Ошибка: Не найден порт для сервера $server${NC}"
-            continue
-        fi
-        
-        # Проверяем доступность NFS на сервере перед монтированием
-        echo -e "${YELLOW}Проверка доступности NFS на сервере $server...${NC}"
-        nfs_available=$(remote_exec "$server" "$port" "command -v exportfs &>/dev/null && echo 'available' || echo 'not_available'")
-        
-        if [[ "$nfs_available" != *"available"* ]]; then
-            echo -e "${RED}ОШИБКА: NFS сервер не доступен на $server${NC}"
-            echo -e "${YELLOW}Пытаемся установить NFS сервер...${NC}"
-            remote_exec "$server" "$port" "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nfs-kernel-server && systemctl start nfs-kernel-server"
-            sleep 5  # Даем время для запуска сервиса
-        fi
-        
-        # Получаем UUID диска с сервера
-        disk_uuid=$(remote_exec "$server" "$port" "cat /mnt/storage/$disk/.disk_uuid 2>/dev/null || echo ''")
-        
-        if [ -z "$disk_uuid" ]; then
-            echo -e "${YELLOW}Предупреждение: Не удалось получить UUID для диска $disk на сервере $server. Будет использовано стандартное монтирование.${NC}"
-        else
-            echo -e "${GREEN}Получен UUID диска $disk: $disk_uuid${NC}"
-        fi
-        
-        mount_point="$MOUNT_BASE/$server/$(basename /mnt/storage/$disk)"
+        # Обработка обычного диска - в формате server:uuid
+        IFS=':' read -r server uuid <<< "$disk_config"
         
         # Создание точки монтирования
-        mkdir -p $mount_point
+        mount_point="$MOUNT_BASE/$uuid"
+        mkdir -p "$mount_point"
         
-        # Размонтирование, если уже смонтировано
-        if mount | grep -q " on $mount_point "; then
-            echo "Размонтирование существующего $mount_point..."
-            umount -f -l $mount_point 2>/dev/null || true
+        # Проверяем, смонтирован ли уже этот диск
+        if mount | grep -q "$mount_point"; then
+            echo -e "${YELLOW}Размонтирование $mount_point...${NC}"
+            umount -f -l "$mount_point" 2>/dev/null || true
         fi
         
-        # Проверяем, не монтируется ли другой NFS шар в эту точку
-        current_nfs=$(mount | grep " on $mount_point " | grep "nfs")
-        if [ -n "$current_nfs" ]; then
-            echo "Внимание: Точка $mount_point занята другим NFS шаром"
-            umount -f -l $mount_point 2>/dev/null || true
-        fi
-        
-        # Проверка экспортов NFS перед монтированием
-        echo -e "${YELLOW}Проверка экспортов NFS на сервере $server...${NC}"
-        remote_exec "$server" "$port" "exportfs -rv"
-        
-        # Добавление в fstab с корректными опциями монтирования
-        grep -v "$mount_point" /etc/fstab > /tmp/fstab.new
-        mv /tmp/fstab.new /etc/fstab
-        echo "$server:/mnt/storage/$disk $mount_point nfs $NFS_MOUNT_OPTIONS 0 0" >> /etc/fstab
-        
-        # Применяем изменения fstab
-        systemctl daemon-reload
-        
-        # Монтирование через mount с опциями вручную
-        echo "Монтирование $server:/mnt/storage/$disk в $mount_point (Буква: $letter)"
-        
-        # Проверка порта NFS
-        echo -e "${YELLOW}Проверка открытых портов NFS на сервере $server...${NC}"
-        remote_exec "$server" "$port" "ss -tulnp | grep -E 'nfs|mount'"
-        
-        # Пробуем смонтировать с таймаутом и более подробной диагностикой
-        mount -t nfs -o $NFS_MOUNT_OPTIONS,timeo=10 $server:/mnt/storage/$disk $mount_point
-        
-        if mount | grep -q " on $mount_point "; then
-            echo -e "${GREEN}✓ Успешно смонтирован /mnt/storage/$disk с сервера $server (Буква: $letter)${NC}"
-            if [ -n "$disk_uuid" ]; then
-                echo -e "${GREEN}Диск имеет UUID: $disk_uuid${NC}"
+        # Проверяем доступность NFS сервера и экспортов
+        echo -e "${YELLOW}Проверка доступности NFS сервера $server...${NC}"
+        if ! timeout 5 rpcinfo -p "$server" &>/dev/null; then
+            echo -e "${RED}Сервер $server недоступен или не отвечает на RPC запросы${NC}"
+            port=$(get_server_port "$server")
+            if [ -n "$port" ]; then
+                echo -e "${YELLOW}Запуск NFS сервера на $server...${NC}"
+                remote_exec "$server" "$port" "systemctl restart nfs-kernel-server || systemctl restart nfs-server"
+                sleep 2
             fi
-            # Добавление в массив для конфигурации backend
-            BACKEND_DISKS+=("$letter:$mount_point")
-        else
-            echo -e "${RED}✗ Ошибка монтирования /mnt/storage/$disk с сервера $server${NC}"
-            echo -e "${YELLOW}Проверка доступности NFS:${NC}"
-            showmount -e $server 2>/dev/null || echo "Не удалось запросить экспорты NFS с сервера $server"
+        fi
+        
+        # Проверка наличия экспорта по UUID пути
+        echo -e "${YELLOW}Проверка наличия экспорта для UUID $uuid на сервере $server...${NC}"
+        
+        # Запрашиваем список экспортов с сервера
+        nfs_exports=$(showmount -e "$server" 2>/dev/null || echo "")
+        
+        # Проверяем наличие экспорта по UUID пути
+        if ! echo "$nfs_exports" | grep -q "/mnt/storage/$uuid"; then
+            echo -e "${RED}На сервере $server не найден экспорт по пути /mnt/storage/$uuid!${NC}"
+            echo -e "${YELLOW}Доступные экспорты на сервере $server:${NC}"
+            echo "$nfs_exports"
             
-            # Попытка перезапуска NFS на сервере
-            echo -e "${YELLOW}Попытка перезапуска NFS сервера на $server...${NC}"
-            remote_exec "$server" "$port" "systemctl restart nfs-kernel-server || systemctl restart nfs-server"
-            sleep 5
-            
-            # Повторная попытка монтирования
-            echo -e "${YELLOW}Повторная попытка монтирования...${NC}"
-            mount -t nfs -o $NFS_MOUNT_OPTIONS $server:/mnt/storage/$disk $mount_point
-            
-            if mount | grep -q " on $mount_point "; then
-                echo -e "${GREEN}✓ Успешно смонтирован /mnt/storage/$disk с сервера $server при повторной попытке (Буква: $letter)${NC}"
-                # Добавление в массив для конфигурации backend
-                BACKEND_DISKS+=("$letter:$mount_point")
-            else
-                echo -e "${RED}✗ Не удалось смонтировать диск даже после перезапуска NFS сервера${NC}"
-                # Последняя отчаянная попытка - чистый NFS экспорт
-                echo -e "${YELLOW}Создание чистого NFS экспорта на сервере...${NC}"
-                remote_exec "$server" "$port" "
-                    mkdir -p /etc/exports.d
-                    echo '/mnt/storage/$disk $CLIENT_IP(rw,sync,no_subtree_check,no_root_squash,insecure)' > /etc/exports
-                    exportfs -ra
-                    systemctl restart nfs-kernel-server || systemctl restart nfs-server
-                "
-                sleep 5
-                mount -t nfs -o $NFS_MOUNT_OPTIONS $server:/mnt/storage/$disk $mount_point
+            # Проверяем, нет ли экспорта по физическому имени диска (sdb)
+            if echo "$nfs_exports" | grep -q "/mnt/storage/sd"; then
+                echo -e "${YELLOW}На сервере обнаружен экспорт по физическому имени диска!${NC}"
+                echo -e "${YELLOW}Пытаемся исправить настройки сервера...${NC}"
                 
-                if mount | grep -q " on $mount_point "; then
-                    echo -e "${GREEN}✓ Успешно смонтирован /mnt/storage/$disk с сервера $server после сброса экспортов (Буква: $letter)${NC}"
-                    # Добавление в массив для конфигурации backend
-                    BACKEND_DISKS+=("$letter:$mount_point")
+                # Получаем порт для сервера
+                port=$(get_server_port "$server")
+                if [ -n "$port" ]; then
+                    # Попытка "починить" сервер через вызов setup_nfs_exports
+                    echo -e "${YELLOW}Запуск исправлений на сервере...${NC}"
+                    setup_nfs_exports
+                    
+                    # Повторная проверка экспортов
+                    nfs_exports=$(showmount -e "$server" 2>/dev/null || echo "")
+                    if ! echo "$nfs_exports" | grep -q "/mnt/storage/$uuid"; then
+                        echo -e "${RED}После исправлений экспорт по UUID все равно не найден!${NC}"
+                        echo -e "${YELLOW}Пробуем определить физическое имя диска и выполнить монтирование по нему...${NC}"
+                        
+                        # Определяем имя физического диска по UUID
+                        physical_disk=$(remote_exec "$server" "$port" "blkid | grep -i $uuid | awk -F: '{print \$1}' | xargs basename" | grep -v "Выполнение команды" | grep -v "✓ Команда успешно" | tail -1 | tr -d '\n')
+                        
+                        if [ -n "$physical_disk" ]; then
+                            echo -e "${YELLOW}Найден диск $physical_disk с UUID $uuid${NC}"
+                            echo -e "${YELLOW}Пробуем монтировать по физическому пути /mnt/storage/$physical_disk...${NC}"
+                            
+                            # Пробуем монтировать по физическому пути
+                            if mount -t nfs -o "$NFS_MOUNT_OPTIONS" "$server:/mnt/storage/$physical_disk" "$mount_point"; then
+                                echo -e "${GREEN}✓ Успешно смонтирован по физическому пути $server:/mnt/storage/$physical_disk в $mount_point${NC}"
+                                echo -e "${YELLOW}ВНИМАНИЕ: Используется монтирование по физическому пути вместо UUID!${NC}"
+                                echo -e "${YELLOW}Добавляем в /etc/fstab с правильным UUID путем для будущих монтирований${NC}"
+                                
+                                # Добавление в /etc/fstab с правильным UUID путем
+                                echo "$server:/mnt/storage/$uuid $mount_point nfs $NFS_MOUNT_OPTIONS 0 0" >> /etc/fstab
+                                MOUNTED_DISKS+=("$uuid:$mount_point")
+                                continue
+                            else
+                                echo -e "${RED}Не удалось смонтировать диск даже по физическому имени!${NC}"
+                            fi
+                        else
+                            echo -e "${RED}Не удалось определить физическое имя диска по UUID $uuid${NC}"
+                        fi
+                    fi
+                fi
+            fi
+        fi
+        
+        # Для NFS сначала пробуем монтировать с обычными параметрами
+        echo "Монтирование $server:/mnt/storage/$uuid в $mount_point (UUID: $uuid)"
+        mount -t nfs -o "$NFS_MOUNT_OPTIONS" "$server:/mnt/storage/$uuid" "$mount_point"
+        
+        # Проверяем успешность монтирования
+        if mount | grep -q "$mount_point"; then
+            echo -e "${GREEN}✓ Успешно смонтирован /mnt/storage/$uuid с сервера $server (UUID: $uuid)${NC}"
+            MOUNTED_DISKS+=("$uuid:$mount_point")
+            
+            # Добавление в /etc/fstab для автоматического монтирования при загрузке
+            echo "$server:/mnt/storage/$uuid $mount_point nfs $NFS_MOUNT_OPTIONS 0 0" >> /etc/fstab
+            continue
+        else
+            echo -e "${YELLOW}! Не удалось смонтировать $server:/mnt/storage/$uuid, пробуем с другими параметрами...${NC}"
+            
+            # Пробуем монтировать с другими параметрами
+            mount -t nfs -o "$NFS_MOUNT_OPTIONS,nocto,noac" "$server:/mnt/storage/$uuid" "$mount_point"
+            
+            if mount | grep -q "$mount_point"; then
+                echo -e "${GREEN}✓ Успешно смонтирован /mnt/storage/$uuid с сервера $server при повторной попытке (UUID: $uuid)${NC}"
+                MOUNTED_DISKS+=("$uuid:$mount_point")
+                
+                # Добавление в /etc/fstab для автоматического монтирования при загрузке
+                echo "$server:/mnt/storage/$uuid $mount_point nfs $NFS_MOUNT_OPTIONS,nocto,noac 0 0" >> /etc/fstab
+                continue
+            else
+                echo -e "${RED}! Вторая попытка монтирования не удалась, пробуем сбросить экспорты на сервере...${NC}"
+                
+                # Пробуем сбросить экспорты на сервере
+                port=$(get_server_port "$server")
+                if [ -n "$port" ]; then
+                    reset_exports "$server" "$port"
+                    
+                    # Пробуем монтировать после сброса экспортов
+                    mount -t nfs -o "$NFS_MOUNT_OPTIONS" "$server:/mnt/storage/$uuid" "$mount_point"
+                    
+                    if mount | grep -q "$mount_point"; then
+                        echo -e "${GREEN}✓ Успешно смонтирован /mnt/storage/$uuid с сервера $server после сброса экспортов (UUID: $uuid)${NC}"
+                        MOUNTED_DISKS+=("$uuid:$mount_point")
+                        
+                        # Добавление в /etc/fstab для автоматического монтирования при загрузке
+                        echo "$server:/mnt/storage/$uuid $mount_point nfs $NFS_MOUNT_OPTIONS 0 0" >> /etc/fstab
+                        continue
+                    else
+                        echo -e "${RED}✗ Все попытки монтирования не удались${NC}"
+                        
+                        # Проверка физического пути как последний вариант
+                        physical_disk=$(remote_exec "$server" "$port" "blkid | grep -i $uuid | awk -F: '{print \$1}' | xargs basename" | grep -v "Выполнение команды" | grep -v "✓ Команда успешно" | tail -1 | tr -d '\n')
+                        
+                        if [ -n "$physical_disk" ]; then
+                            echo -e "${YELLOW}Найден диск $physical_disk с UUID $uuid${NC}"
+                            echo -e "${YELLOW}Пробуем последнюю попытку монтирования по физическому пути...${NC}"
+                            
+                            if mount -t nfs -o "$NFS_MOUNT_OPTIONS" "$server:/mnt/storage/$physical_disk" "$mount_point"; then
+                                echo -e "${GREEN}✓ Успешно смонтирован по физическому пути $server:/mnt/storage/$physical_disk в $mount_point${NC}"
+                                echo -e "${YELLOW}ВНИМАНИЕ: Используется монтирование по физическому пути вместо UUID!${NC}"
+                                echo -e "${YELLOW}Добавляем в /etc/fstab с правильным UUID путем для будущих монтирований${NC}"
+                                
+                                # Добавление в /etc/fstab с правильным UUID путем
+                                echo "$server:/mnt/storage/$uuid $mount_point nfs $NFS_MOUNT_OPTIONS 0 0" >> /etc/fstab
+                                MOUNTED_DISKS+=("$uuid:$mount_point")
+                                continue
+                            fi
+                        fi
+                        
+                        # Показываем детальную информацию для диагностики
+                        echo -e "${YELLOW}Диагностика проблемы монтирования...${NC}"
+                        echo -e "1. Проверка RPC на сервере $server:"
+                        timeout 5 rpcinfo -p "$server" || echo "Не удалось получить RPC информацию"
+                        
+                        echo -e "2. Проверка экспортов на сервере $server:"
+                        timeout 5 showmount -e "$server" || echo "Не удалось получить список экспортов"
+                        
+                        echo -e "3. Попытка с подробным выводом:"
+                        mount -v -t nfs -o "$NFS_MOUNT_OPTIONS" "$server:/mnt/storage/$uuid" "$mount_point"
+                    fi
+                else
+                    echo -e "${RED}✗ Не удалось определить порт SSH для сервера $server${NC}"
                 fi
             fi
         fi
     done
     
-    # Перезагрузка systemd для применения изменений fstab
-    systemctl daemon-reload
-    
-    # Экспорт массива дисков для backend
-    export BACKEND_DISKS
+    if [ ${#MOUNTED_DISKS[@]} -eq 0 ]; then
+        echo -e "${RED}✗ Не удалось смонтировать ни один диск${NC}"
+        return 1
+    else
+        echo -e "${GREEN}✓ Успешно смонтировано ${#MOUNTED_DISKS[@]} дисков${NC}"
+        echo -e "${GREEN}✓ Все диски теперь монтируются с использованием UUID вместо букв дисков${NC}"
+        return 0
+    fi
 }
 
-# Функция для обновления конфигурации backend
+# Функция для обновления конфигурации бэкенда
 update_backend_config() {
-    echo -e "${GREEN}Обновление конфигурации backend...${NC}"
-    
-    if [ -f "$CONFIG_PATH" ]; then
-        echo "Найден файл конфигурации backend: $CONFIG_PATH"
-        
-        # Создание резервной копии
-        cp "$CONFIG_PATH" "${CONFIG_PATH}.bak_$(date +"%Y%m%d%H%M%S")"
-        
-        # Создаем строки для конфигурации дисков
-        DISKS_CONFIG=""
-        for disk_config in "${DISKS_TO_MOUNT[@]}"; do
-            if ! is_raid_config "$disk_config"; then
-                IFS=':' read -r server disk letter <<< "$disk_config"
-                mount_point="$MOUNT_BASE/$server/$(basename /mnt/storage/$disk)"
-                DISKS_CONFIG="${DISKS_CONFIG}            '$letter:': '$mount_point',\n"
-            fi
-        done
-        
-        # Удаляем запятую с последней строки
-        DISKS_CONFIG=$(echo -e "$DISKS_CONFIG" | sed '$ s/,$//')
-        
-        # Создаем новый конфигурационный файл
-        cat > "$CONFIG_PATH" << EOF
-// Конфигурация приложения
-const config = {
-  // Базовые настройки
-  server: {
-    port: process.env.PORT || 6005,
-    allowedOrigins: [
-      'http://46.35.241.37:6001', 
-      'http://localhost:6001',
-      'https://iqbanana.online',
-      'http://iqbanana.online'
-    ]
-  },
-
-  // Версия API
-  apiVersion: 'v1',
-
-  // Пути к смонтированным дискам на веб-сервере
-  disks: {
-$(echo -e "$DISKS_CONFIG")
-  },
-
-  // Настройки производительности для файловых операций
-  performance: {
-    maxFileSize: 20 * 1024 * 1024 * 1024, // 20GB максимальный размер файла
-    chunkSize: 5 * 1024 * 1024, // 5MB размер чанка по умолчанию для больших файлов
-    maxConcurrentUploads: 5, // Максимальное количество одновременных загрузок
-    uploadTimeout: 3600000, // 1 час таймаут для загрузки полного файла
-    chunkTimeout: 600000, // 10 минут таймаут для загрузки чанка
-    readBufferSize: 4096 * 1024, // 4 MB буфер для чтения файлов
-    writeBufferSize: 8192 * 1024 // 8 MB буфер для записи файлов
-  }
-};
-
-module.exports = config;
-EOF
-        
-        echo -e "${GREEN}✓ Конфигурация backend обновлена успешно${NC}"
-        echo "Содержимое конфигурации дисков:"
-        grep -A 10 "disks: {" "$CONFIG_PATH"
-    else
-        echo -e "${YELLOW}⚠️ Файл конфигурации backend не найден: $CONFIG_PATH${NC}"
+    if [ -z "$CONFIG_PATH" ]; then
+        echo -e "${RED}ОШИБКА: Не указан путь к конфигурационному файлу${NC}"
+        return 1
     fi
+    
+    echo -e "${GREEN}Обновление конфигурации бэкенда: $CONFIG_PATH${NC}"
+    
+    # Проверка существования файла
+    if [ ! -f "$CONFIG_PATH" ]; then
+        echo -e "${YELLOW}Создание нового конфигурационного файла${NC}"
+        touch "$CONFIG_PATH"
+    else
+        echo -e "${YELLOW}Создание резервной копии конфигурационного файла${NC}"
+        cp "$CONFIG_PATH" "${CONFIG_PATH}.backup_$(date +"%Y%m%d%H%M%S")"
+    fi
+    
+    # Создание строки конфигурации дисков
+    local DISKS_CONFIG=""
+    
+    # Если у нас есть смонтированные диски из setup_exports, используем их
+    if [ ${#BACKEND_DISKS[@]} -gt 0 ]; then
+        echo -e "${GREEN}Использование смонтированных дисков для конфигурации (${#BACKEND_DISKS[@]})${NC}"
+        
+        # Формат BACKEND_DISKS: "буква:путь_монтирования"
+        for disk_entry in "${BACKEND_DISKS[@]}"; do
+            IFS=':' read -r letter mount_point <<< "$disk_entry"
+            
+            # Проверка формата буквы
+            if [ ${#letter} -ne 1 ]; then
+                echo -e "${YELLOW}Пропускаем некорректную запись: $disk_entry${NC}"
+                continue
+            fi
+            
+            # Проверка существования точки монтирования
+            if [ ! -d "$mount_point" ]; then
+                echo -e "${YELLOW}Точка монтирования $mount_point не существует, пропускаем${NC}"
+                continue
+            fi
+            
+            if [ -n "$DISKS_CONFIG" ]; then
+                DISKS_CONFIG="$DISKS_CONFIG, "
+            fi
+            
+            # Использование буквы в ключе и UUID в пути
+            echo -e "${GREEN}Добавление диска $letter в конфигурацию: $mount_point${NC}"
+            DISKS_CONFIG="${DISKS_CONFIG}\"$letter\": \"$mount_point\""
+        done
+    # Если BACKEND_DISKS пусто, пробуем использовать DISKS_TO_MOUNT
+    elif [ ${#DISKS_TO_MOUNT[@]} -gt 0 ]; then
+        echo -e "${YELLOW}Нет смонтированных дисков, используем DISKS_TO_MOUNT (${#DISKS_TO_MOUNT[@]})${NC}"
+        
+        for disk_config in "${DISKS_TO_MOUNT[@]}"; do
+            # Пропускаем RAID конфигурации
+            if is_raid_config "$disk_config"; then
+                echo -e "${YELLOW}Пропускаем RAID конфигурацию: $disk_config${NC}"
+                continue
+            fi
+            
+            # Обработка обычного диска - в формате server:uuid
+            IFS=':' read -r server uuid <<< "$disk_config"
+            
+            # Получаем порт для сервера
+            local port=$(get_server_port "$server")
+            if [ -z "$port" ]; then
+                echo -e "${RED}Ошибка: Не найден порт для сервера $server${NC}"
+                continue
+            fi
+            
+            # Определяем имя физического устройства по UUID
+            echo -e "${YELLOW}Определение физического устройства по UUID на сервере $server...${NC}"
+            local physical_disk=""
+            physical_disk=$(remote_exec "$server" "$port" "blkid | grep -i $uuid | awk -F: '{print \$1}' | xargs basename")
+            
+            if [[ -z "$physical_disk" ]]; then
+                echo -e "${RED}ОШИБКА: Не удалось найти устройство с UUID $uuid на сервере $server${NC}"
+                continue
+            else
+                echo -e "${GREEN}✓ Найдено устройство $physical_disk с UUID $uuid на сервере $server${NC}"
+            fi
+            
+            # Определяем буквенное обозначение на основе найденного имени диска
+            local letter=""
+            if [[ "$physical_disk" == "sdb" ]]; then
+                letter="C"
+            elif [[ "$physical_disk" == "sdc" ]]; then
+                letter="D"
+            else
+                # Для других дисков используем следующую доступную букву
+                letter="C"  # По умолчанию
+            fi
+            
+            # Точка монтирования по UUID
+            mount_point="$MOUNT_BASE/$uuid"
+            
+            if [ -n "$DISKS_CONFIG" ]; then
+                DISKS_CONFIG="$DISKS_CONFIG, "
+            fi
+            
+            echo -e "${GREEN}Добавление диска $letter в конфигурацию: $mount_point${NC}"
+            DISKS_CONFIG="${DISKS_CONFIG}\"$letter\": \"$mount_point\""
+        done
+    else
+        echo -e "${YELLOW}Нет доступных дисков для конфигурации${NC}"
+    fi
+    
+    # Добавление RAID массивов, если они настроены
+    if [ ${#CONFIGURED_RAIDS[@]} -gt 0 ]; then
+        echo -e "${GREEN}Добавление RAID массивов в конфигурацию (${#CONFIGURED_RAIDS[@]})${NC}"
+        
+        for raid_config in "${CONFIGURED_RAIDS[@]}"; do
+            IFS=':' read -r raid_name raid_mount_point <<< "$raid_config"
+            
+            # Проверка существования точки монтирования RAID
+            if [ ! -d "$raid_mount_point" ]; then
+                echo -e "${YELLOW}Точка монтирования RAID $raid_mount_point не существует, пропускаем${NC}"
+                continue
+            fi
+            
+            # Определяем букву для RAID (обычно E, F, G...)
+            local raid_letter="E"  # По умолчанию используем E для первого RAID
+            
+            if [ -n "$DISKS_CONFIG" ]; then
+                DISKS_CONFIG="$DISKS_CONFIG, "
+            fi
+            
+            echo -e "${GREEN}Добавление RAID $raid_name в конфигурацию: $raid_mount_point${NC}"
+            DISKS_CONFIG="${DISKS_CONFIG}\"$raid_letter\": \"$raid_mount_point\""
+        done
+    fi
+    
+    # Удаление последней запятой, если она есть
+    DISKS_CONFIG="${DISKS_CONFIG%,}"
+    
+    # Формирование итоговой конфигурации
+    local CONFIG_CONTENT="
+{
+    \"performance\": {
+        \"max_concurrent_jobs\": ${MAX_CONCURRENT_JOBS:-10}
+    },
+    \"disks\": {
+        $DISKS_CONFIG
+    }
+}
+"
+    
+    # Запись конфигурации в файл
+    echo "$CONFIG_CONTENT" > "$CONFIG_PATH"
+    
+    echo -e "${GREEN}✓ Конфигурация бэкенда успешно обновлена${NC}"
+    echo -e "${YELLOW}Конфигурация дисков:${NC}"
+    echo "$DISKS_CONFIG"
+    
+    return 0
+}
+
+# Функция для монтирования дисков
+mount_disks() {
+    echo -e "${GREEN}Монтирование дисков...${NC}"
+    
+    # Сначала создаем базовую директорию для монтирования
+    mkdir -p "$MOUNT_BASE"
+    
+    # Массив для хранения успешно смонтированных дисков
+    declare -a MOUNTED_DISKS
+    
+    # Обработка каждого диска
+    for disk_config in "${DISKS_TO_MOUNT[@]}"; do
+        echo -e "${YELLOW}Обработка конфигурации: $disk_config${NC}"
+        
+        # Проверяем, является ли это RAID-конфигурацией
+        if is_raid_config "$disk_config"; then
+            echo -e "${YELLOW}RAID конфигурация обрабатывается отдельно${NC}"
+            continue
+        fi
+        
+        # Разбираем информацию о диске
+        IFS=':' read -r server uuid <<< "$disk_config"
+        
+        echo -e "${GREEN}===== Монтирование диска с сервера $server =====${NC}"
+        
+        # Создаем точку монтирования
+        mount_point="$MOUNT_BASE/$uuid"
+        mkdir -p "$mount_point"
+        
+        # Проверяем, смонтирован ли уже диск
+        if mount | grep -q "$mount_point"; then
+            echo -e "${YELLOW}Размонтирование $mount_point...${NC}"
+            umount -f -l "$mount_point" 2>/dev/null || true
+        fi
+        
+        # Для NFS сначала пробуем монтировать с обычными параметрами
+        echo "Монтирование $server:/mnt/storage/$uuid в $mount_point (UUID: $uuid)"
+        mount -t nfs -o "$NFS_MOUNT_OPTIONS" "$server:/mnt/storage/$uuid" "$mount_point"
+        
+        # Проверяем успешность монтирования
+        if mount | grep -q "$mount_point"; then
+            echo -e "${GREEN}✓ Успешно смонтирован /mnt/storage/$uuid с сервера $server (UUID: $uuid)${NC}"
+            MOUNTED_DISKS+=("$uuid:$mount_point")
+            continue
+        else
+            echo -e "${YELLOW}! Не удалось смонтировать $server:/mnt/storage/$uuid, пробуем с другими параметрами...${NC}"
+            
+            # Пробуем монтировать с другими параметрами
+            mount -t nfs -o "$NFS_MOUNT_OPTIONS,nocto,noac" "$server:/mnt/storage/$uuid" "$mount_point"
+            
+            if mount | grep -q "$mount_point"; then
+                echo -e "${GREEN}✓ Успешно смонтирован /mnt/storage/$uuid с сервера $server при повторной попытке (UUID: $uuid)${NC}"
+                MOUNTED_DISKS+=("$uuid:$mount_point")
+                continue
+            else
+                echo -e "${RED}! Вторая попытка монтирования не удалась, пробуем сбросить экспорты на сервере...${NC}"
+                
+                # Пробуем сбросить экспорты на сервере
+                port=$(get_server_port "$server")
+                if [ -n "$port" ]; then
+                    reset_exports "$server" "$port"
+                    
+                    # Пробуем монтировать после сброса экспортов
+                    mount -t nfs -o "$NFS_MOUNT_OPTIONS" "$server:/mnt/storage/$uuid" "$mount_point"
+                    
+                    if mount | grep -q "$mount_point"; then
+                        echo -e "${GREEN}✓ Успешно смонтирован /mnt/storage/$uuid с сервера $server после сброса экспортов (UUID: $uuid)${NC}"
+                        MOUNTED_DISKS+=("$uuid:$mount_point")
+                        continue
+                    fi
+                fi
+                
+                echo -e "${RED}✗ Все попытки монтирования диска с сервера $server не удались${NC}"
+            fi
+        fi
+    done
+    
+    # Экспорт массива смонтированных дисков для использования в других функциях
+    export MOUNTED_DISKS
+    
+    echo -e "${GREEN}Монтирование дисков завершено${NC}"
+    return 0
 } 

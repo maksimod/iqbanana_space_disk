@@ -6,41 +6,61 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
-# Функция для выполнения команд на удаленном сервере через SSH
+# Функция для выполнения команды на удаленном сервере через SSH
 remote_exec() {
     local server=$1
     local port=$2
-    local command=$3
+    local cmd=$3
     
-    # Получаем пароль для сервера из переменной окружения
-    local server_var="SERVER_$(echo $server | tr '.' '_')_PASSWORD"
-    local server_password="${!server_var}"
+    echo -e "${YELLOW}Выполнение команды на сервере $server через SSH ключ${NC}"
     
-    if [ -z "$server_password" ]; then
-        echo -e "${RED}Ошибка: Не установлена переменная $server_var в .env${NC}"
+    # Создаем временный файл для команды и результата
+    local tmp_cmd_file=$(mktemp)
+    local tmp_result_file=$(mktemp)
+    
+    # Записываем команду во временный файл с явным возвратом кода завершения
+    echo "#!/bin/bash" > "$tmp_cmd_file"
+    echo "set -e" >> "$tmp_cmd_file"
+    echo "$cmd" >> "$tmp_cmd_file"
+    echo "exit \$?" >> "$tmp_cmd_file"
+    chmod +x "$tmp_cmd_file"
+    
+    # Копируем файл на сервер
+    local remote_file="/tmp/exec_cmd_$(date +%s).sh"
+    if ! scp -P "$port" -i "$SSH_KEY_PATH" "$tmp_cmd_file" "${SSH_USER}@${server}:${remote_file}" > /dev/null 2>&1; then
+        echo -e "${RED}✗ Ошибка копирования команды на сервер $server${NC}"
+        rm -f "$tmp_cmd_file"
         return 1
     fi
     
-    # Добавляем отладочную информацию
-    echo -e "${YELLOW}Выполнение команды на сервере $server через прокси $SSH_HOST:${port}${NC}"
-    echo -e "${YELLOW}Команда: $command${NC}"
-    
-    # Выполняем команду через SSH с использованием прокси
-    output=$(sshpass -p "$server_password" ssh -p "$port" -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@$SSH_HOST "$command")
-    local result=$?
-    
-    if [ $result -eq 0 ]; then
+    # Выполняем команду и сохраняем результат
+    if ssh -p "$port" -i "$SSH_KEY_PATH" "${SSH_USER}@${server}" "chmod +x ${remote_file} && sudo ${remote_file}" > "$tmp_result_file" 2>&1; then
         echo -e "${GREEN}✓ Команда успешно выполнена на сервере $server${NC}"
-        echo "$output"
-        # Возвращаем вывод команды как результат функции
-        echo "$output"
+        
+        # Показываем результат и возвращаем его
+        if [ -s "$tmp_result_file" ]; then
+            cat "$tmp_result_file"
+        fi
+        
+        # Удаляем временные файлы
+        rm -f "$tmp_cmd_file" "$tmp_result_file"
+        ssh -p "$port" -i "$SSH_KEY_PATH" "${SSH_USER}@${server}" "rm -f ${remote_file}" > /dev/null 2>&1
+        return 0
     else
+        local exit_code=$?
         echo -e "${RED}✗ Ошибка выполнения команды на сервере $server${NC}"
-        echo -e "${RED}Код ошибки: $result${NC}"
-        echo "$output"
+        echo -e "${RED}Код ошибки: $exit_code${NC}"
+        
+        # Показываем вывод команды, даже если она завершилась с ошибкой
+        if [ -s "$tmp_result_file" ]; then
+            cat "$tmp_result_file"
+        fi
+        
+        # Удаляем временные файлы
+        rm -f "$tmp_cmd_file" "$tmp_result_file"
+        ssh -p "$port" -i "$SSH_KEY_PATH" "${SSH_USER}@${server}" "rm -f ${remote_file}" > /dev/null 2>&1
+        return $exit_code
     fi
-    
-    return $result
 }
 
 # Функция для проверки доступности сервера
@@ -48,25 +68,22 @@ check_server() {
     local server=$1
     local port=$2
     
-    echo -e "${YELLOW}Проверка доступности сервера $server через прокси $SSH_HOST:${port}...${NC}"
+    echo -e "${YELLOW}Проверка доступности сервера $server через SSH ключ...${NC}"
     
-    # Получаем пароль для сервера
-    local server_var="SERVER_$(echo $server | tr '.' '_')_PASSWORD"
-    local server_password="${!server_var}"
-    
-    if [ -z "$server_password" ]; then
-        echo -e "${RED}Ошибка: Не установлена переменная $server_var в .env${NC}"
+    # Проверяем наличие SSH ключа
+    if [ ! -f "$SSH_KEY_PATH" ]; then
+        echo -e "${RED}Ошибка: SSH ключ не найден по пути $SSH_KEY_PATH${NC}"
         return 1
     fi
     
-    # Пробуем подключиться к серверу через прокси
-    if sshpass -p "$server_password" ssh -p "$port" -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@$SSH_HOST "echo 'OK'"; then
+    # Пробуем подключиться к серверу через SSH ключ
+    if ssh -i "$SSH_KEY_PATH" -p "$port" -o StrictHostKeyChecking=no -o ConnectTimeout=5 $SERVER_USER@$server "echo 'OK'"; then
         echo -e "${GREEN}✓ Сервер $server доступен${NC}"
         
         # Проверяем наличие дисков
         echo -e "${YELLOW}Проверка дисков на сервере $server...${NC}"
         local disk_check_cmd="ls -l /dev/sd* 2>/dev/null || echo 'Диски не найдены'"
-        sshpass -p "$server_password" ssh -p "$port" -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@$SSH_HOST "$disk_check_cmd"
+        ssh -i "$SSH_KEY_PATH" -p "$port" -o StrictHostKeyChecking=no -o ConnectTimeout=5 $SERVER_USER@$server "$disk_check_cmd"
         
         return 0
     else
@@ -94,4 +111,45 @@ check_all_servers() {
     fi
     
     return 0
+}
+
+# Функция для получения UUID диска
+get_disk_uuid() {
+    local server=$1
+    local port=$2
+    local disk=$3
+    
+    echo -e "${YELLOW}Получение UUID диска /dev/$disk на сервере $server...${NC}"
+    
+    # Выполняем команду получения UUID
+    local uuid=$(remote_exec "$server" "$port" "blkid -s UUID -o value /dev/$disk 2>/dev/null")
+    
+    if [ -z "$uuid" ]; then
+        echo -e "${RED}Ошибка: Не удалось получить UUID для диска /dev/$disk на сервере $server${NC}"
+        return 1
+    else
+        echo -e "${GREEN}UUID диска /dev/$disk: $uuid${NC}"
+        echo "$uuid"
+        return 0
+    fi
+}
+
+# Функция для получения порта сервера
+get_server_port() {
+    local server=$1
+    
+    # Ищем порт для сервера в массиве SSH_PORTS
+    for port_entry in "${SSH_PORTS[@]}"; do
+        local srv=$(echo $port_entry | cut -d':' -f1)
+        local port=$(echo $port_entry | cut -d':' -f2)
+        
+        if [ "$srv" = "$server" ]; then
+            echo "$port"
+            return 0
+        fi
+    done
+    
+    # Если порт не найден, возвращаем пустую строку
+    echo ""
+    return 1
 }
