@@ -1,0 +1,8 @@
+  - name: "192.168.0.102/sdb"
+    status: "SUCCESS"
+  - name: "192.168.0.103/sdb"
+    status: "SUCCESS"
+  - name: "192.168.0.103//unknown"
+    status: "ERROR"
+  - name: "192.168.0.103/ae3ff395-3049-4ec8-8524-3ed631eb4a46"
+    status: "ERROR"
