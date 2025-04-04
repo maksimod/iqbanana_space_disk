@@ -131,11 +131,11 @@ cat > /tmp/make_backup.sh << 'EOF'
 #!/bin/bash
 
 # Скрипт создания бэкапа и отправки статуса через API
-# Использование: ./make_backup.sh disk_name backup_path api_key api_url max_backups [interval]
+# Использование: ./make_backup.sh disk_uuid backup_path api_key api_url max_backups [interval]
 
 # Проверка аргументов
 if [ $# -lt 5 ]; then
-    echo "Использование: $0 disk_name backup_path api_key api_url max_backups [interval]"
+    echo "Использование: $0 disk_uuid backup_path api_key api_url max_backups [interval]"
     exit 1
 fi
 
@@ -182,6 +182,9 @@ check_and_install_deps() {
     check_cmd "find" "findutils" || return 1
     check_cmd "mountpoint" "util-linux" || return 1
     check_cmd "mkdir" "coreutils" || return 1
+    check_cmd "df" "coreutils" || return 1
+    check_cmd "timeout" "coreutils" || return 1
+    check_cmd "pv" "pv" || echo "Утилита pv не установлена, будет использоваться простой вывод прогресса"
     
     echo "Все необходимые зависимости установлены"
     return 0
@@ -194,12 +197,16 @@ if ! check_and_install_deps; then
     exit 1
 fi
 
-DISK_NAME="$1"
+DISK_UUID="$1"
 BACKUP_PATH="$2"
 API_KEY="$3"
 API_URL="$4"
 MAX_BACKUPS="${5:-5}"  # Максимальное количество бэкапов (по умолчанию 5)
 INTERVAL="${6:-daily}"
+TIMEOUT_MINUTES=120    # Максимальное время выполнения команды tar в минутах
+
+# Получаем короткое имя диска (для имени файла и логов)
+DISK_NAME=$(echo $DISK_UUID | cut -d'-' -f1)
 
 # Путь для логов
 LOG_DIR="/var/log/iqbanana_backups"
@@ -212,7 +219,9 @@ send_backup_status() {
     local message="$2"
     
     # Формируем JSON для отправки
-    json_data="{\"diskName\":\"$DISK_NAME\",\"status\":\"$status\",\"message\":\"$message\"}"
+    json_data="{\"diskName\":\"$DISK_UUID\",\"status\":\"$status\",\"message\":\"$message\"}"
+    
+    log_message "Отправка статуса '$status' в API: $message"
     
     # Отправляем запрос на API
     response=$(curl -s -X POST \
@@ -221,23 +230,79 @@ send_backup_status() {
         -d "$json_data" \
         "${API_URL}/api/system/backup-status")
     
-    # Проверяем ответ (опционально)
-    echo "API response: $response" >> "$LOG_FILE"
+    # Проверяем ответ
+    log_message "API response: $response"
 }
 
 # Запись в лог с датой
 log_message() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+    local message="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+    echo "$message" >> "$LOG_FILE"
+    echo "$message"
+}
+
+# Функция для проверки свободного места
+check_free_space() {
+    local path="$1"
+    local required_mb="$2"
+    
+    # Получаем доступное место в MB
+    local available_space=$(df -m --output=avail "$path" | tail -n 1 | tr -d ' ')
+    
+    log_message "Проверка свободного места: доступно $available_space MB, требуется примерно $required_mb MB"
+    
+    if [ "$available_space" -lt "$required_mb" ]; then
+        log_message "ОШИБКА: Недостаточно места для создания бэкапа. Доступно: $available_space MB, требуется: $required_mb MB"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Функция для поиска точки монтирования диска по UUID
+find_mountpoint() {
+    local uuid="$1"
+    local possible_paths=(
+        "/mnt/$uuid"
+        "/mnt/storage/$uuid"
+        "/mnt/disks/$uuid"
+    )
+    
+    # Проверяем возможные пути монтирования
+    for path in "${possible_paths[@]}"; do
+        if mountpoint -q "$path"; then
+            echo "$path"
+            return 0
+        fi
+    done
+    
+    # Если не нашли в стандартных местах, ищем с помощью mount
+    local mount_path=$(mount | grep -i "$uuid" | awk '{print $3}' | head -1)
+    if [ -n "$mount_path" ]; then
+        echo "$mount_path"
+        return 0
+    fi
+    
+    # Если не нашли, пробуем найти с помощью find по UUID
+    local found_path=$(find /mnt -type d -name "*$uuid*" 2>/dev/null | head -1)
+    if [ -n "$found_path" ] && mountpoint -q "$found_path"; then
+        echo "$found_path"
+        return 0
+    fi
+    
+    # Если ничего не нашли, возвращаем ошибку
+    return 1
 }
 
 # Очистка старых резервных копий (оставляем только последние MAX_BACKUPS)
 cleanup_old_backups() {
     # Получаем список файлов бэкапов для данного диска
+    log_message "Поиск старых бэкапов..."
     backup_files=$(find "$BACKUP_PATH" -name "${DISK_NAME}_backup_*.tar.gz" | sort)
     
     # Подсчитываем количество файлов
     count=$(echo "$backup_files" | wc -l)
+    log_message "Найдено $count файлов бэкапов"
     
     # Если файлов больше MAX_BACKUPS, удаляем самые старые
     if [ "$count" -gt "$MAX_BACKUPS" ]; then
@@ -259,38 +324,107 @@ cleanup_old_backups() {
 
 # Функция для создания бэкапа
 make_backup() {
+    # Ищем точку монтирования диска
+    DISK_MOUNTPOINT=$(find_mountpoint "$DISK_UUID")
+    
+    if [ -z "$DISK_MOUNTPOINT" ]; then
+        log_message "ОШИБКА: Диск с UUID ${DISK_UUID} не найден или не смонтирован"
+        log_message "Проверьте, что диск смонтирован по одному из путей: /mnt/$DISK_UUID, /mnt/storage/$DISK_UUID или другому пути"
+        send_backup_status "ERROR" "Диск с UUID ${DISK_UUID} не найден или не смонтирован"
+        return 1
+    fi
+    
+    log_message "Найдена точка монтирования диска: $DISK_MOUNTPOINT"
+    
+    # Проверяем размер данных для оценки необходимого места
+    log_message "Оценка размера данных..."
+    local disk_size_mb=$(du -sm "$DISK_MOUNTPOINT" 2>/dev/null | awk '{print $1}')
+    if [ -z "$disk_size_mb" ]; then
+        log_message "Не удалось определить размер данных, используем оценку 1000 MB"
+        disk_size_mb=1000
+    fi
+    log_message "Примерный размер данных: $disk_size_mb MB"
+    
+    # Добавляем 20% на сжатие (более реалистичная оценка)
+    local required_space=$((disk_size_mb * 80 / 100))
+    
+    # Проверяем свободное место
+    if ! check_free_space "$BACKUP_PATH" "$required_space"; then
+        send_backup_status "ERROR" "Недостаточно места для создания бэкапа"
+        return 1
+    fi
+    
     # Формируем имя файла бэкапа с текущей датой
     DATE_SUFFIX=$(date '+%Y%m%d_%H%M%S')
     BACKUP_FILE="${BACKUP_PATH}/${DISK_NAME}_backup_${DATE_SUFFIX}.tar.gz"
     
-    # Проверяем, смонтирован ли исходный диск
-    if ! mountpoint -q "/mnt/${DISK_NAME}"; then
-        log_message "ОШИБКА: Диск ${DISK_NAME} не смонтирован"
-        send_backup_status "ERROR" "Диск ${DISK_NAME} не смонтирован"
-        return 1
-    fi
-    
     # Отправляем статус о начале бэкапа
     send_backup_status "PROCESSING" "Начало резервного копирования"
-    log_message "Начало создания бэкапа для диска ${DISK_NAME}"
+    log_message "Начало создания бэкапа для диска ${DISK_UUID}"
     log_message "Настройка ротации: сохраняем $MAX_BACKUPS последних бэкапов"
     
     # Создаем каталог бэкапов если его нет
     mkdir -p "$BACKUP_PATH"
     
-    # Создаём бэкап
-    if tar -czf "$BACKUP_FILE" -C "/mnt" "${DISK_NAME}"; then
+    # Создаём бэкап с таймаутом и подробным выводом
+    log_message "Создание бэкапа из $DISK_MOUNTPOINT в $BACKUP_FILE (таймаут: $TIMEOUT_MINUTES минут)"
+    
+    # Определяем исходные пути
+    SOURCE_DIR="$(dirname "$DISK_MOUNTPOINT")"
+    SOURCE_BASE="$(basename "$DISK_MOUNTPOINT")"
+    
+    # Создаем дополнительный лог-файл для вывода tar
+    TAR_LOG="${LOG_DIR}/${DISK_NAME}_tar_${DATE_SUFFIX}.log"
+    log_message "Подробный лог архивации будет записан в $TAR_LOG"
+    
+    # Запускаем tar с таймаутом и подробным выводом
+    log_message "Начало архивации, это может занять продолжительное время..."
+    
+    # Проверяем доступность pv для более наглядного прогресса
+    if command -v pv &> /dev/null && command -v du &> /dev/null; then
+        # Получаем размер данных в байтах для pv
+        size_bytes=$(du -sb "$DISK_MOUNTPOINT" 2>/dev/null | cut -f1)
+        if [ -n "$size_bytes" ] && [ "$size_bytes" -gt 0 ]; then
+            log_message "Используем pv для отображения прогресса ($size_bytes bytes)"
+            timeout ${TIMEOUT_MINUTES}m bash -c "tar -c -C \"$SOURCE_DIR\" \"$SOURCE_BASE\" | pv -s $size_bytes | gzip > \"$BACKUP_FILE\"" 2>&1 | tee "$TAR_LOG"
+            EXIT_CODE=${PIPESTATUS[0]}
+        else
+            log_message "Невозможно определить размер для pv, используем обычный tar с подробным выводом"
+            timeout ${TIMEOUT_MINUTES}m tar -czvf "$BACKUP_FILE" -C "$SOURCE_DIR" "$SOURCE_BASE" 2>&1 | tee "$TAR_LOG"
+            EXIT_CODE=$?
+        fi
+    else
+        log_message "Используем tar с подробным выводом (pv недоступен)"
+        timeout ${TIMEOUT_MINUTES}m tar -czvf "$BACKUP_FILE" --checkpoint=100 --checkpoint-action=echo="Прогресс: %u файлов архивировано" -C "$SOURCE_DIR" "$SOURCE_BASE" 2>&1 | tee "$TAR_LOG"
+        EXIT_CODE=$?
+    fi
+    
+    if [ $EXIT_CODE -eq 0 ]; then
         log_message "Бэкап успешно создан: $BACKUP_FILE"
+        log_message "Размер бэкапа: $(du -h "$BACKUP_FILE" | cut -f1)"
         
         # Очистка старых бэкапов
         cleanup_old_backups
         
         # Отправляем статус об успешном создании бэкапа
-        send_backup_status "SUCCESS" "Бэкап успешно создан: $(basename "$BACKUP_FILE")"
+        send_backup_status "SUCCESS" "Бэкап успешно создан: $(basename "$BACKUP_FILE") ($(du -h "$BACKUP_FILE" | cut -f1))"
         return 0
     else
-        log_message "ОШИБКА при создании бэкапа"
-        send_backup_status "ERROR" "Ошибка при создании бэкапа"
+        if [ $EXIT_CODE -eq 124 ]; then
+            log_message "ОШИБКА: Превышено время ожидания (${TIMEOUT_MINUTES} минут) при создании бэкапа"
+            send_backup_status "ERROR" "Превышено время ожидания при создании бэкапа (${TIMEOUT_MINUTES} минут)"
+        else
+            log_message "ОШИБКА при создании бэкапа (код: $EXIT_CODE)"
+            log_message "Просмотрите детальный лог в файле $TAR_LOG"
+            send_backup_status "ERROR" "Ошибка при создании бэкапа (код: $EXIT_CODE)"
+        fi
+        
+        # Удаляем неполный файл бэкапа
+        if [ -f "$BACKUP_FILE" ]; then
+            log_message "Удаление неполного файла бэкапа: $BACKUP_FILE"
+            rm -f "$BACKUP_FILE"
+        fi
+        
         return 1
     fi
 }
@@ -309,12 +443,12 @@ cat > /tmp/setup_cron.sh << 'EOF'
 # Создаем новое задание с правильными параметрами
 
 if [ $# -lt 6 ]; then
-    echo "Использование: $0 <script> <disk_name> <backup_path> <api_key> <api_url> <max_backups> <interval>"
+    echo "Использование: $0 <script> <disk_uuid> <backup_path> <api_key> <api_url> <max_backups> <interval>"
     exit 1
 fi
 
 SCRIPT="$1"
-DISK_NAME="$2"
+DISK_UUID="$2"
 BACKUP_PATH="$3"
 API_KEY="$4"
 API_URL="$5"
@@ -346,7 +480,7 @@ case "$INTERVAL" in
 esac
 
 # Генерируем строку для crontab, экранируя специальные символы
-CRON_LINE="$CRON_EXPR $SCRIPT $DISK_NAME $BACKUP_PATH $API_KEY $API_URL $MAX_BACKUPS $INTERVAL"
+CRON_LINE="$CRON_EXPR $SCRIPT $DISK_UUID $BACKUP_PATH $API_KEY $API_URL $MAX_BACKUPS $INTERVAL"
 
 # Создаем файл, в который запишем текущий crontab и добавим нашу строку
 TMP_FILE=$(mktemp)
@@ -385,18 +519,14 @@ scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -P "$BACKUP_SERVER_PORT" /tmp
 log "Установка прав на выполнение скриптов"
 ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "chmod +x /root/make_backup.sh /root/setup_cron.sh"
 
-# Получаем имя диска (первая часть UUID) и путь для бэкапа
-DISK_NAME=$(echo $SOURCE_UUID | cut -d'-' -f1)
-BACKUP_PATH="/mnt/backup_${TARGET_UUID}"
-
 # Запускаем скрипт для настройки cron
-log "Настройка cron задания для бэкапа диска $DISK_NAME"
-ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "bash -c '/root/setup_cron.sh /root/make_backup.sh \"$DISK_NAME\" \"$BACKUP_PATH\" \"$API_KEY\" \"$API_URL\" \"$MAX_BACKUPS\" \"$BACKUP_FREQUENCY\"'"
+log "Настройка cron задания для бэкапа диска $SOURCE_UUID"
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "bash -c '/root/setup_cron.sh /root/make_backup.sh \"$SOURCE_UUID\" \"$BACKUP_PATH\" \"$API_KEY\" \"$API_URL\" \"$MAX_BACKUPS\" \"$BACKUP_FREQUENCY\"'"
 
 # Запускаем бэкап немедленно, если указано
 if [ "$1" == "now" ]; then
     log "Запуск немедленного резервного копирования..."
-    ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "bash -c '/root/make_backup.sh \"$DISK_NAME\" \"$BACKUP_PATH\" \"$API_KEY\" \"$API_URL\" \"$MAX_BACKUPS\" \"$BACKUP_FREQUENCY\"'"
+    ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "bash -c '/root/make_backup.sh \"$SOURCE_UUID\" \"$BACKUP_PATH\" \"$API_KEY\" \"$API_URL\" \"$MAX_BACKUPS\" \"$BACKUP_FREQUENCY\"'"
     
     # Проверяем статус выполнения
     if [ $? -eq 0 ]; then
