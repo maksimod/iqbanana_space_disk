@@ -46,7 +46,7 @@ for arg in "$@"; do
             SKIP_RAID=true
             shift
             ;;
-        --force-fix)``
+        --force-fix)
             FORCE_FIX=true
             shift
             ;;
@@ -156,165 +156,6 @@ rm -f "$tmp_fstab"
 # Создаем базовый каталог для монтирования
 mkdir -p "$MOUNT_BASE"
 
-# 0b. Исправление неправильных экспортов на серверах (если нужно)
-echo -e "${GREEN}0b. Проверка и исправление экспортов NFS на серверах...${NC}"
-for port_entry in "${SSH_PORTS[@]}"; do
-    server=$(echo $port_entry | cut -d':' -f1)
-    port=$(echo $port_entry | cut -d':' -f2)
-    
-    for disk_config in "${DISKS_TO_MOUNT[@]}"; do
-        # Пропускаем RAID-конфигурации
-        if is_raid_config "$disk_config"; then
-            continue
-        fi
-        
-        # Разбираем информацию о диске - формат server:uuid
-        IFS=':' read -r disk_server uuid <<< "$disk_config"
-        
-        # Пропускаем, если это другой сервер
-        if [ "$disk_server" != "$server" ]; then
-            continue
-        fi
-        
-        echo -e "${YELLOW}Проверка экспортов для UUID $uuid на сервере $server...${NC}"
-        
-        # Проверяем текущие экспорты
-        exports=$(remote_exec "$server" "$port" "exportfs -v" | grep -v "Выполнение команды" | grep -v "✓ Команда успешно")
-        
-        # Проверяем, есть ли экспорты по физическому имени диска (sdb) вместо UUID
-        physical_exports=$(echo "$exports" | grep "/mnt/storage/sd")
-        uuid_exports=$(echo "$exports" | grep "/mnt/storage/$uuid")
-        
-        if [ -n "$physical_exports" ] || [ -z "$uuid_exports" ] || [ "$FORCE_FIX" = true ]; then
-            echo -e "${YELLOW}Обнаружены неправильные экспорты или необходимо принудительное исправление на сервере $server${NC}"
-            
-            # Создаем скрипт для исправления экспортов на сервере
-            echo -e "${YELLOW}Создание скрипта для исправления экспортов...${NC}"
-            fix_script=$(mktemp)
-            
-            cat > "$fix_script" << EOF
-#!/bin/bash
-set -e
-
-# Цветной вывод для наглядности
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BOLD='\033[1m'
-NC='\033[0m' # No Color
-
-echo -e "\${GREEN}\${BOLD}Исправление экспортов NFS для использования UUID вместо физического имени диска\${NC}"
-
-# UUID диска
-UUID="$uuid"
-# IP клиента для экспорта
-CLIENT_IP="$CLIENT_IP"
-
-# Поиск физического устройства по UUID
-echo -e "\${YELLOW}Поиск физического устройства по UUID \${UUID}...\${NC}"
-DEVICE=\$(blkid | grep -i "\$UUID" | awk -F: '{print \$1}')
-PHYSICAL_DISK=\$(basename "\$DEVICE")
-
-if [ -z "\$DEVICE" ]; then
-    echo -e "\${RED}ОШИБКА: Не найдено устройство с UUID \$UUID\${NC}"
-    echo -e "Доступные устройства:"
-    blkid
-    exit 1
-fi
-
-echo -e "\${GREEN}Найдено устройство: \$DEVICE (имя диска: \$PHYSICAL_DISK)\${NC}"
-
-# Проверка типа файловой системы
-FS_TYPE=\$(blkid -o value -s TYPE "\$DEVICE" 2>/dev/null)
-echo -e "\${YELLOW}Тип файловой системы: \$FS_TYPE\${NC}"
-
-# Вывод текущих монтирований
-echo -e "\${YELLOW}Текущие монтирования:\${NC}"
-mount | grep "/mnt/storage"
-
-# Вывод текущих экспортов
-echo -e "\${YELLOW}Текущие экспорты NFS:\${NC}"
-cat /etc/exports
-exportfs -v
-
-# Создание директории для UUID
-echo -e "\${YELLOW}Создание директории для монтирования по UUID...\${NC}"
-mkdir -p "/mnt/storage/\$UUID"
-
-# Размонтирование всех существующих монтирований
-echo -e "\${YELLOW}Размонтирование всех существующих монтирований...\${NC}"
-umount -f -l "\$DEVICE" 2>/dev/null || true
-umount -f -l "/mnt/storage/\$PHYSICAL_DISK" 2>/dev/null || true
-umount -f -l "/mnt/storage/sdb" 2>/dev/null || true
-umount -f -l "/mnt/storage/\$UUID" 2>/dev/null || true
-
-# Монтирование диска в новую директорию
-echo -e "\${YELLOW}Монтирование \$DEVICE в /mnt/storage/\$UUID...\${NC}"
-mount -t "\$FS_TYPE" -o rw,noatime,nodiratime "\$DEVICE" "/mnt/storage/\$UUID"
-
-# Проверка успешности монтирования
-if ! mount | grep -q "/mnt/storage/\$UUID"; then
-    echo -e "\${RED}ОШИБКА: Не удалось смонтировать диск\${NC}"
-    exit 1
-fi
-
-echo -e "\${GREEN}Диск успешно смонтирован в /mnt/storage/\$UUID\${NC}"
-
-# Установка прав доступа
-echo -e "\${YELLOW}Установка прав доступа...\${NC}"
-chmod -R 777 "/mnt/storage/\$UUID"
-
-# Обновление /etc/fstab
-echo -e "\${YELLOW}Обновление /etc/fstab...\${NC}"
-FSTAB_TMP=\$(mktemp)
-grep -v "/mnt/storage/" /etc/fstab > "\$FSTAB_TMP"
-echo "UUID=\$UUID /mnt/storage/\$UUID \$FS_TYPE rw,noatime,nodiratime 0 0" >> "\$FSTAB_TMP"
-mv "\$FSTAB_TMP" /etc/fstab
-
-# Обновление NFS экспортов
-echo -e "\${YELLOW}Обновление NFS экспортов...\${NC}"
-EXPORTS_TMP=\$(mktemp)
-grep -v "/mnt/storage/" /etc/exports > "\$EXPORTS_TMP"
-echo "/mnt/storage/\$UUID $CLIENT_IP(rw,sync,no_subtree_check,no_root_squash,insecure)" >> "\$EXPORTS_TMP"
-mv "\$EXPORTS_TMP" /etc/exports
-
-# Перезапуск NFS
-echo -e "\${YELLOW}Перезапуск NFS сервера...\${NC}"
-exportfs -ra
-systemctl restart nfs-kernel-server || systemctl restart nfs-server
-
-# Проверка статуса NFS
-echo -e "\${YELLOW}Статус NFS сервера:\${NC}"
-(systemctl status nfs-kernel-server || systemctl status nfs-server) | head -n15
-echo -e "\${YELLOW}Новые экспорты:\${NC}"
-exportfs -v
-
-echo -e "\${GREEN}\${BOLD}Готово! Сервер настроен для использования UUID вместо имени диска.\${NC}"
-EOF
-            
-            # Делаем скрипт исполняемым
-            chmod +x "$fix_script"
-            
-            # Копируем скрипт на сервер
-            remote_script="/tmp/fix_exports_$(date +%s).sh"
-            echo -e "${YELLOW}Копирование скрипта на сервер $server...${NC}"
-            scp -i "$SSH_KEY_PATH" -P "$port" -o StrictHostKeyChecking=no "$fix_script" "${SSH_USER}@${server}:${remote_script}" > /dev/null 2>&1
-            
-            # Запускаем скрипт на сервере
-            echo -e "${YELLOW}Запуск скрипта на сервере $server...${NC}"
-            remote_exec "$server" "$port" "chmod +x ${remote_script} && sudo ${remote_script}"
-            
-            # Удаляем временные файлы
-            rm -f "$fix_script"
-            remote_exec "$server" "$port" "rm -f ${remote_script}" > /dev/null 2>&1
-            
-            echo -e "${GREEN}✓ Экспорты на сервере $server успешно исправлены для UUID $uuid${NC}"
-        else
-            echo -e "${GREEN}✓ Экспорты на сервере $server уже настроены правильно для UUID $uuid${NC}"
-        fi
-    done
-done
-
 # 2. Проверка и настройка RAID-массивов
 echo -e "${GREEN}2. Настройка RAID-массивов...${NC}"
 if [ "${SKIP_RAID:-false}" = "true" ]; then
@@ -323,64 +164,140 @@ else
     setup_raid_arrays
 fi
 
-# 3. Настройка NFS экспортов на серверах
-echo -e "${GREEN}3. Настройка NFS...${NC}"
+# 3. Настройка NFS сервера (перед монтированием)
+echo -e "${GREEN}3. Настройка NFS сервера...${NC}"
+for port_entry in "${SSH_PORTS[@]}"; do
+    server=$(echo $port_entry | cut -d':' -f1)
+    port=$(echo $port_entry | cut -d':' -f2)
+    
+    echo -e "${YELLOW}Проверка и настройка NFS сервера на $server...${NC}"
+    remote_exec "$server" "$port" "
+        # Проверяем, установлен ли NFS сервер
+        if ! dpkg -l | grep -q nfs-kernel-server; then
+            echo 'Установка NFS сервера...'
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y nfs-kernel-server
+        fi
+        
+        # Проверяем, запущен ли RPC сервис
+        if ! systemctl is-active --quiet rpcbind; then
+            echo 'Запуск RPC сервиса...'
+            systemctl start rpcbind
+        fi
+        
+        # Проверяем, запущен ли NFS сервис
+        if ! systemctl is-active --quiet nfs-kernel-server && ! systemctl is-active --quiet nfs-server; then
+            echo 'Запуск NFS сервиса...'
+            systemctl start nfs-kernel-server || systemctl start nfs-server
+        fi
+        
+        # Проверяем статус сервисов
+        echo 'Статус RPC:'
+        systemctl status rpcbind --no-pager | head -n 5
+        
+        echo 'Статус NFS:'
+        (systemctl status nfs-kernel-server --no-pager || systemctl status nfs-server --no-pager) | head -n 5
+    "
+done
+
+# 4. Настройка NFS экспортов
+echo -e "${GREEN}4. Настройка NFS экспортов...${NC}"
 setup_nfs_exports
 
-# 4. Монтирование NFS шар на локальном компьютере
-echo -e "${GREEN}4. Монтирование NFS...${NC}"
+# 5. Проверка доступности NFS сервера
+echo -e "${GREEN}5. Проверка доступности NFS сервера...${NC}"
+for port_entry in "${SSH_PORTS[@]}"; do
+    server=$(echo $port_entry | cut -d':' -f1)
+    port=$(echo $port_entry | cut -d':' -f2)
+    
+    echo -e "${YELLOW}Проверка NFS сервера на $server...${NC}"
+    
+    # Проверяем, что NFS сервер отвечает на RPC запросы
+    rpc_check=$(timeout 5 rpcinfo -p "$server" 2>/dev/null | grep -E 'nfs|100003' || echo "")
+    if [ -z "$rpc_check" ]; then
+        echo -e "${RED}NFS сервер на $server не отвечает на RPC запросы!${NC}"
+        echo -e "${YELLOW}Исправление NFS сервера на $server...${NC}"
+        remote_exec "$server" "$port" "
+            exportfs -rf
+            systemctl restart rpcbind
+            systemctl restart nfs-kernel-server || systemctl restart nfs-server
+            sleep 5
+            echo 'Проверка регистрации NFS:'
+            rpcinfo -p | grep nfs
+        "
+    else
+        echo -e "${GREEN}✓ NFS сервер на $server отвечает на RPC запросы${NC}"
+    fi
+    
+    # Проверяем, что экспорты настроены
+    exports_check=$(showmount -e "$server" 2>/dev/null || echo "")
+    if [ -z "$exports_check" ]; then
+        echo -e "${RED}NFS сервер на $server не имеет экспортов!${NC}"
+        echo -e "${YELLOW}Исправление экспортов на $server...${NC}"
+        remote_exec "$server" "$port" "
+            exportfs -rf
+            exportfs -v
+        "
+    else
+        echo -e "${GREEN}✓ NFS сервер на $server имеет настроенные экспорты:${NC}"
+        echo "$exports_check"
+    fi
+done
+
+# 6. Монтирование NFS шар
+echo -e "${GREEN}6. Монтирование NFS шар...${NC}"
 mount_nfs_shares
 
-# 5. Обновление конфигурации backend
-echo -e "${GREEN}5. Обновление конфигурации backend...${NC}"
+# 7. Обновление конфигурации backend
+echo -e "${GREEN}7. Обновление конфигурации backend...${NC}"
 if [ -n "$CONFIG_PATH" ]; then
     update_backend_config
 else
     echo -e "${YELLOW}Пропускаем обновление конфигурации backend: CONFIG_PATH не задан${NC}"
 fi
 
-# 6. Проверка правильности монтирования
-echo -e "${GREEN}6. Проверка правильности монтирования...${NC}"
-wrong_mounts=$(mount | grep nfs | grep -v "/mnt/storage/$uuid" | grep "/mnt/storage/sd")
-
-if [ -n "$wrong_mounts" ]; then
-    echo -e "${RED}Обнаружены неправильно смонтированные шары (по имени диска вместо UUID):${NC}"
-    echo "$wrong_mounts"
+# 8. Проверка правильности монтирования
+echo -e "${GREEN}8. Проверка правильности монтирования...${NC}"
+nfs_mounts=$(mount | grep nfs)
+if [ -z "$nfs_mounts" ]; then
+    echo -e "${RED}Не обнаружено ни одного смонтированного NFS диска!${NC}"
+    echo -e "${YELLOW}Возможно, вам нужно вручную проверить состояние сервера:${NC}"
     
-    echo -e "${YELLOW}Исправление неправильных монтирований...${NC}"
-    for mount_line in "$wrong_mounts"; do
-        server=$(echo "$mount_line" | awk '{print $1}' | cut -d':' -f1)
-        path=$(echo "$mount_line" | awk '{print $1}' | cut -d':' -f2)
-        mount_point=$(echo "$mount_line" | awk '{print $3}')
+    for port_entry in "${SSH_PORTS[@]}"; do
+        server=$(echo $port_entry | cut -d':' -f1)
+        port=$(echo $port_entry | cut -d':' -f2)
         
-        echo -e "${YELLOW}Размонтирование $mount_point...${NC}"
-        umount -f -l "$mount_point" 2>/dev/null || true
-        
-        # Извлечение UUID из mount_point
-        uuid_from_path=$(basename "$mount_point")
-        
-        # Повторное монтирование с правильным путем
-        echo -e "${YELLOW}Повторное монтирование с правильным путем...${NC}"
-        mount -t nfs -o "$NFS_MOUNT_OPTIONS" "$server:/mnt/storage/$uuid_from_path" "$mount_point"
-        
-        # Обновление /etc/fstab
-        fstab_tmp=$(mktemp)
-        grep -v "$mount_point" /etc/fstab > "$fstab_tmp"
-        echo "$server:/mnt/storage/$uuid_from_path $mount_point nfs $NFS_MOUNT_OPTIONS 0 0" >> "$fstab_tmp"
-        mv "$fstab_tmp" /etc/fstab
-        
-        echo -e "${GREEN}✓ Монтирование исправлено на $server:/mnt/storage/$uuid_from_path${NC}"
+        echo -e "${YELLOW}Команды для проверки сервера $server:${NC}"
+        echo "ssh ${SSH_USER}@${server} -p ${port} -i ${SSH_KEY_PATH} 'sudo systemctl status nfs-kernel-server'"
+        echo "ssh ${SSH_USER}@${server} -p ${port} -i ${SSH_KEY_PATH} 'sudo exportfs -v'"
+        echo "ssh ${SSH_USER}@${server} -p ${port} -i ${SSH_KEY_PATH} 'sudo rpcinfo -p | grep nfs'"
     done
 else
-    echo -e "${GREEN}✓ Все шары смонтированы правильно, используя UUID вместо имен дисков${NC}"
+    echo -e "${GREEN}✓ NFS диски успешно смонтированы:${NC}"
+    echo "$nfs_mounts"
+    
+    echo -e "${YELLOW}Записи в /etc/fstab:${NC}"
+    grep nfs /etc/fstab
 fi
 
 # Вывод итоговой информации
 echo -e "${GREEN}===== Настройка завершена =====${NC}"
 echo -e "${YELLOW}Проверка смонтированных дисков:${NC}"
-mount | grep -E "$MOUNT_BASE"
+mount | grep -E "$MOUNT_BASE|nfs"
 echo -e "${YELLOW}Проверка записей в fstab:${NC}"
-grep -E "$MOUNT_BASE" /etc/fstab
+grep -E "$MOUNT_BASE|nfs" /etc/fstab
+
+# Проверка доступности записи в смонтированные диски
+for mount_path in $(mount | grep nfs | awk '{print $3}'); do
+    echo -e "${YELLOW}Проверка возможности записи в $mount_path...${NC}"
+    if touch "$mount_path/test_$(date +%s)" 2>/dev/null; then
+        echo -e "${GREEN}✓ Запись в $mount_path работает${NC}"
+        rm -f "$mount_path/test_$(date +%s)" 2>/dev/null
+    else
+        echo -e "${RED}✗ Не удалось записать в $mount_path${NC}"
+    fi
+done
+
 echo -e "${GREEN}Все диски теперь смонтированы по UUID: $MOUNT_BASE/UUID вместо /mnt/storage/имя_диска${NC}"
 
 exit 0
