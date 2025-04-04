@@ -49,6 +49,83 @@ if ! ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "
     exit 1
 fi
 
+# Проверка и установка необходимых зависимостей на удаленном сервере
+log "Проверка и установка необходимых зависимостей на сервере $BACKUP_SERVER"
+
+# Создаем временный скрипт для проверки и установки зависимостей
+cat > /tmp/check_deps.sh << 'EOF'
+#!/bin/bash
+
+# Определяем, какой менеджер пакетов использовать
+if command -v apt-get &> /dev/null; then
+    PKG_MANAGER="apt-get"
+    INSTALL_CMD="apt-get update && apt-get install -y"
+elif command -v yum &> /dev/null; then
+    PKG_MANAGER="yum"
+    INSTALL_CMD="yum -y install"
+elif command -v dnf &> /dev/null; then
+    PKG_MANAGER="dnf"
+    INSTALL_CMD="dnf -y install"
+elif command -v zypper &> /dev/null; then
+    PKG_MANAGER="zypper"
+    INSTALL_CMD="zypper in -y"
+else
+    echo "Не удалось определить менеджер пакетов. Установите пакеты вручную."
+    exit 1
+fi
+
+echo "Используем менеджер пакетов: $PKG_MANAGER"
+
+# Проверка и установка пакетов
+check_and_install() {
+    command_name="$1"
+    package_name="$2"
+    
+    echo "Проверка команды $command_name (пакет $package_name)..."
+    
+    if ! command -v "$command_name" &> /dev/null; then
+        echo "Команда $command_name не найдена. Устанавливаю пакет $package_name..."
+        eval "$INSTALL_CMD $package_name"
+        
+        if ! command -v "$command_name" &> /dev/null; then
+            echo "ОШИБКА: Не удалось установить $package_name!"
+            return 1
+        else
+            echo "Пакет $package_name успешно установлен."
+        fi
+    else
+        echo "Команда $command_name найдена, пакет $package_name уже установлен."
+    fi
+    return 0
+}
+
+# Устанавливаем необходимые пакеты
+echo "Установка необходимых зависимостей..."
+check_and_install "curl" "curl" || exit 1
+check_and_install "tar" "tar" || exit 1
+check_and_install "find" "findutils" || exit 1
+
+# Дополнительная проверка, что все команды доступны
+for cmd in curl tar find; do
+    if ! command -v "$cmd" &> /dev/null; then
+        echo "КРИТИЧЕСКАЯ ОШИБКА: Команда $cmd все еще недоступна после установки!"
+        exit 1
+    fi
+done
+
+echo "Все необходимые зависимости установлены и доступны."
+exit 0
+EOF
+
+# Копируем и выполняем скрипт проверки зависимостей на удаленном сервере
+scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -P "$BACKUP_SERVER_PORT" /tmp/check_deps.sh root@$BACKUP_SERVER:/tmp/check_deps.sh
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "chmod +x /tmp/check_deps.sh && /tmp/check_deps.sh"
+
+if [ $? -ne 0 ]; then
+    log "Ошибка: Не удалось установить необходимые зависимости на сервере"
+    exit 1
+fi
+
 # Создаем временный файл с серверным скриптом make_backup.sh
 cat > /tmp/make_backup.sh << 'EOF'
 #!/bin/bash
@@ -59,6 +136,61 @@ cat > /tmp/make_backup.sh << 'EOF'
 # Проверка аргументов
 if [ $# -lt 5 ]; then
     echo "Использование: $0 disk_name backup_path api_key api_url max_backups [interval]"
+    exit 1
+fi
+
+# Устанавливаем зависимости при необходимости
+check_and_install_deps() {
+    # Определяем менеджер пакетов
+    if command -v apt-get &> /dev/null; then
+        PKG_MANAGER="apt-get"
+        INSTALL_CMD="apt-get update && apt-get install -y"
+    elif command -v yum &> /dev/null; then
+        PKG_MANAGER="yum"
+        INSTALL_CMD="yum -y install"
+    elif command -v dnf &> /dev/null; then
+        PKG_MANAGER="dnf"
+        INSTALL_CMD="dnf -y install"
+    elif command -v zypper &> /dev/null; then
+        PKG_MANAGER="zypper"
+        INSTALL_CMD="zypper in -y"
+    else
+        echo "Не удалось определить менеджер пакетов"
+        return 1
+    fi
+    
+    echo "Используем менеджер пакетов: $PKG_MANAGER"
+    
+    # Проверяем и устанавливаем пакеты
+    check_cmd() {
+        local cmd="$1"
+        local pkg="$2"
+        if ! command -v "$cmd" &> /dev/null; then
+            echo "Команда $cmd не найдена, устанавливаем пакет $pkg..."
+            eval "$INSTALL_CMD $pkg"
+            if ! command -v "$cmd" &> /dev/null; then
+                echo "ОШИБКА: Не удалось установить $pkg"
+                return 1
+            fi
+        fi
+        return 0
+    }
+    
+    # Проверяем основные команды
+    check_cmd "curl" "curl" || return 1
+    check_cmd "tar" "tar" || return 1
+    check_cmd "find" "findutils" || return 1
+    check_cmd "mountpoint" "util-linux" || return 1
+    check_cmd "mkdir" "coreutils" || return 1
+    
+    echo "Все необходимые зависимости установлены"
+    return 0
+}
+
+# Устанавливаем зависимости
+echo "Проверка и установка необходимых зависимостей..."
+if ! check_and_install_deps; then
+    echo "ОШИБКА: Не удалось установить необходимые зависимости"
     exit 1
 fi
 
@@ -96,6 +228,7 @@ send_backup_status() {
 # Запись в лог с датой
 log_message() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
 }
 
 # Очистка старых резервных копий (оставляем только последние MAX_BACKUPS)
