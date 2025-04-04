@@ -6,10 +6,29 @@
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/backup_config.sh"
 
+# Получаем API ключ из .env файла бэкенда или используем значение по умолчанию
+BACKEND_ENV_FILE="/home/user/iqbanana_space_disk/backend/.env"
+API_KEY="backup_system_api_key_secure"
+API_URL="http://localhost:6005"
+
+if [ -f "$BACKEND_ENV_FILE" ]; then
+    # Извлекаем API_KEY из .env файла
+    ENV_API_KEY=$(grep API_KEY $BACKEND_ENV_FILE | cut -d'=' -f2 | tr -d '\r')
+    if [ -n "$ENV_API_KEY" ]; then
+        API_KEY="$ENV_API_KEY"
+    fi
+    
+    # Получаем порт из .env, если есть
+    ENV_PORT=$(grep PORT $BACKEND_ENV_FILE | cut -d'=' -f2 | tr -d '\r')
+    if [ -n "$ENV_PORT" ]; then
+        API_URL="http://localhost:$ENV_PORT"
+    fi
+fi
+
 # Функция для записи в лог
 log() {
     echo "$(date +"%Y-%m-%d %H:%M:%S") - $1"
-    echo "$1"
+    echo "$(date +"%Y-%m-%d %H:%M:%S") - $1" >> "$LOG_FILE"
 }
 
 # Проверка наличия ключа SSH
@@ -27,162 +46,253 @@ if ! ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "
 fi
 
 # Создаем временный файл с серверным скриптом
-cat > /tmp/make_backup.sh << EOF
+cat > /tmp/make_backup.sh << 'EOF'
 #!/bin/bash
 
-# Скрипт резервного копирования для сервера
+# Скрипт создания бэкапа и отправки статуса через API
+# Использование: ./make_backup.sh disk_name backup_path api_key api_url [interval]
 
-# Получаем UUID дисков из конфигурации
-SOURCE_UUID="$SOURCE_UUID"
-BACKUP_DISK_UUID="$TARGET_UUID"
-MAX_BACKUPS=$MAX_BACKUPS
-CLIENT_IP="$CLIENT_IP"
-BACKUP_STATUS_FILE="/root/backup_status.log"
-
-# Записываем в файл статуса
-echo "CLIENT_IP=\$CLIENT_IP" > \$BACKUP_STATUS_FILE
-
-# Определяем имена дисков вне зависимости от их доступности
-SOURCE_DISK_NAME=\$(lsblk -no pkname,uuid | grep "\$SOURCE_UUID" | awk '{print \$1}' 2>/dev/null)
-if [ -z "\$SOURCE_DISK_NAME" ]; then
-    # Если диск не найден, используем имя из сохраненной истории или последний известный диск
-    SOURCE_DISK_NAME=\$(grep -l "\$SOURCE_UUID" /etc/fstab | xargs cat 2>/dev/null | grep "\$SOURCE_UUID" | awk '{print \$1}' | sed 's/.*\///' 2>/dev/null || echo "sda")
-fi
-
-BACKUP_DISK_NAME=\$(lsblk -no pkname,uuid | grep "\$BACKUP_DISK_UUID" | awk '{print \$1}' 2>/dev/null)
-if [ -z "\$BACKUP_DISK_NAME" ]; then
-    # Если диск не найден, используем имя из сохраненной истории или последний известный диск
-    BACKUP_DISK_NAME=\$(grep -l "\$BACKUP_DISK_UUID" /etc/fstab | xargs cat 2>/dev/null | grep "\$BACKUP_DISK_UUID" | awk '{print \$1}' | sed 's/.*\///' 2>/dev/null || echo "sdb")
-fi
-
-# Проверка физического наличия дисков
-if ! blkid -U "\$BACKUP_DISK_UUID" > /dev/null 2>&1; then
-    echo "Ошибка: Физический диск с UUID=\$BACKUP_DISK_UUID не найден в системе"
-    echo "STATUS=ERROR" >> \$BACKUP_STATUS_FILE
-    echo "DISK=\$BACKUP_DISK_NAME" >> \$BACKUP_STATUS_FILE
+# Проверка аргументов
+if [ $# -lt 4 ]; then
+    echo "Использование: $0 disk_name backup_path api_key api_url [interval]"
     exit 1
 fi
 
-if ! blkid -U "\$SOURCE_UUID" > /dev/null 2>&1; then
-    echo "Ошибка: Физический диск с UUID=\$SOURCE_UUID не найден в системе"
-    echo "STATUS=ERROR" >> \$BACKUP_STATUS_FILE
-    echo "DISK=\$SOURCE_DISK_NAME" >> \$BACKUP_STATUS_FILE
-    exit 1
-fi
+DISK_NAME="$1"
+BACKUP_PATH="$2"
+API_KEY="$3"
+API_URL="$4"
+INTERVAL="${5:-daily}"
 
-# Создание точки монтирования с UUID
-if [ ! -d /mnt/backup_\$BACKUP_DISK_UUID ]; then
-    sudo mkdir -p /mnt/backup_\$BACKUP_DISK_UUID
-    echo "Создана точка монтирования /mnt/backup_\$BACKUP_DISK_UUID"
-fi
+# Путь для логов
+LOG_DIR="/var/log/iqbanana_backups"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/${DISK_NAME}_backup.log"
 
-# Принудительное размонтирование и повторное монтирование для проверки реального доступа к диску
-if grep -q "/mnt/backup_\$BACKUP_DISK_UUID" /proc/mounts; then
-    sudo umount /mnt/backup_\$BACKUP_DISK_UUID
-    echo "Размонтирован существующий диск для проверки"
-fi
-
-# Определяем тип файловой системы
-FS_TYPE=\$(blkid -s TYPE -o value \$(blkid -U "\$BACKUP_DISK_UUID"))
-echo "Тип файловой системы для диска бэкапа: \$FS_TYPE"
-
-# Монтирование диска по UUID с проверкой
-if [ -n "\$FS_TYPE" ]; then
-    sudo mount -t \$FS_TYPE UUID=\$BACKUP_DISK_UUID /mnt/backup_\$BACKUP_DISK_UUID
-else
-    # Если не определили тип, пусть система сама определит
-    sudo mount UUID=\$BACKUP_DISK_UUID /mnt/backup_\$BACKUP_DISK_UUID
-fi
-
-if [ \$? -ne 0 ]; then
-    echo "Ошибка: Не удалось смонтировать диск бэкапа с UUID=\$BACKUP_DISK_UUID"
-    echo "STATUS=ERROR" >> \$BACKUP_STATUS_FILE
-    echo "DISK=\$BACKUP_DISK_NAME" >> \$BACKUP_STATUS_FILE
-    exit 1
-fi
-echo "Диск смонтирован в /mnt/backup_\$BACKUP_DISK_UUID"
-
-# Проверка записи на диск бэкапа
-if ! touch /mnt/backup_\$BACKUP_DISK_UUID/test_write_access && rm /mnt/backup_\$BACKUP_DISK_UUID/test_write_access; then
-    echo "Ошибка: Нет доступа на запись в точку монтирования /mnt/backup_\$BACKUP_DISK_UUID"
-    echo "STATUS=ERROR" >> \$BACKUP_STATUS_FILE
-    echo "DISK=\$BACKUP_DISK_NAME" >> \$BACKUP_STATUS_FILE
-    exit 1
-fi
-
-# Получение точки монтирования исходного диска
-SOURCE_MOUNT=\$(findmnt -n -o TARGET -S UUID=\$SOURCE_UUID)
-if [ -z "\$SOURCE_MOUNT" ]; then
-    # Пробуем смонтировать исходный диск
-    TEMP_MOUNT="/mnt/source_\$SOURCE_UUID"
-    mkdir -p "\$TEMP_MOUNT"
-    if ! mount UUID=\$SOURCE_UUID "\$TEMP_MOUNT"; then
-        echo "Ошибка: Исходный диск с UUID=\$SOURCE_UUID не может быть смонтирован"
-        echo "STATUS=ERROR" >> \$BACKUP_STATUS_FILE
-        echo "DISK=\$SOURCE_DISK_NAME" >> \$BACKUP_STATUS_FILE
-        exit 1
-    fi
-    SOURCE_MOUNT="\$TEMP_MOUNT"
-fi
-
-# Проверка чтения с исходного диска
-if ! ls -la "\$SOURCE_MOUNT" > /dev/null 2>&1; then
-    echo "Ошибка: Нет доступа на чтение с исходного диска \$SOURCE_MOUNT"
-    echo "STATUS=ERROR" >> \$BACKUP_STATUS_FILE
-    echo "DISK=\$SOURCE_DISK_NAME" >> \$BACKUP_STATUS_FILE
-    exit 1
-fi
-
-# Создание архива с меткой текущего времени
-BACKUP_DATE=\$(date +"%Y%m%d_%H%M%S")
-echo "DISK=\$SOURCE_DISK_NAME" >> \$BACKUP_STATUS_FILE
-echo "Создание архива из \$SOURCE_MOUNT в /mnt/backup_\$BACKUP_DISK_UUID/nfs_backup_\$BACKUP_DATE.tar.gz"
-
-# Выполняем архивацию и проверяем результат
-tar -czf /mnt/backup_\$BACKUP_DISK_UUID/nfs_backup_\$BACKUP_DATE.tar.gz -C \$SOURCE_MOUNT .
-TAR_RESULT=\$?
-
-# Проверяем, что файл архива существует и имеет ненулевой размер
-if [ \$TAR_RESULT -eq 0 ] && [ -s "/mnt/backup_\$BACKUP_DISK_UUID/nfs_backup_\$BACKUP_DATE.tar.gz" ]; then
-    echo "Резервное копирование успешно выполнено: /mnt/backup_\$BACKUP_DISK_UUID/nfs_backup_\$BACKUP_DATE.tar.gz"
-    echo "STATUS=SUCCESS" >> \$BACKUP_STATUS_FILE
-else
-    echo "Ошибка при создании архива или созданный архив пуст"
-    echo "STATUS=ERROR" >> \$BACKUP_STATUS_FILE
-    exit 1
-fi
-
-# Удаление старых бэкапов если их количество превышает максимальное
-BACKUP_COUNT=\$(ls -1 /mnt/backup_\$BACKUP_DISK_UUID/nfs_backup_*.tar.gz 2>/dev/null | wc -l)
-if [ \$BACKUP_COUNT -gt $MAX_BACKUPS ]; then
-    BACKUPS_TO_REMOVE=\$((\$BACKUP_COUNT - $MAX_BACKUPS))
-    echo "Удаление \$BACKUPS_TO_REMOVE устаревших резервных копий"
+# Функция для отправки статуса через API
+send_backup_status() {
+    local status="$1"
+    local message="$2"
     
-    ls -1t /mnt/backup_\$BACKUP_DISK_UUID/nfs_backup_*.tar.gz | tail -n \$BACKUPS_TO_REMOVE | xargs rm -f
-    echo "\$BACKUPS_TO_REMOVE старых резервных копий успешно удалены"
+    # Формируем JSON для отправки
+    json_data="{\"diskName\":\"$DISK_NAME\",\"status\":\"$status\",\"message\":\"$message\"}"
+    
+    # Отправляем запрос на API
+    response=$(curl -s -X POST \
+        -H "Content-Type: application/json" \
+        -H "X-API-KEY: $API_KEY" \
+        -d "$json_data" \
+        "${API_URL}/api/system/backup-status")
+    
+    # Проверяем ответ (опционально)
+    echo "API response: $response" >> "$LOG_FILE"
+}
+
+# Запись в лог с датой
+log_message() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+}
+
+# Очистка старых резервных копий (оставляем только последние 5)
+cleanup_old_backups() {
+    # Получаем список файлов бэкапов для данного диска
+    backup_files=$(find "$BACKUP_PATH" -name "${DISK_NAME}_backup_*.tar.gz" | sort)
+    
+    # Подсчитываем количество файлов
+    count=$(echo "$backup_files" | wc -l)
+    
+    # Если файлов больше 5, удаляем самые старые
+    if [ "$count" -gt 5 ]; then
+        # Количество файлов для удаления
+        remove_count=$((count - 5))
+        
+        # Получаем список файлов для удаления (самые старые)
+        files_to_remove=$(echo "$backup_files" | head -n "$remove_count")
+        
+        # Удаляем каждый файл
+        echo "$files_to_remove" | while read -r file; do
+            log_message "Удаление старого бэкапа: $file"
+            rm -f "$file"
+        done
+    fi
+}
+
+# Функция для создания бэкапа
+make_backup() {
+    # Формируем имя файла бэкапа с текущей датой
+    DATE_SUFFIX=$(date '+%Y%m%d_%H%M%S')
+    BACKUP_FILE="${BACKUP_PATH}/${DISK_NAME}_backup_${DATE_SUFFIX}.tar.gz"
+    
+    # Проверяем, смонтирован ли исходный диск
+    if ! mountpoint -q "/mnt/${DISK_NAME}"; then
+        log_message "ОШИБКА: Диск ${DISK_NAME} не смонтирован"
+        send_backup_status "ERROR" "Диск ${DISK_NAME} не смонтирован"
+        return 1
+    fi
+    
+    # Отправляем статус о начале бэкапа
+    send_backup_status "PROCESSING" "Начало резервного копирования"
+    log_message "Начало создания бэкапа для диска ${DISK_NAME}"
+    
+    # Создаем каталог бэкапов если его нет
+    mkdir -p "$BACKUP_PATH"
+    
+    # Создаём бэкап
+    if tar -czf "$BACKUP_FILE" -C "/mnt" "${DISK_NAME}"; then
+        log_message "Бэкап успешно создан: $BACKUP_FILE"
+        
+        # Очистка старых бэкапов
+        cleanup_old_backups
+        
+        # Отправляем статус об успешном создании бэкапа
+        send_backup_status "SUCCESS" "Бэкап успешно создан: $(basename "$BACKUP_FILE")"
+        return 0
+    else
+        log_message "ОШИБКА при создании бэкапа"
+        send_backup_status "ERROR" "Ошибка при создании бэкапа"
+        return 1
+    fi
+}
+
+# Выполняем бэкап
+make_backup
+
+exit $?
+EOF
+
+# Копируем скрипт make_backup.sh на сервер
+log "Копирование скрипта резервного копирования на сервер $BACKUP_SERVER"
+scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -P "$BACKUP_SERVER_PORT" /tmp/make_backup.sh root@$BACKUP_SERVER:/root/make_backup.sh
+if [ $? -eq 0 ]; then
+    log "Скрипт резервного копирования успешно скопирован на сервер"
+else
+    log "Ошибка при копировании скрипта на сервер"
+    rm /tmp/make_backup.sh
+    exit 1
+fi
+
+# Создаем скрипт для настройки cron задания
+cat > /tmp/setup_backup_cron.sh << 'EOF'
+#!/bin/bash
+
+# Скрипт для настройки cron-задания для резервного копирования
+# Использование: ./setup_backup_cron.sh disk_name api_key api_url backup_path [interval]
+
+# Проверка аргументов
+if [ $# -lt 4 ]; then
+    echo "Использование: $0 disk_name api_key api_url backup_path [interval]"
+    echo "  disk_name   - Имя диска для бэкапа"
+    echo "  api_key     - Ключ API для отправки статусов"
+    echo "  api_url     - URL API сервера (например: http://localhost:6005)"
+    echo "  backup_path - Путь для сохранения бэкапов"
+    echo "  interval    - Интервал бэкапов (daily, weekly, monthly). По умолчанию: daily"
+    exit 1
+fi
+
+DISK_NAME="$1"
+API_KEY="$2"
+API_URL="$3"
+BACKUP_PATH="$4"
+INTERVAL="${5:-daily}"
+
+# Путь к скрипту make_backup.sh
+BACKUP_SCRIPT="/root/make_backup.sh"
+
+# Проверка наличия скрипта для резервного копирования
+if [ ! -f "$BACKUP_SCRIPT" ]; then
+    echo "Ошибка: Скрипт $BACKUP_SCRIPT не найден"
+    exit 1
+fi
+
+# Делаем скрипт исполняемым
+chmod +x "$BACKUP_SCRIPT"
+
+# Устанавливаем cron выражение в зависимости от интервала
+case "$INTERVAL" in
+    daily)
+        # Ежедневно в 2:00
+        CRON_EXPR="0 2 * * *"
+        ;;
+    weekly)
+        # Еженедельно в воскресенье в 3:00
+        CRON_EXPR="0 3 * * 0"
+        ;;
+    monthly)
+        # Ежемесячно 1-го числа в 4:00
+        CRON_EXPR="0 4 1 * *"
+        ;;
+    *)
+        echo "Неизвестный интервал: $INTERVAL. Используем ежедневный бэкап."
+        CRON_EXPR="0 2 * * *"
+        ;;
+esac
+
+# Формируем команду для cron
+BACKUP_CMD="$BACKUP_SCRIPT $DISK_NAME $BACKUP_PATH $API_KEY $API_URL $INTERVAL"
+
+# Проверяем, существует ли уже задание для этого диска
+EXISTING_CRON=$(crontab -l 2>/dev/null | grep -F "$DISK_NAME $BACKUP_PATH")
+
+if [ -n "$EXISTING_CRON" ]; then
+    # Обновляем существующее задание
+    echo "Обновляем существующее cron-задание для диска $DISK_NAME"
+    (crontab -l 2>/dev/null | grep -v "$DISK_NAME $BACKUP_PATH"; echo "$CRON_EXPR $BACKUP_CMD") | crontab -
+else
+    # Добавляем новое задание
+    echo "Добавляем новое cron-задание для диска $DISK_NAME"
+    (crontab -l 2>/dev/null; echo "$CRON_EXPR $BACKUP_CMD") | crontab -
+fi
+
+# Проверяем, добавилось ли задание
+if crontab -l 2>/dev/null | grep -q "$DISK_NAME $BACKUP_PATH"; then
+    echo "Cron-задание успешно установлено для диска $DISK_NAME с интервалом $INTERVAL"
+    echo "Расписание: $CRON_EXPR"
+    echo "Команда: $BACKUP_CMD"
+else
+    echo "Ошибка: Не удалось добавить cron-задание"
+    exit 1
 fi
 
 exit 0
 EOF
 
-# Копируем скрипт на сервер
-log "Копирование скрипта резервного копирования на сервер $BACKUP_SERVER"
-scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -P "$BACKUP_SERVER_PORT" /tmp/make_backup.sh root@$BACKUP_SERVER:/root/make_backup.sh
+# Копируем скрипт setup_backup_cron.sh на сервер
+log "Копирование скрипта настройки cron на сервер $BACKUP_SERVER"
+scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -P "$BACKUP_SERVER_PORT" /tmp/setup_backup_cron.sh root@$BACKUP_SERVER:/root/setup_backup_cron.sh
 if [ $? -eq 0 ]; then
-    log "Скрипт резервного копирования успешно скопирован на сервер"
+    log "Скрипт настройки cron успешно скопирован на сервер"
     # Удаляем временный файл
-    rm /tmp/make_backup.sh
+    rm /tmp/setup_backup_cron.sh
 else
     log "Ошибка при копировании скрипта на сервер"
     # Удаляем временный файл
-    rm /tmp/make_backup.sh
+    rm /tmp/setup_backup_cron.sh
     exit 1
 fi
 
-# Установка прав на скрипт
-chmod_command="chmod +x /root/make_backup.sh && echo 'Права на выполнение скрипта установлены'"
-log "Установка прав на скрипт на сервере $BACKUP_SERVER"
-ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "$chmod_command"
+# Установка прав на скрипты
+log "Установка прав на скрипты на сервере $BACKUP_SERVER"
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "chmod +x /root/make_backup.sh /root/setup_backup_cron.sh && echo 'Права на выполнение скриптов установлены'"
+
+# Настраиваем cron задание на сервере с использованием нового скрипта
+log "Настройка cron задания для резервного копирования на сервере"
+DISK_NAME=$(echo $SOURCE_UUID | cut -d'-' -f1)
+BACKUP_PATH="/mnt/backup_${TARGET_UUID}"
+
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "/root/setup_backup_cron.sh $DISK_NAME $API_KEY $API_URL $BACKUP_PATH $BACKUP_FREQUENCY"
+
+# Запускаем скрипт бэкапа немедленно, если указано
+if [ "$1" == "now" ]; then
+    log "Запуск немедленного резервного копирования..."
+    ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "/root/make_backup.sh $DISK_NAME $BACKUP_PATH $API_KEY $API_URL $BACKUP_FREQUENCY"
+    
+    # Проверяем статус выполнения
+    if [ $? -eq 0 ]; then
+        log "Резервное копирование успешно выполнено"
+    else
+        log "Ошибка при выполнении резервного копирования"
+    fi
+fi
 
 # Добавление записи в fstab, если её ещё нет
 add_fstab_command="
