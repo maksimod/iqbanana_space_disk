@@ -54,11 +54,11 @@ cat > /tmp/make_backup.sh << 'EOF'
 #!/bin/bash
 
 # Скрипт создания бэкапа и отправки статуса через API
-# Использование: ./make_backup.sh disk_name backup_path api_key api_url [interval]
+# Использование: ./make_backup.sh disk_name backup_path api_key api_url max_backups [interval]
 
 # Проверка аргументов
-if [ $# -lt 4 ]; then
-    echo "Использование: $0 disk_name backup_path api_key api_url [interval]"
+if [ $# -lt 5 ]; then
+    echo "Использование: $0 disk_name backup_path api_key api_url max_backups [interval]"
     exit 1
 fi
 
@@ -66,7 +66,8 @@ DISK_NAME="$1"
 BACKUP_PATH="$2"
 API_KEY="$3"
 API_URL="$4"
-INTERVAL="${5:-daily}"
+MAX_BACKUPS="${5:-5}"  # Максимальное количество бэкапов (по умолчанию 5)
+INTERVAL="${6:-daily}"
 
 # Путь для логов
 LOG_DIR="/var/log/iqbanana_backups"
@@ -97,7 +98,7 @@ log_message() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 }
 
-# Очистка старых резервных копий (оставляем только последние 5)
+# Очистка старых резервных копий (оставляем только последние MAX_BACKUPS)
 cleanup_old_backups() {
     # Получаем список файлов бэкапов для данного диска
     backup_files=$(find "$BACKUP_PATH" -name "${DISK_NAME}_backup_*.tar.gz" | sort)
@@ -105,10 +106,10 @@ cleanup_old_backups() {
     # Подсчитываем количество файлов
     count=$(echo "$backup_files" | wc -l)
     
-    # Если файлов больше 5, удаляем самые старые
-    if [ "$count" -gt 5 ]; then
+    # Если файлов больше MAX_BACKUPS, удаляем самые старые
+    if [ "$count" -gt "$MAX_BACKUPS" ]; then
         # Количество файлов для удаления
-        remove_count=$((count - 5))
+        remove_count=$((count - MAX_BACKUPS))
         
         # Получаем список файлов для удаления (самые старые)
         files_to_remove=$(echo "$backup_files" | head -n "$remove_count")
@@ -118,6 +119,8 @@ cleanup_old_backups() {
             log_message "Удаление старого бэкапа: $file"
             rm -f "$file"
         done
+        
+        log_message "Удалено $remove_count старых бэкапов, оставлено $MAX_BACKUPS последних"
     fi
 }
 
@@ -137,6 +140,7 @@ make_backup() {
     # Отправляем статус о начале бэкапа
     send_backup_status "PROCESSING" "Начало резервного копирования"
     log_message "Начало создания бэкапа для диска ${DISK_NAME}"
+    log_message "Настройка ротации: сохраняем $MAX_BACKUPS последних бэкапов"
     
     # Создаем каталог бэкапов если его нет
     mkdir -p "$BACKUP_PATH"
@@ -171,8 +175,8 @@ cat > /tmp/setup_cron.sh << 'EOF'
 # Удаляем существующие задания, содержащие make_backup.sh
 # Создаем новое задание с правильными параметрами
 
-if [ $# -lt 5 ]; then
-    echo "Использование: $0 <script> <disk_name> <backup_path> <api_key> <api_url> <interval>"
+if [ $# -lt 6 ]; then
+    echo "Использование: $0 <script> <disk_name> <backup_path> <api_key> <api_url> <max_backups> <interval>"
     exit 1
 fi
 
@@ -181,10 +185,15 @@ DISK_NAME="$2"
 BACKUP_PATH="$3"
 API_KEY="$4"
 API_URL="$5"
-INTERVAL="$6"
+MAX_BACKUPS="$6"
+INTERVAL="$7"
 
 # Устанавливаем cron выражение в зависимости от интервала
 case "$INTERVAL" in
+    hourly)
+        # Каждый час в начале часа
+        CRON_EXPR="0 * * * *"
+        ;;
     daily)
         # Ежедневно в 2:00
         CRON_EXPR="0 2 * * *"
@@ -204,7 +213,7 @@ case "$INTERVAL" in
 esac
 
 # Генерируем строку для crontab, экранируя специальные символы
-CRON_LINE="$CRON_EXPR $SCRIPT $DISK_NAME $BACKUP_PATH $API_KEY $API_URL $INTERVAL"
+CRON_LINE="$CRON_EXPR $SCRIPT $DISK_NAME $BACKUP_PATH $API_KEY $API_URL $MAX_BACKUPS $INTERVAL"
 
 # Создаем файл, в который запишем текущий crontab и добавим нашу строку
 TMP_FILE=$(mktemp)
@@ -249,12 +258,12 @@ BACKUP_PATH="/mnt/backup_${TARGET_UUID}"
 
 # Запускаем скрипт для настройки cron
 log "Настройка cron задания для бэкапа диска $DISK_NAME"
-ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "bash -c '/root/setup_cron.sh /root/make_backup.sh \"$DISK_NAME\" \"$BACKUP_PATH\" \"$API_KEY\" \"$API_URL\" \"$BACKUP_FREQUENCY\"'"
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "bash -c '/root/setup_cron.sh /root/make_backup.sh \"$DISK_NAME\" \"$BACKUP_PATH\" \"$API_KEY\" \"$API_URL\" \"$MAX_BACKUPS\" \"$BACKUP_FREQUENCY\"'"
 
 # Запускаем бэкап немедленно, если указано
 if [ "$1" == "now" ]; then
     log "Запуск немедленного резервного копирования..."
-    ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "bash -c '/root/make_backup.sh \"$DISK_NAME\" \"$BACKUP_PATH\" \"$API_KEY\" \"$API_URL\" \"$BACKUP_FREQUENCY\"'"
+    ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "bash -c '/root/make_backup.sh \"$DISK_NAME\" \"$BACKUP_PATH\" \"$API_KEY\" \"$API_URL\" \"$MAX_BACKUPS\" \"$BACKUP_FREQUENCY\"'"
     
     # Проверяем статус выполнения
     if [ $? -eq 0 ]; then
