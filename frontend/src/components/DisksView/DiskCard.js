@@ -1,7 +1,7 @@
 // frontend/src/components/DisksView/DiskCard.js
 import React from 'react';
 import { formatFileSize, calculateUsagePercent } from '../../utils/formatters';
-import { FaExclamationTriangle, FaPlug, FaExclamationCircle } from 'react-icons/fa';
+import { FaExclamationTriangle, FaPlug, FaExclamationCircle, FaSpinner, FaCheck } from 'react-icons/fa';
 import DiskUsageChart from './DiskUsageChart';
 import { useToast } from '../../context/ToastContext';
 
@@ -22,6 +22,40 @@ const DiskCard = ({ disk, onSelect }) => {
     
     // Only navigate to available disks
     onSelect(disk.name);
+  };
+
+  // Компонент отображения статуса бэкапа
+  const renderBackupStatus = () => {
+    if (!disk.backupStatus) return null;
+    
+    let statusIcon, statusText, statusClass;
+    
+    switch(disk.backupStatus) {
+      case 'PROCESSING':
+        statusIcon = <FaSpinner className="backup-status-icon-processing spinning" />;
+        statusText = "Резервное копирование";
+        statusClass = "backup-status-processing";
+        break;
+      case 'SUCCESS':
+        statusIcon = <FaCheck className="backup-status-icon-success" />;
+        statusText = "Бэкап создан";
+        statusClass = "backup-status-success";
+        break;
+      case 'ERROR':
+        statusIcon = <FaExclamationCircle className="backup-status-icon-error" />;
+        statusText = "Ошибка бэкапа";
+        statusClass = "backup-status-error";
+        break;
+      default:
+        return null;
+    }
+    
+    return (
+      <div className={`backup-status ${statusClass}`}>
+        {statusIcon}
+        <span className="backup-status-text">{statusText}</span>
+      </div>
+    );
   };
 
   return (
@@ -68,7 +102,8 @@ const DiskCard = ({ disk, onSelect }) => {
             ></div>
           </div>
           
-          {/* Убираем дублирующий блок с размерами, если он есть */}
+          {/* Отображение статуса бэкапа */}
+          {renderBackupStatus()}
         </>
       )}
     </div>

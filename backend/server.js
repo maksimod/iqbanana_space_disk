@@ -17,6 +17,7 @@ const cors = require('cors');
 const morgan = require('morgan');
 const multer = require('multer');
 const tempStorage = require('./utils/tempStorage');
+const mongoose = require('mongoose');
 // Load dotenv for API key environment variables
 const dotenv = require('dotenv');
 
@@ -29,6 +30,20 @@ const execPromise = util.promisify(exec);
 const app = express();
 const PORT = config.server.port;
 const API_VERSION = config.apiVersion;
+
+// Подключение к MongoDB
+mongoose.connect('mongodb://localhost:27017/iqbanana_disk', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+  serverSelectionTimeoutMS: 5000 // Таймаут 5 секунд
+})
+.then(() => {
+  logger.info('Успешное подключение к MongoDB');
+})
+.catch(err => {
+  logger.error('Ошибка подключения к MongoDB:', err.message);
+  logger.info('Сервер продолжит работу без MongoDB');
+});
 
 // Основные middleware
 app.use(corsMiddleware);

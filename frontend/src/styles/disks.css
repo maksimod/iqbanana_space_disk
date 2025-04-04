@@ -177,3 +177,49 @@
     height: 100px;
   }
 }
+
+/* Стили для статусов бэкапа */
+.backup-status {
+  display: flex;
+  align-items: center;
+  margin-top: 10px;
+  padding: 5px 10px;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.backup-status-processing {
+  background-color: #f0f4ff;
+  color: #4a6bdf;
+}
+
+.backup-status-success {
+  background-color: #edf7ed;
+  color: #2e7d32;
+}
+
+.backup-status-error {
+  background-color: #fdedec;
+  color: #c0392b;
+}
+
+.backup-status-icon-processing,
+.backup-status-icon-success,
+.backup-status-icon-error {
+  margin-right: 8px;
+  font-size: 16px;
+}
+
+.backup-status-text {
+  font-weight: 500;
+}
+
+/* Анимация вращения для иконки процесса */
+.spinning {
+  animation: spin 1.5s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
