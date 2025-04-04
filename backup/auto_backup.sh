@@ -82,8 +82,18 @@ if grep -q "/mnt/backup_\$BACKUP_DISK_UUID" /proc/mounts; then
     echo "Размонтирован существующий диск для проверки"
 fi
 
+# Определяем тип файловой системы
+FS_TYPE=\$(blkid -s TYPE -o value \$(blkid -U "\$BACKUP_DISK_UUID"))
+echo "Тип файловой системы для диска бэкапа: \$FS_TYPE"
+
 # Монтирование диска по UUID с проверкой
-sudo mount UUID=\$BACKUP_DISK_UUID /mnt/backup_\$BACKUP_DISK_UUID
+if [ -n "\$FS_TYPE" ]; then
+    sudo mount -t \$FS_TYPE UUID=\$BACKUP_DISK_UUID /mnt/backup_\$BACKUP_DISK_UUID
+else
+    # Если не определили тип, пусть система сама определит
+    sudo mount UUID=\$BACKUP_DISK_UUID /mnt/backup_\$BACKUP_DISK_UUID
+fi
+
 if [ \$? -ne 0 ]; then
     echo "Ошибка: Не удалось смонтировать диск бэкапа с UUID=\$BACKUP_DISK_UUID"
     echo "STATUS=ERROR" >> \$BACKUP_STATUS_FILE
@@ -176,11 +186,45 @@ ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root
 
 # Добавление записи в fstab, если её ещё нет
 add_fstab_command="
+# Определяем тип файловой системы диска
+FS_TYPE=\$(blkid -s TYPE -o value /dev/\$(lsblk -no pkname,uuid | grep \"\$BACKUP_DISK_UUID\" | awk '{print \$1}'))
+if [ -z \"\$FS_TYPE\" ]; then
+    FS_TYPE=\$(blkid | grep \"\$BACKUP_DISK_UUID\" | grep -o 'TYPE=\"[^\"]*\"' | cut -d'\"' -f2)
+fi
+
+if [ -z \"\$FS_TYPE\" ]; then
+    echo \"Не удалось определить тип файловой системы, используем ext4 по умолчанию\"
+    FS_TYPE=\"ext4\"
+else
+    echo \"Определен тип файловой системы: \$FS_TYPE\"
+fi
+
+# Проверяем, есть ли уже запись в fstab
 if ! grep -q 'UUID=$TARGET_UUID' /etc/fstab; then
-    echo \"UUID=$TARGET_UUID /mnt/backup_$TARGET_UUID ext4 defaults,nofail 0 2\" | sudo tee -a /etc/fstab > /dev/null
+    echo \"UUID=$TARGET_UUID /mnt/backup_$TARGET_UUID \$FS_TYPE defaults,nofail 0 2\" | sudo tee -a /etc/fstab > /dev/null
     echo \"Запись для диска резервного копирования добавлена в /etc/fstab\"
+    
+    # Создаем точку монтирования, если она еще не существует
+    mkdir -p /mnt/backup_$TARGET_UUID
+    
+    # Монтируем диск сразу после добавления записи в fstab
+    echo \"Монтирование диска резервного копирования...\"
+    mount UUID=$TARGET_UUID /mnt/backup_$TARGET_UUID
+    
+    # Проверяем, смонтировался ли диск
+    if mount | grep -q \"/mnt/backup_$TARGET_UUID\"; then
+        echo \"Диск успешно смонтирован в /mnt/backup_$TARGET_UUID\"
+    else
+        echo \"Ошибка: Не удалось смонтировать диск. Попробуйте выполнить команду 'mount -a'\"
+    fi
 else
     echo \"Запись для диска резервного копирования уже существует в /etc/fstab\"
+    
+    # Проверяем, смонтирован ли диск
+    if ! mount | grep -q \"/mnt/backup_$TARGET_UUID\"; then
+        echo \"Диск не смонтирован. Попытка монтирования...\"
+        mount UUID=$TARGET_UUID /mnt/backup_$TARGET_UUID || mount -a
+    fi
 fi
 "
 log "Настройка автоматического монтирования диска резервного копирования"

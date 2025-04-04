@@ -27,7 +27,7 @@ BACKUP_FREQUENCY="daily"
 MAX_BACKUPS=24
 
 # Путь монтирования целевого диска
-TARGET_MOUNT="/mnt/backup"
+TARGET_MOUNT="/mnt/backup_${TARGET_UUID}"
 
 # Путь к лог-файлу
 LOG_FILE="$(dirname "$(readlink -f "$0")")/backup.log"
