@@ -81,6 +81,16 @@ async function connectToMongoDB() {
 // Запускаем подключение к MongoDB
 connectToMongoDB();
 
+// Настройка CORS более детально
+const corsOptions = {
+  origin: ['http://iqbanana.online:6001', 'http://localhost:6001', 'http://localhost:3000', 'http://127.0.0.1:6001'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-KEY'],
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
+
 // Основные middleware
 app.use(corsMiddleware);
 app.use(express.json());
@@ -317,8 +327,8 @@ function startDiskMonitoring() {
         app.use(errorHandler);
         
         // Запуск сервера
-        app.listen(PORT, () => {
-            logger.info(`Сервер запущен на порту ${PORT}`);
+        app.listen(PORT, '0.0.0.0', () => {
+            logger.info(`Сервер запущен на порту ${PORT} (0.0.0.0)`);
             logger.info(`API доступно по адресу /api/${API_VERSION}`);
             
             const mountedDisksNames = Object.entries(global.mountedDisks)

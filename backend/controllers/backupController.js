@@ -12,14 +12,27 @@ const BACKUPS_YML_PATH = path.join(__dirname, '../../monitor/backups.yml');
  * Проверка API-ключа для бэкапа
  */
 const checkBackupApiKey = (req, res, next) => {
+  // Проверяем, задан ли ключ в конфигурации
+  logger.info(`[BACKUP] Загружен API ключ из конфигурации: '${config.backupApiKey}'`);
+  logger.info(`[BACKUP] Получен API ключ из запроса: '${req.headers['x-api-key']}'`);
+
+  if (!config.backupApiKey) {
+    logger.error('КРИТИЧЕСКАЯ ОШИБКА: BACKUP_API_KEY не задан в .env файле');
+    return res.status(500).json({ 
+      error: 'Ошибка сервера: API ключ для бэкапа не настроен' 
+    });
+  }
+  
   const apiKey = req.headers['x-api-key'];
   
   if (!apiKey || apiKey !== config.backupApiKey) {
+    logger.error(`[BACKUP] Ошибка авторизации. Полученный ключ: '${apiKey}', ожидаемый ключ: '${config.backupApiKey}'`);
     return res.status(401).json({ 
       error: 'Неавторизованный запрос, проверьте API ключ' 
     });
   }
   
+  logger.info('[BACKUP] API ключ успешно проверен');
   next();
 };
 

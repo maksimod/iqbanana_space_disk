@@ -31,7 +31,21 @@ const config = {
   },
   
   // API ключ для системы резервного копирования
-  backupApiKey: process.env.BACKUP_API_KEY || 'backup_system_api_key_secure',
+  get backupApiKey() {
+    const apiKey = process.env.BACKUP_API_KEY;
+    if (!apiKey) {
+      console.error('КРИТИЧЕСКАЯ ОШИБКА: Не задан BACKUP_API_KEY в .env файле!');
+      console.error('Пожалуйста, добавьте переменную BACKUP_API_KEY в .env файл.');
+      console.error('Например: BACKUP_API_KEY=mySecureKey');
+      
+      // Можно также использовать process.exit(1) для аварийного завершения приложения
+      // process.exit(1);
+      
+      // Возвращаем null, чтобы приложение могло проверить наличие ключа
+      return null;
+    }
+    return apiKey;
+  },
   
   // Настройки для резервного копирования
   backup: {
