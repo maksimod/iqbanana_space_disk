@@ -20,6 +20,13 @@ const tempStorage = require('./utils/tempStorage');
 const mongoose = require('mongoose');
 // Load dotenv for API key environment variables
 const dotenv = require('dotenv');
+// Добавляем возможность использования MongoDB Memory Server
+let mongoMemory;
+try {
+  mongoMemory = require('./mongodb-memory');
+} catch (err) {
+  logger.info('MongoDB Memory Server не установлен, используем стандартное подключение');
+}
 
 // Load environment variables
 dotenv.config();
@@ -32,18 +39,47 @@ const PORT = config.server.port;
 const API_VERSION = config.apiVersion;
 
 // Подключение к MongoDB
-mongoose.connect('mongodb://localhost:27017/iqbanana_disk', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-  serverSelectionTimeoutMS: 5000 // Таймаут 5 секунд
-})
-.then(() => {
-  logger.info('Успешное подключение к MongoDB');
-})
-.catch(err => {
-  logger.error('Ошибка подключения к MongoDB:', err.message);
-  logger.info('Сервер продолжит работу без MongoDB');
-});
+async function connectToMongoDB() {
+  try {
+    // Пробуем подключиться к стандартной MongoDB
+    await mongoose.connect('mongodb://localhost:27017/iqbanana_disk', {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+      serverSelectionTimeoutMS: 5000 // Таймаут 5 секунд
+    });
+    logger.info('Успешное подключение к MongoDB');
+  } catch (err) {
+    logger.error('Ошибка подключения к стандартной MongoDB:', err.message);
+    
+    // Если не удалось подключиться к MongoDB, пробуем использовать MongoDB Memory Server
+    if (mongoMemory) {
+      try {
+        logger.info('Пробуем запустить MongoDB Memory Server...');
+        const mongoUri = await mongoMemory.startMongoDB();
+        await mongoose.connect(mongoUri, {
+          useNewUrlParser: true,
+          useUnifiedTopology: true
+        });
+        logger.info('Успешное подключение к MongoDB Memory Server');
+        
+        // Регистрируем обработчик для закрытия MongoDB Memory Server при завершении работы
+        process.on('SIGINT', async () => {
+          logger.info('Завершение работы, останавливаем MongoDB Memory Server...');
+          await mongoMemory.stopMongoDB();
+          process.exit(0);
+        });
+      } catch (memoryError) {
+        logger.error('Ошибка при использовании MongoDB Memory Server:', memoryError.message);
+        logger.info('Сервер продолжит работу без MongoDB');
+      }
+    } else {
+      logger.info('Сервер продолжит работу без MongoDB');
+    }
+  }
+}
+
+// Запускаем подключение к MongoDB
+connectToMongoDB();
 
 // Основные middleware
 app.use(corsMiddleware);

@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const logger = require('../utils/logger');
 const yaml = require('js-yaml');
-const config = require('../config');
+const config = require('../config/config');
 const { Disk } = require('../models');
 
 // Путь к файлу с статусами бэкапов

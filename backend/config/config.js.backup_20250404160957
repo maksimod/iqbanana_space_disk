@@ -1,0 +1,10 @@
+
+{
+    "performance": {
+        "max_concurrent_jobs": 10
+    },
+    "disks": {
+        "C": "/mnt/data_storage/65135f15-6654-47b0-8e70-6f1a2485e8c2"
+    }
+}
+

@@ -10,6 +10,7 @@ debian/mini.iso
 .env.development.local
 .env.test.local
 .env.production.local
+*.bak*
 
 secrets.yml
 

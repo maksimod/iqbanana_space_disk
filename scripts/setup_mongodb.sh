@@ -22,49 +22,98 @@ log() {
 
 log "Начало настройки MongoDB и необходимых пакетов..."
 
-# Проверка наличия MongoDB
-if command -v mongod &> /dev/null; then
-    log "MongoDB уже установлен"
-else
-    log "Установка MongoDB..."
-    
-    # Импорт публичного ключа MongoDB
-    wget -qO - https://www.mongodb.org/static/pgp/server-4.4.asc | apt-key add -
-    
-    # Добавление репозитория MongoDB
-    echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/4.4 multiverse" | tee /etc/apt/sources.list.d/mongodb-org-4.4.list
-    
-    # Обновление списка пакетов
-    apt-get update
-    
-    # Установка MongoDB
-    apt-get install -y mongodb-org
-    
-    # Запуск и включение службы MongoDB
-    systemctl start mongod
-    systemctl enable mongod
-    
-    log "MongoDB успешно установлен"
-fi
+# Определение версии Debian
+DEBIAN_VERSION=$(lsb_release -rs)
+log "Версия Debian: $DEBIAN_VERSION"
+
+# Установка MongoDB 6.0 для Debian 12 (bookworm)
+log "Установка MongoDB 6.0..."
+
+# Установка необходимых зависимостей
+log "Установка необходимых зависимостей..."
+apt-get update
+apt-get install -y gnupg curl
+
+# Импорт публичного ключа MongoDB 6.0
+log "Импорт публичного ключа MongoDB 6.0..."
+curl -fsSL https://pgp.mongodb.com/server-6.0.asc | gpg -o /usr/share/keyrings/mongodb-server-6.0.gpg --dearmor
+
+# Создание файла списка источников MongoDB 6.0
+log "Создание файла репозитория MongoDB 6.0..."
+echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-6.0.gpg ] http://repo.mongodb.org/apt/debian bookworm/mongodb-org/6.0 main" | tee /etc/apt/sources.list.d/mongodb-org-6.0.list
+
+# Обновление списка пакетов
+log "Обновление списка пакетов..."
+apt-get update
+
+# Установка MongoDB
+log "Установка MongoDB 6.0..."
+apt-get install -y mongodb-org
 
 # Проверка статуса MongoDB
+log "Настройка службы MongoDB..."
+systemctl daemon-reload
+systemctl enable mongod
+systemctl start mongod
+
+# Проверка статуса MongoDB
+sleep 5
 if systemctl is-active --quiet mongod; then
     log "MongoDB активен и работает"
 else
     log "Запуск службы MongoDB..."
     systemctl start mongod
+    sleep 5
     if systemctl is-active --quiet mongod; then
         log "MongoDB успешно запущен"
     else
         echo -e "${RED}Не удалось запустить MongoDB. Проверьте журналы: journalctl -u mongod${NC}"
-        exit 1
+        echo -e "${YELLOW}Пробуем альтернативный метод установки...${NC}"
+        
+        # Останавливаем MongoDB если запущен
+        systemctl stop mongod
+        
+        # Установка MongoDB через npm (для разработки)
+        log "Установка mongodb-memory-server через npm..."
+        cd /home/user/iqbanana_space_disk/backend
+        npm install mongodb mongoose --save
+        npm install mongodb-memory-server --save-dev
+        
+        # Создаем файл для использования mongodb-memory-server
+        cat > /home/user/iqbanana_space_disk/backend/mongodb-memory.js << 'EOF'
+const { MongoMemoryServer } = require('mongodb-memory-server');
+const mongoose = require('mongoose');
+
+let mongoServer;
+
+async function startMongoDB() {
+  mongoServer = await MongoMemoryServer.create();
+  const mongoUri = mongoServer.getUri();
+  console.log(`MongoDB Memory Server запущен по адресу ${mongoUri}`);
+  return mongoUri;
+}
+
+async function stopMongoDB() {
+  await mongoose.disconnect();
+  if (mongoServer) {
+    await mongoServer.stop();
+  }
+}
+
+module.exports = { startMongoDB, stopMongoDB };
+EOF
+        log "Создан файл mongodb-memory.js для использования MongoDB Memory Server"
+        
+        # Обновляем владельца
+        chown -R user:user /home/user/iqbanana_space_disk/backend
+        exit 0
     fi
 fi
 
 # Установка mongoose для Node.js
 log "Установка mongoose для Node.js..."
 cd /home/user/iqbanana_space_disk/backend
-npm install mongoose --save
+npm install mongoose mongodb --save
 
 log "Настройка завершена успешно!"
 log "Теперь можно использовать MongoDB для хранения данных приложения"
