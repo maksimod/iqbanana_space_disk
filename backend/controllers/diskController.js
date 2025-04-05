@@ -169,6 +169,9 @@ const getDisks = async (req, res, next) => {
           }
         }
         
+        // Добавляем _id равный имени диска для совместимости с MongoDB
+        diskData._id = name;
+        
         // Пропускаем операции с базой данных, если MongoDB недоступна
         if (mongoose.connection.readyState !== 1) {
           return diskData;

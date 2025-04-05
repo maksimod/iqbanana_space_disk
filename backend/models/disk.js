@@ -7,6 +7,10 @@ const DiskSchema = new mongoose.Schema({
     required: true,
     unique: true
   },
+  path: {
+    type: String,
+    required: true
+  },
   mountPoint: {
     type: String,
     required: true

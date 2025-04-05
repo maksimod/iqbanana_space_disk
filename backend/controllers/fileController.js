@@ -9,6 +9,7 @@ const logger = require('../utils/logger');
 const tempStorage = require('../utils/tempStorage');
 const asyncHandler = require('express-async-handler');
 const Disk = require('../models/disk');
+const mongoose = require('mongoose');
 
 const execPromise = util.promisify(exec);
 
@@ -656,166 +657,365 @@ const cancelSync = (req, res) => {
 };
 
 /**
- * Create an empty file in a specified location
- * @route POST /:disk/create-empty-file
- * @access Private
+ * Создание пустого текстового файла
  */
-const createEmptyFile = asyncHandler(async (req, res) => {
-  const { fileName, path } = req.body;
-  const { disk } = req.params;
-
-  if (!fileName) {
-    return res.status(400).json({ error: 'Имя файла не указано' });
-  }
-
-  // Проверка на недопустимые символы в имени файла
-  const invalidChars = /[\/\\:*?"<>|]/;
-  if (invalidChars.test(fileName)) {
-    return res.status(400).json({ error: 'Имя файла содержит недопустимые символы' });
-  }
-
-  const diskObj = await Disk.findById(disk);
-  if (!diskObj) {
-    return res.status(404).json({ error: 'Диск не найден' });
-  }
-
-  // Использование физического пути из модели диска
-  const diskPath = diskObj.path;
-  const fullPath = path ? `${diskPath}/${path}/${fileName}` : `${diskPath}/${fileName}`;
-
+const createEmptyFile = async (req, res) => {
   try {
-    // Проверяем, существует ли уже файл с таким именем
-    if (fs.existsSync(fullPath)) {
-      return res.status(400).json({ error: 'Файл с таким именем уже существует' });
+    const { diskId } = req.params;
+    const { fileName, path: filePath = '' } = req.body;
+    
+    if (!fileName) {
+      return res.status(400).json({
+        success: false,
+        error: 'Не указано имя файла'
+      });
     }
-
-    // Создаем пустой файл
-    fs.writeFileSync(fullPath, '');
-
-    // Формируем относительный путь для ответа
-    const relativePath = path ? `${path}/${fileName}` : fileName;
-
-    res.status(201).json({ 
-      success: true, 
-      message: 'Файл успешно создан',
-      file: {
-        name: fileName,
-        path: relativePath,
-        size: 0,
-        isDirectory: false,
-        type: 'text/plain',
-        lastModified: new Date()
+    
+    logger.info(`Запрос на создание пустого файла: ${fileName}, на диске: ${diskId}, путь: ${filePath}`);
+    
+    // Проверяем, существует ли диск с таким ID или именем
+    let disk;
+    try {
+      // Сначала пытаемся найти по ID, если это ObjectID
+      if (mongoose.isValidObjectId(diskId)) {
+        disk = await Disk.findById(diskId);
       }
-    });
-  } catch (error) {
-    console.error('Ошибка создания файла:', error);
-    res.status(500).json({ error: 'Не удалось создать файл' });
-  }
-});
-
-/**
- * Read a text file content
- * @route GET /:disk/read-file
- * @access Private
- */
-const readTextFile = asyncHandler(async (req, res) => {
-  const { filePath } = req.query;
-  const { disk } = req.params;
-
-  if (!filePath) {
-    return res.status(400).json({ error: 'Путь к файлу не указан' });
-  }
-
-  const diskObj = await Disk.findById(disk);
-  if (!diskObj) {
-    return res.status(404).json({ error: 'Диск не найден' });
-  }
-
-  const diskPath = diskObj.path;
-  const fullPath = `${diskPath}/${filePath}`;
-
-  try {
-    // Проверяем существование файла
-    if (!fs.existsSync(fullPath)) {
-      return res.status(404).json({ error: 'Файл не найден' });
+      
+      // Если не найден по ID, пытаемся найти по имени
+      if (!disk) {
+        disk = await Disk.findOne({ name: diskId });
+      }
+      
+      // Если не нашли в MongoDB, используем конфиг напрямую
+      if (!disk && config.disks[diskId]) {
+        disk = {
+          name: diskId,
+          mountPoint: config.disks[diskId]
+        };
+        logger.info(`Диск ${diskId} найден в конфигурации: ${config.disks[diskId]}`);
+      }
+    } catch (err) {
+      logger.error(`Ошибка при поиске диска ${diskId}:`, err);
+      
+      // Если есть ошибка MongoDB, пытаемся найти диск в конфигурации
+      if (config.disks[diskId]) {
+        disk = {
+          name: diskId,
+          mountPoint: config.disks[diskId]
+        };
+        logger.info(`Диск ${diskId} найден в конфигурации: ${config.disks[diskId]}`);
+      }
     }
-
-    // Проверяем, является ли это директорией
-    const stats = fs.statSync(fullPath);
-    if (stats.isDirectory()) {
-      return res.status(400).json({ error: 'Указанный путь является директорией' });
-    }
-
-    // Определение типа файла по расширению
-    const fileExtension = path.extname(fullPath).toLowerCase();
-    const textExtensions = ['.txt', '.md', '.js', '.jsx', '.ts', '.tsx', '.html', '.css', '.json', '.yml', '.yaml', '.xml', '.csv', '.log'];
     
-    if (!textExtensions.includes(fileExtension)) {
-      return res.status(400).json({ error: 'Файл не является текстовым' });
+    if (!disk) {
+      logger.warn(`Диск с ID ${diskId} не найден`);
+      return res.status(404).json({
+        success: false,
+        error: 'Диск не найден'
+      });
     }
-
-    // Читаем содержимое файла
-    const content = fs.readFileSync(fullPath, 'utf8');
     
-    res.status(200).json({
+    // Проверяем, смонтирован ли диск
+    if (!global.mountedDisks[disk.name]) {
+      logger.error(`Попытка создания файла на несмонтированном диске: ${disk.name}`);
+      return res.status(503).json({
+        success: false,
+        error: 'Диск не смонтирован или недоступен',
+        status: 'offline'
+      });
+    }
+    
+    // Полный путь к файлу
+    const diskPath = disk.mountPoint || config.disks[disk.name];
+    const fullDir = path.join(diskPath, filePath);
+    const fullPath = path.join(fullDir, fileName);
+    
+    // Проверяем, существует ли директория
+    try {
+      await fsPromises.access(fullDir, fs.constants.F_OK);
+    } catch (err) {
+      logger.error(`Директория не существует: ${fullDir}`);
+      return res.status(404).json({
+        success: false,
+        error: 'Указанная директория не существует'
+      });
+    }
+    
+    // Проверяем, существует ли файл
+    try {
+      await fsPromises.access(fullPath, fs.constants.F_OK);
+      logger.warn(`Файл уже существует: ${fullPath}`);
+      return res.status(400).json({
+        success: false,
+        error: 'Файл с таким именем уже существует'
+      });
+    } catch (err) {
+      // Файл не существует, это хорошо
+    }
+    
+    // Создаем пустой файл
+    await fsPromises.writeFile(fullPath, '', 'utf8');
+    
+    logger.info(`Успешно создан пустой файл: ${fullPath}`);
+    
+    return res.status(201).json({
       success: true,
-      content
+      message: 'Файл успешно создан',
+      fileName,
+      path: filePath
     });
-  } catch (error) {
-    console.error('Ошибка чтения файла:', error);
-    res.status(500).json({ error: 'Не удалось прочитать файл' });
+  } catch (err) {
+    logger.error('Ошибка при создании пустого файла:', err);
+    return res.status(500).json({
+      success: false,
+      error: 'Не удалось создать файл: ' + err.message
+    });
   }
-});
+};
 
 /**
- * Save content to a text file
- * @route PUT /:disk/save-file
- * @access Private
+ * Чтение содержимого текстового файла
  */
-const saveTextFile = asyncHandler(async (req, res) => {
-  const { filePath, content } = req.body;
-  const { disk } = req.params;
-
-  if (!filePath) {
-    return res.status(400).json({ error: 'Путь к файлу не указан' });
-  }
-
-  if (content === undefined) {
-    return res.status(400).json({ error: 'Содержимое файла не указано' });
-  }
-
-  const diskObj = await Disk.findById(disk);
-  if (!diskObj) {
-    return res.status(404).json({ error: 'Диск не найден' });
-  }
-
-  const diskPath = diskObj.path;
-  const fullPath = `${diskPath}/${filePath}`;
-
+const readFileContent = async (req, res) => {
   try {
+    const { diskId } = req.params;
+    const { filePath } = req.query;
+    
+    if (!filePath) {
+      return res.status(400).json({
+        success: false,
+        error: 'Не указан путь к файлу'
+      });
+    }
+    
+    logger.info(`Запрос на чтение файла: ${filePath}, диск: ${diskId}`);
+    
+    // Проверяем, существует ли диск с таким ID или именем
+    let disk;
+    try {
+      // Сначала пытаемся найти по ID, если это ObjectID
+      if (mongoose.isValidObjectId(diskId)) {
+        disk = await Disk.findById(diskId);
+      }
+      
+      // Если не найден по ID, пытаемся найти по имени
+      if (!disk) {
+        disk = await Disk.findOne({ name: diskId });
+      }
+      
+      // Если не нашли в MongoDB, используем конфиг напрямую
+      if (!disk && config.disks[diskId]) {
+        disk = {
+          name: diskId,
+          mountPoint: config.disks[diskId]
+        };
+        logger.info(`Диск ${diskId} найден в конфигурации: ${config.disks[diskId]}`);
+      }
+    } catch (err) {
+      logger.error(`Ошибка при поиске диска ${diskId}:`, err);
+      
+      // Если есть ошибка MongoDB, пытаемся найти диск в конфигурации
+      if (config.disks[diskId]) {
+        disk = {
+          name: diskId,
+          mountPoint: config.disks[diskId]
+        };
+        logger.info(`Диск ${diskId} найден в конфигурации: ${config.disks[diskId]}`);
+      }
+    }
+    
+    if (!disk) {
+      logger.warn(`Диск с ID ${diskId} не найден`);
+      return res.status(404).json({
+        success: false,
+        error: 'Диск не найден'
+      });
+    }
+    
+    // Проверяем, смонтирован ли диск
+    if (!global.mountedDisks[disk.name]) {
+      logger.error(`Попытка чтения файла с несмонтированного диска: ${disk.name}`);
+      return res.status(503).json({
+        success: false,
+        error: 'Диск не смонтирован или недоступен',
+        status: 'offline'
+      });
+    }
+    
+    // Полный путь к файлу
+    const diskPath = disk.mountPoint || config.disks[disk.name];
+    const fullPath = path.join(diskPath, filePath);
+    
     // Проверяем существование файла
-    if (!fs.existsSync(fullPath)) {
-      return res.status(404).json({ error: 'Файл не найден' });
+    try {
+      await fsPromises.access(fullPath, fs.constants.F_OK | fs.constants.R_OK);
+    } catch (err) {
+      logger.error(`Файл не найден или нет прав на чтение: ${fullPath}`);
+      return res.status(404).json({
+        success: false,
+        error: 'Файл не найден или нет прав на чтение'
+      });
     }
-
-    // Проверяем, является ли это директорией
-    const stats = fs.statSync(fullPath);
-    if (stats.isDirectory()) {
-      return res.status(400).json({ error: 'Указанный путь является директорией' });
+    
+    // Проверяем, является ли файл текстовым по расширению
+    const fileExt = path.extname(filePath).toLowerCase().substring(1);
+    const textExtensions = ['txt', 'md', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'json', 'yml', 'yaml', 'xml', 'csv', 'log'];
+    
+    if (!textExtensions.includes(fileExt)) {
+      logger.warn(`Попытка чтения не текстового файла: ${fullPath}`);
+      return res.status(400).json({
+        success: false,
+        error: 'Формат файла не поддерживается для чтения'
+      });
     }
+    
+    // Проверяем размер файла (ограничиваем чтение файлов до 10 МБ)
+    const stats = await fsPromises.stat(fullPath);
+    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+    
+    if (stats.size > MAX_FILE_SIZE) {
+      logger.warn(`Попытка чтения слишком большого файла: ${fullPath} (${stats.size} байт)`);
+      return res.status(400).json({
+        success: false,
+        error: 'Файл слишком большой для чтения (максимум 10 МБ)'
+      });
+    }
+    
+    // Читаем файл
+    const content = await fsPromises.readFile(fullPath, 'utf8');
+    
+    logger.info(`Успешно прочитан файл: ${fullPath} (${content.length} байт)`);
+    
+    return res.json({
+      success: true,
+      content,
+      fileName: path.basename(filePath),
+      fileSize: stats.size,
+      lastModified: stats.mtime
+    });
+  } catch (err) {
+    logger.error('Ошибка при чтении файла:', err);
+    return res.status(500).json({
+      success: false,
+      error: 'Не удалось прочитать файл: ' + err.message
+    });
+  }
+};
 
+/**
+ * Сохранение содержимого текстового файла
+ */
+const saveFileContent = async (req, res) => {
+  try {
+    const { diskId } = req.params;
+    const { filePath, content } = req.body;
+    
+    if (!filePath) {
+      return res.status(400).json({
+        success: false,
+        error: 'Не указан путь к файлу'
+      });
+    }
+    
+    if (content === undefined) {
+      return res.status(400).json({
+        success: false,
+        error: 'Не указано содержимое файла'
+      });
+    }
+    
+    logger.info(`Запрос на сохранение файла: ${filePath}, диск: ${diskId}`);
+    
+    // Проверяем, существует ли диск с таким ID или именем
+    let disk;
+    try {
+      // Сначала пытаемся найти по ID, если это ObjectID
+      if (mongoose.isValidObjectId(diskId)) {
+        disk = await Disk.findById(diskId);
+      }
+      
+      // Если не найден по ID, пытаемся найти по имени
+      if (!disk) {
+        disk = await Disk.findOne({ name: diskId });
+      }
+      
+      // Если не нашли в MongoDB, используем конфиг напрямую
+      if (!disk && config.disks[diskId]) {
+        disk = {
+          name: diskId,
+          mountPoint: config.disks[diskId]
+        };
+        logger.info(`Диск ${diskId} найден в конфигурации: ${config.disks[diskId]}`);
+      }
+    } catch (err) {
+      logger.error(`Ошибка при поиске диска ${diskId}:`, err);
+      
+      // Если есть ошибка MongoDB, пытаемся найти диск в конфигурации
+      if (config.disks[diskId]) {
+        disk = {
+          name: diskId,
+          mountPoint: config.disks[diskId]
+        };
+        logger.info(`Диск ${diskId} найден в конфигурации: ${config.disks[diskId]}`);
+      }
+    }
+    
+    if (!disk) {
+      logger.warn(`Диск с ID ${diskId} не найден`);
+      return res.status(404).json({
+        success: false,
+        error: 'Диск не найден'
+      });
+    }
+    
+    // Проверяем, смонтирован ли диск
+    if (!global.mountedDisks[disk.name]) {
+      logger.error(`Попытка сохранения файла на несмонтированном диске: ${disk.name}`);
+      return res.status(503).json({
+        success: false,
+        error: 'Диск не смонтирован или недоступен',
+        status: 'offline'
+      });
+    }
+    
+    // Полный путь к файлу
+    const diskPath = disk.mountPoint || config.disks[disk.name];
+    const fullPath = path.join(diskPath, filePath);
+    
+    // Проверяем существование файла
+    try {
+      await fsPromises.access(fullPath, fs.constants.F_OK | fs.constants.W_OK);
+    } catch (err) {
+      logger.error(`Файл не найден или нет прав на запись: ${fullPath}`);
+      return res.status(404).json({
+        success: false,
+        error: 'Файл не найден или нет прав на запись'
+      });
+    }
+    
     // Записываем содержимое в файл
-    fs.writeFileSync(fullPath, content);
+    await fsPromises.writeFile(fullPath, content, 'utf8');
     
-    res.status(200).json({
+    logger.info(`Успешно сохранен файл: ${fullPath} (${content.length} байт)`);
+    
+    // Получаем обновленную информацию о файле
+    const stats = await fsPromises.stat(fullPath);
+    
+    return res.json({
       success: true,
-      message: 'Файл успешно сохранен'
+      message: 'Файл успешно сохранен',
+      fileName: path.basename(filePath),
+      fileSize: stats.size,
+      lastModified: stats.mtime
     });
-  } catch (error) {
-    console.error('Ошибка сохранения файла:', error);
-    res.status(500).json({ error: 'Не удалось сохранить файл' });
+  } catch (err) {
+    logger.error('Ошибка при сохранении файла:', err);
+    return res.status(500).json({
+      success: false,
+      error: 'Не удалось сохранить файл: ' + err.message
+    });
   }
-});
+};
 
 module.exports = {
   getFiles,
@@ -827,6 +1027,6 @@ module.exports = {
   getSyncStatus,
   cancelSync,
   createEmptyFile,
-  readTextFile,
-  saveTextFile
+  readFileContent,
+  saveFileContent
 };

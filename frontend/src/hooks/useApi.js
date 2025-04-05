@@ -782,7 +782,7 @@ const useApi = () => {
    */
   const createEmptyFile = async (diskId, fileData) => {
     try {
-      const response = await fetch(getApiUrl(`/files/${diskId}/create-empty-file`), {
+      const response = await fetch(getApiUrl(`/disks/${diskId}/create-empty-file`), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

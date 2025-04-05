@@ -38,54 +38,120 @@ const app = express();
 const PORT = config.server.port;
 const API_VERSION = config.apiVersion;
 
-// Подключение к MongoDB
-async function connectToMongoDB() {
-  // Сразу используем фейковую модель вместо попыток подключиться к MongoDB
-  logger.info('Настройка фейковой модели Disk вместо MongoDB...');
+// Создание фейковой модели Disk
+const createFakeModels = () => {
+  logger.warn('Создание фейковой модели Disk для работы без MongoDB');
   
-  // Определяем временное локальное хранилище для дисков
-  global.disksStore = {};
-  
-  // Переопределяем методы модели Disk
-  const DiskModel = {
-    findOne: async (query) => {
-      const diskName = query.name;
-      return global.disksStore[diskName] || null;
+  const fakeDiskModel = {
+    fakeModel: true,
+    find: async () => {
+      return Object.entries(require('./config/config').disks).map(([name, path]) => ({
+        _id: name, // Используем имя как ID
+        name,
+        path,
+        mountPoint: path,
+        status: global.mountedDisks && global.mountedDisks[name] ? 'online' : 'offline',
+        total: 0,
+        free: 0,
+        used: 0,
+        userFilesSize: 0
+      }));
     },
-    
-    updateOne: async (query, update) => {
-      const diskName = query.name;
-      const diskData = global.disksStore[diskName] || {};
-      
-      // Применяем обновления
-      if (update.$set) {
-        Object.assign(diskData, update.$set);
+    findOne: async ({ name }) => {
+      const path = require('./config/config').disks[name];
+      if (!path) return null;
+      return {
+        _id: name, // Используем имя как ID
+        name,
+        path,
+        mountPoint: path,
+        status: global.mountedDisks && global.mountedDisks[name] ? 'online' : 'offline',
+        total: 0,
+        free: 0,
+        used: 0,
+        userFilesSize: 0
+      };
+    },
+    findById: async (id) => {
+      // Проверяем, является ли id именем диска
+      if (require('./config/config').disks[id]) {
+        const path = require('./config/config').disks[id];
+        return {
+          _id: id,
+          name: id,
+          path,
+          mountPoint: path,
+          status: global.mountedDisks && global.mountedDisks[id] ? 'online' : 'offline',
+          total: 0,
+          free: 0,
+          used: 0,
+          userFilesSize: 0
+        };
       }
       
-      global.disksStore[diskName] = diskData;
-      return { acknowledged: true, modifiedCount: 1 };
+      // Иначе пытаемся найти диск по _id
+      const disk = Object.entries(require('./config/config').disks)
+        .find(([name]) => name === id);
+      
+      if (!disk) return null;
+      
+      const [name, path] = disk;
+      return {
+        _id: name, // Гарантируем, что _id всегда соответствует имени диска
+        name,
+        path,
+        mountPoint: path,
+        status: global.mountedDisks && global.mountedDisks[name] ? 'online' : 'offline',
+        total: 0,
+        free: 0,
+        used: 0,
+        userFilesSize: 0
+      };
     },
-    
-    create: async (data) => {
-      const diskName = data.name;
-      global.disksStore[diskName] = { ...data, _id: `fake_id_${Date.now()}` };
-      return global.disksStore[diskName];
-    }
+    // Другие методы модели, которые могут понадобиться
+    updateOne: async () => ({}),
+    create: async () => ({})
   };
   
-  // Регистрируем фейковую модель
-  mongoose.model = function(name) {
-    if (name === 'Disk') {
-      return DiskModel;
-    }
-    return { findOne: async () => null };
-  };
+  // Подменяем реальную модель на фейковую - важно, чтобы это произошло до любых запросов к MongoDB
+  try {
+    const models = require('./models');
+    models.Disk = fakeDiskModel;
+    logger.info('Фейковая модель Disk настроена');
+  } catch (error) {
+    logger.error('Ошибка при настройке фейковой модели:', error);
+  }
   
-  logger.info('Фейковая модель Disk настроена');
-}
+  return fakeDiskModel;
+};
 
-// Запускаем подключение к MongoDB
-connectToMongoDB();
+// Проверка доступности MongoDB и создание фейковой модели
+(async () => {
+  try {
+    logger.info('Настройка фейковой модели Disk вместо MongoDB...');
+    // Сразу создаем фейковую модель, не дожидаясь попытки подключения к MongoDB
+    const fakeDiskModel = createFakeModels();
+    
+    // Теперь настраиваем прослушиватели событий для MongoDB, но не блокируем работу
+    const mongoose = require('mongoose');
+    
+    // Устанавливаем таймаут в 5 секунд вместо 10 для более быстрого ответа
+    mongoose.set('bufferTimeoutMS', 5000);
+    
+    // Прослушиваем события подключения и ошибок MongoDB, но не блокируем работу
+    mongoose.connection.on('connected', () => {
+      logger.info('MongoDB подключена');
+    });
+    
+    mongoose.connection.on('error', (err) => {
+      logger.warn(`Ошибка подключения к MongoDB: ${err.message}`);
+    });
+    
+    // Не ждем подключения к MongoDB для продолжения запуска сервера
+  } catch (error) {
+    logger.error('Ошибка при настройке моделей:', error);
+  }
+})();
 
 // Настройка CORS более детально
 const corsOptions = {

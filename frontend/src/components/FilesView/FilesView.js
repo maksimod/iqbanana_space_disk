@@ -32,7 +32,8 @@ const FilesView = () => {
     handleBack, 
     handleNavigate, 
     loadFiles, 
-    loadDisks 
+    loadDisks,
+    disks
   } = useAppContext();
   
   const api = useApi();
@@ -406,13 +407,35 @@ const FilesView = () => {
    */
   const createEmptyFile = async (fileData) => {
     try {
-      // Проверяем наличие ID диска
+      // Проверяем наличие текущего диска
       if (!currentDisk) {
         toast.showError('Не выбран диск');
         return;
       }
       
-      const result = await api.createEmptyFile(currentDisk, fileData);
+      // Находим объект диска по имени в списке дисков
+      const diskObj = disks.find(disk => disk.name === currentDisk);
+      
+      if (!diskObj) {
+        console.error('Не удалось найти диск:', currentDisk, 'в списке:', disks);
+        toast.showError('Не удалось найти диск!');
+        return;
+      }
+      
+      // Используем имя диска как ID, если _id отсутствует
+      const diskId = diskObj._id || diskObj.name;
+      
+      console.log('Отправка запроса на создание файла:', { 
+        diskId, 
+        fileName: fileData.fileName,
+        path: currentPath
+      });
+      
+      const result = await api.createEmptyFile(diskId, {
+        fileName: fileData.fileName,
+        path: currentPath
+      });
+      
       if (result.success) {
         toast.showSuccess('Файл успешно создан');
         setIsFileDialogOpen(false);
@@ -430,6 +453,24 @@ const FilesView = () => {
    */
   const openFileEditor = async (file) => {
     try {
+      // Проверяем наличие текущего диска
+      if (!currentDisk) {
+        toast.showError('Не выбран диск');
+        return;
+      }
+      
+      // Находим объект диска по имени в списке дисков
+      const diskObj = disks.find(disk => disk.name === currentDisk);
+      
+      if (!diskObj) {
+        console.error('Не удалось найти диск:', currentDisk, 'в списке:', disks);
+        toast.showError('Не удалось найти диск!');
+        return;
+      }
+      
+      // Используем имя диска как ID, если _id отсутствует
+      const diskId = diskObj._id || diskObj.name;
+      
       // Проверяем, является ли файл текстовым по расширению
       const fileExt = file.name.split('.').pop().toLowerCase();
       const textExtensions = ['txt', 'md', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'json', 'yml', 'yaml', 'xml', 'csv', 'log'];
@@ -440,16 +481,18 @@ const FilesView = () => {
       }
       
       console.log('Открываем файл для редактирования:', file.name);
+      console.log('Диск объект:', diskObj);
+      console.log('Используемый ID диска:', diskId);
       
       // Получаем полный путь к файлу
       const filePath = currentPath
         ? `${currentPath}/${file.name}`
         : file.name;
       
-      console.log('Путь к файлу:', filePath);
+      console.log('Путь к файлу:', filePath, 'ID диска:', diskId);
       
       // Получаем содержимое файла
-      const result = await api.getFileContent(currentDisk, filePath);
+      const result = await api.getFileContent(diskId, filePath);
       if (result.success) {
         console.log('Содержимое файла получено, открываем редактор');
         setFileContent(result.content);
@@ -470,10 +513,24 @@ const FilesView = () => {
    * @param {string} newContent - Новое содержимое файла
    */
   const saveFileContent = async (newContent) => {
-    if (!editingFile) return;
+    if (!editingFile || !currentDisk) return;
     
     try {
-      await api.saveFileContent(currentDisk, editingFile.path, newContent);
+      // Находим объект диска по имени в списке дисков
+      const diskObj = disks.find(disk => disk.name === currentDisk);
+      
+      if (!diskObj) {
+        console.error('Не удалось найти диск:', currentDisk, 'в списке:', disks);
+        toast.showError('Не удалось найти диск!');
+        return;
+      }
+      
+      // Используем имя диска как ID, если _id отсутствует
+      const diskId = diskObj._id || diskObj.name;
+      
+      console.log('Сохраняем файл:', editingFile.path, 'ID диска:', diskId);
+      
+      await api.saveFileContent(diskId, editingFile.path, newContent);
       // Обновляем список файлов, чтобы отразить изменение даты модификации и размера
       loadFiles();
     } catch (error) {
