@@ -92,11 +92,75 @@ const getDisks = async (req, res, next) => {
               diskData.free = isNaN(freeKB) ? 0 : freeKB * 1024;
               diskData.used = isNaN(usedKB) ? 0 : usedKB * 1024;
               
-              // Пропускаем длительную операцию подсчета пользовательских файлов
-              // Это значительно ускорит API
-              diskData.userFilesSize = 0;
+              // Рассчитываем размер пользовательских файлов отдельно с небольшим таймаутом
+              try {
+                logger.info(`Подсчет размера пользовательских файлов на диске ${name}...`);
+                // Используем find для нахождения всех обычных файлов и подсчета их размера с помощью du
+                // Исключаем скрытые файлы, системные директории и временные файлы
+                const { stdout: duOutput } = await withTimeout(
+                  execPromise(`find "${mountPoint}" -type f -not -path "*/\\.*" -not -path "*/.tmp_chunks*" -not -name ".disk_uuid" -exec du -sk {} \\; | awk '{sum += $1} END {print sum}'`),
+                  1000, // Таймаут 1 секунда для быстроты
+                  `Таймаут при подсчете пользовательских файлов на диске ${name}`
+                );
+                
+                const userFilesSizeKB = parseInt(duOutput.trim(), 10);
+                if (!isNaN(userFilesSizeKB) && userFilesSizeKB > 0) {
+                  diskData.userFilesSize = userFilesSizeKB * 1024; // Конвертируем KB в байты
+                  logger.info(`Размер пользовательских файлов на диске ${name}: ${formatBytes(diskData.userFilesSize)}`);
+                } else {
+                  // Если не удалось подсчитать или размер равен 0, просто используем базовый список файлов
+                  const files = await fsPromises.readdir(mountPoint);
+                  const userFiles = files.filter(file => !file.startsWith('.'));
+                  
+                  if (userFiles.length === 0) {
+                    // Если пользовательских файлов нет, устанавливаем 0
+                    diskData.userFilesSize = 0;
+                  } else {
+                    // Если есть файлы, но du не сработал - используем упрощенную технику
+                    diskData.userFilesSize = 0;
+                    
+                    for (const file of userFiles) {
+                      try {
+                        const filePath = path.join(mountPoint, file);
+                        const stats = await fsPromises.stat(filePath);
+                        if (stats.isFile()) {
+                          diskData.userFilesSize += stats.size;
+                        }
+                      } catch (fileErr) {
+                        logger.warn(`Не удалось получить размер файла ${file}: ${fileErr.message}`);
+                      }
+                    }
+                  }
+                }
+              } catch (duError) {
+                logger.warn(`Не удалось подсчитать размер пользовательских файлов: ${duError.message}`);
+                
+                // Если не удалось подсчитать через du, пытаемся использовать прямой подсчет через fs
+                try {
+                  const files = await fsPromises.readdir(mountPoint);
+                  const userFiles = files.filter(file => !file.startsWith('.'));
+                  
+                  diskData.userFilesSize = 0;
+                  
+                  for (const file of userFiles) {
+                    try {
+                      const filePath = path.join(mountPoint, file);
+                      const stats = await fsPromises.stat(filePath);
+                      if (stats.isFile()) {
+                        diskData.userFilesSize += stats.size;
+                      }
+                    } catch (fileErr) {
+                      logger.warn(`Не удалось получить размер файла ${file}: ${fileErr.message}`);
+                    }
+                  }
+                } catch (fsError) {
+                  logger.error(`Не удалось подсчитать размер пользовательских файлов через fs: ${fsError.message}`);
+                  // Если все методы не удались, используем used как последний вариант
+                  diskData.userFilesSize = diskData.used;
+                }
+              }
               
-              logger.info(`Диск ${name} - данные из df: total=${formatBytes(diskData.total)}, free=${formatBytes(diskData.free)}, used=${formatBytes(diskData.used)}`);
+              logger.info(`Диск ${name} - данные из df: total=${formatBytes(diskData.total)}, free=${formatBytes(diskData.free)}, used=${formatBytes(diskData.used)}, userFiles=${formatBytes(diskData.userFilesSize)}`);
             }
           } catch (diskError) {
             logger.error(`Ошибка при получении информации о диске ${name}`, diskError);
