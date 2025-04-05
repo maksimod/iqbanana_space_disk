@@ -41,11 +41,12 @@ const API_VERSION = config.apiVersion;
 // Подключение к MongoDB
 async function connectToMongoDB() {
   try {
-    // Пробуем подключиться к стандартной MongoDB
-    await mongoose.connect('mongodb://localhost:27017/iqbanana_disk', {
+    // Пробуем подключиться к стандартной MongoDB с более коротким таймаутом
+    await mongoose.connect('mongodb://127.0.0.1:27017/iqbanana_disk', {
       useNewUrlParser: true,
       useUnifiedTopology: true,
-      serverSelectionTimeoutMS: 5000 // Таймаут 5 секунд
+      serverSelectionTimeoutMS: 2000, // Более короткий таймаут 2 секунды
+      connectTimeoutMS: 2000
     });
     logger.info('Успешное подключение к MongoDB');
   } catch (err) {
@@ -58,7 +59,9 @@ async function connectToMongoDB() {
         const mongoUri = await mongoMemory.startMongoDB();
         await mongoose.connect(mongoUri, {
           useNewUrlParser: true,
-          useUnifiedTopology: true
+          useUnifiedTopology: true,
+          serverSelectionTimeoutMS: 2000,
+          connectTimeoutMS: 2000
         });
         logger.info('Успешное подключение к MongoDB Memory Server');
         

@@ -79,12 +79,12 @@ const useApi = () => {
    * Получение списка дисков с коротким таймаутом для ускорения загрузки при недоступных дисках
    */
   const fetchDisks = useCallback(async () => {
-    // Используем более короткий таймаут для списка дисков (3 секунды)
+    // Увеличиваем таймаут для списка дисков (5 секунд)
     return await fetchData('/disks', {
       headers: {
         ...getAuthHeaders()
       }
-    }, 3000);
+    }, 5000);
   }, [fetchData, getAuthHeaders]);
 
   /**

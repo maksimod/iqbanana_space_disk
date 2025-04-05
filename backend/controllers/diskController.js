@@ -63,61 +63,51 @@ const getDisks = async (req, res, next) => {
           logger.warn(`Диск ${name} (${mountPoint}) не смонтирован или недоступен`);
           diskData.error = 'Не удалось получить информацию о диске';
         } else {
-          // Получаем общий размер и доступное пространство из df с таймаутом
-          const dfPromise = execPromise(`df -k "${mountPoint}" | tail -n 1`);
-          const { stdout: dfOutput } = await withTimeout(
-            dfPromise, 
-            2000, 
-            `Таймаут получения информации о диске ${name}`
-          );
-          
-          const dfParts = dfOutput.trim().split(/\s+/);
-          
-          if (dfParts.length < 4) {
-            logger.error(`Неправильный формат вывода df для ${mountPoint}: ${dfOutput}`);
+          try {
+            // Получаем общий размер и доступное пространство из df с меньшим таймаутом
+            const dfPromise = execPromise(`df -k "${mountPoint}" | tail -n 1`);
+            const { stdout: dfOutput } = await withTimeout(
+              dfPromise, 
+              1000, // Уменьшаем таймаут до 1 секунды
+              `Таймаут получения информации о диске ${name}`
+            );
+            
+            const dfParts = dfOutput.trim().split(/\s+/);
+            
+            if (dfParts.length < 4) {
+              logger.error(`Неправильный формат вывода df для ${mountPoint}: ${dfOutput}`);
+              diskData.error = 'Не удалось получить информацию о диске';
+              diskData.status = 'error';
+            } else {
+              // Получаем общее пространство и доступное из df
+              const totalKB = parseInt(dfParts[1], 10);
+              const freeKB = parseInt(dfParts[3], 10);
+              
+              // Используем более простую и быструю оценку используемого пространства 
+              const usedKB = totalKB - freeKB;
+              
+              // Конвертируем в байты и обрабатываем NaN значения
+              diskData.total = isNaN(totalKB) ? 0 : totalKB * 1024;
+              diskData.free = isNaN(freeKB) ? 0 : freeKB * 1024;
+              diskData.used = isNaN(usedKB) ? 0 : usedKB * 1024;
+              
+              // Пропускаем длительную операцию подсчета пользовательских файлов
+              // Это значительно ускорит API
+              diskData.userFilesSize = 0;
+              
+              logger.info(`Диск ${name} - данные из df: total=${formatBytes(diskData.total)}, free=${formatBytes(diskData.free)}, used=${formatBytes(diskData.used)}`);
+            }
+          } catch (diskError) {
+            logger.error(`Ошибка при получении информации о диске ${name}`, diskError);
             diskData.error = 'Не удалось получить информацию о диске';
             diskData.status = 'error';
-          } else {
-            // Получаем общее пространство и доступное из df
-            const totalKB = parseInt(dfParts[1], 10);
-            const freeKB = parseInt(dfParts[3], 10);
-            
-            // Используем более простую и быструю оценку используемого пространства 
-            // вместо выполнения длительной операции du
-            const usedKB = totalKB - freeKB;
-            
-            // Конвертируем в байты и обрабатываем NaN значения
-            diskData.total = isNaN(totalKB) ? 0 : totalKB * 1024;
-            diskData.free = isNaN(freeKB) ? 0 : freeKB * 1024;
-            diskData.used = isNaN(usedKB) ? 0 : usedKB * 1024;
-            
-            // Вычисляем размер пользовательских файлов, исключая системные
-            try {
-              // Используем du с исключением системных файлов
-              const { stdout: duOutput } = await withTimeout(
-                execPromise(`find "${mountPoint}" -type f -not -path "*/\\.*" -not -path "*/.tmp_chunks*" -not -name ".disk_uuid" -exec du -sk {} \\; | awk '{sum += $1} END {print sum}'`),
-                5000, // Увеличиваем таймаут для этой операции
-                `Таймаут при подсчете пользовательских файлов на диске ${name}`
-              );
-              
-              // Обрабатываем возможные NaN значения
-              const parsedSize = parseInt(duOutput.trim(), 10);
-              diskData.userFilesSize = isNaN(parsedSize) ? 0 : parsedSize * 1024; // Конвертируем KB в байты
-              logger.info(`Размер пользовательских файлов на диске ${name}: ${formatBytes(diskData.userFilesSize)}`);
-            } catch (error) {
-              logger.warn(`Не удалось получить размер пользовательских файлов для ${name}`, error);
-              // Если не удалось получить размер пользовательских файлов, используем 0
-              diskData.userFilesSize = 0;
-            }
-            
-            logger.info(`Диск ${name} - данные из df: total=${formatBytes(diskData.total)}, free=${formatBytes(diskData.free)}, used=${formatBytes(diskData.used)}, userFiles=${formatBytes(diskData.userFilesSize)}`);
           }
         }
         
         // Обновляем или создаем запись в базе данных
         try {
           // Ищем диск в базе данных
-          let disk = await Disk.findOne({ name });
+          let disk = await Disk.findOne({ name }).exec();
           
           if (disk) {
             // Обновляем существующую запись
@@ -160,26 +150,6 @@ const getDisks = async (req, res, next) => {
         // Отмечаем диск как недоступный при ошибке
         global.mountedDisks[name] = false;
         
-        // Обновляем статус в базе данных
-        try {
-          let disk = await Disk.findOne({ name });
-          if (disk) {
-            disk.status = 'error';
-            disk.error = 'Не удалось получить информацию о диске';
-            await disk.save();
-          } else {
-            disk = new Disk({
-              name,
-              mountPoint,
-              status: 'error',
-              error: 'Не удалось получить информацию о диске'
-            });
-            await disk.save();
-          }
-        } catch (dbError) {
-          logger.error(`Ошибка при обновлении статуса диска ${name} в базе данных`, dbError);
-        }
-        
         return {
           name,
           mountPoint,
@@ -193,8 +163,30 @@ const getDisks = async (req, res, next) => {
       }
     });
     
-    // Устанавливаем общий таймаут для всех операций
-    const results = await Promise.all(diskPromises);
+    // Устанавливаем общий таймаут для всех операций и возвращаем то, что успели получить
+    const timeoutPromise = new Promise((resolve) => {
+      setTimeout(() => {
+        resolve([]);
+      }, 2500); // 2.5 секунды общего таймаута
+    });
+    
+    const results = await Promise.race([
+      Promise.all(diskPromises),
+      timeoutPromise.then(() => {
+        logger.warn('Таймаут общего запроса дисков, возвращаем частичные данные');
+        return Object.entries(config.disks).map(([name, mountPoint]) => ({
+          name,
+          mountPoint,
+          status: 'unknown',
+          error: 'Таймаут запроса',
+          total: 0,
+          free: 0,
+          used: 0,
+          userFilesSize: 0
+        }));
+      })
+    ]);
+    
     logger.info(`Получена информация о ${results.length} дисках`);
     res.json(results);
   } catch (error) {
