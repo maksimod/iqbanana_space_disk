@@ -1,7 +1,7 @@
 // frontend/src/components/DisksView/DiskCard.js
 import React from 'react';
 import { formatFileSize, calculateUsagePercent } from '../../utils/formatters';
-import { FaExclamationTriangle, FaPlug, FaExclamationCircle, FaSpinner, FaCheck } from 'react-icons/fa';
+import { FaExclamationTriangle, FaPlug, FaExclamationCircle, FaSpinner, FaCheck, FaClock } from 'react-icons/fa';
 import DiskUsageChart from './DiskUsageChart';
 import { useToast } from '../../context/ToastContext';
 
@@ -50,10 +50,18 @@ const DiskCard = ({ disk, onSelect }) => {
         return null;
     }
     
+    // Добавляем информацию о времени последнего обновления
+    const updatedTime = disk.backupUpdatedAt ? new Date(disk.backupUpdatedAt).toLocaleString() : null;
+    
     return (
       <div className={`backup-status ${statusClass}`}>
         {statusIcon}
         <span className="backup-status-text">{statusText}</span>
+        {updatedTime && (
+          <div className="backup-status-time">
+            <FaClock /> {updatedTime}
+          </div>
+        )}
       </div>
     );
   };

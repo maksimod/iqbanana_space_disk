@@ -247,6 +247,13 @@ send_backup_status() {
     log_message "URL: ${API_URL}/api/system/backup-status"
     log_message "API Key: $API_KEY"
     
+    # Записываем статус в файл для проверки скриптом check_backup_status.sh
+    echo "CLIENT_IP=$(hostname -I | awk '{print $1}')" > /root/backup_status.log
+    echo "STATUS=$status" >> /root/backup_status.log
+    echo "DISK=$DISK_UUID" >> /root/backup_status.log
+    echo "MESSAGE=$message" >> /root/backup_status.log
+    echo "TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')" >> /root/backup_status.log
+    
     # Проверяем доступность API сервера
     if command -v ping &> /dev/null; then
         API_HOST=$(echo "$API_URL" | sed -n 's/http[s]*:\/\/\([^:]*\).*/\1/p')

@@ -68,28 +68,70 @@ cleanup_old_backups() {
     fi
 }
 
+# Функция для поиска точки монтирования диска по UUID
+find_mountpoint() {
+    local uuid="$1"
+    local possible_paths=(
+        "/mnt/$uuid"
+        "/mnt/storage/$uuid"
+        "/mnt/disks/$uuid"
+    )
+    
+    # Проверяем возможные пути монтирования
+    for path in "${possible_paths[@]}"; do
+        if mountpoint -q "$path"; then
+            echo "$path"
+            return 0
+        fi
+    done
+    
+    # Если не нашли в стандартных местах, ищем с помощью mount
+    local mount_path=$(mount | grep -i "$uuid" | awk '{print $3}' | head -1)
+    if [ -n "$mount_path" ]; then
+        echo "$mount_path"
+        return 0
+    fi
+    
+    # Если не нашли, пробуем найти с помощью find по UUID
+    local found_path=$(find /mnt -type d -name "*$uuid*" 2>/dev/null | head -1)
+    if [ -n "$found_path" ] && mountpoint -q "$found_path"; then
+        echo "$found_path"
+        return 0
+    fi
+    
+    # Если ничего не нашли, возвращаем ошибку
+    return 1
+}
+
 # Функция для создания бэкапа
 make_backup() {
     # Формируем имя файла бэкапа с текущей датой
     DATE_SUFFIX=$(date '+%Y%m%d_%H%M%S')
     BACKUP_FILE="${BACKUP_PATH}/${DISK_NAME}_backup_${DATE_SUFFIX}.tar.gz"
     
-    # Проверяем, смонтирован ли исходный диск
-    if ! mountpoint -q "/mnt/${DISK_NAME}"; then
-        log_message "ОШИБКА: Диск ${DISK_NAME} не смонтирован"
-        send_backup_status "ERROR" "Диск ${DISK_NAME} не смонтирован"
+    # Ищем точку монтирования диска
+    DISK_MOUNTPOINT=$(find_mountpoint "$DISK_NAME")
+    
+    if [ -z "$DISK_MOUNTPOINT" ]; then
+        log_message "ОШИБКА: Диск с UUID ${DISK_NAME} не найден или не смонтирован"
+        log_message "Проверьте, что диск смонтирован по одному из путей: /mnt/$DISK_NAME, /mnt/storage/$DISK_NAME или другому пути"
+        send_backup_status "ERROR" "Диск с UUID ${DISK_NAME} не найден или не смонтирован"
         return 1
     fi
     
     # Отправляем статус о начале бэкапа
     send_backup_status "PROCESSING" "Начало резервного копирования"
     log_message "Начало создания бэкапа для диска ${DISK_NAME}"
+    log_message "Найдена точка монтирования диска: $DISK_MOUNTPOINT"
     
     # Создаем каталог бэкапов если его нет
     mkdir -p "$BACKUP_PATH"
     
     # Создаём бэкап
-    if tar -czf "$BACKUP_FILE" -C "/mnt" "${DISK_NAME}"; then
+    SOURCE_DIR="$(dirname "$DISK_MOUNTPOINT")"
+    SOURCE_BASE="$(basename "$DISK_MOUNTPOINT")"
+    
+    if tar -czf "$BACKUP_FILE" -C "$SOURCE_DIR" "$SOURCE_BASE"; then
         log_message "Бэкап успешно создан: $BACKUP_FILE"
         
         # Очистка старых бэкапов

@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # Скрипт для настройки cron-задания для резервного копирования
-# Использование: ./setup_backup_cron.sh disk_name api_key api_url backup_path [interval]
+# Использование: ./setup_backup_cron.sh disk_uuid api_key api_url backup_path [interval]
 
 # Проверка аргументов
 if [ $# -lt 4 ]; then
-    echo "Использование: $0 disk_name api_key api_url backup_path [interval]"
-    echo "  disk_name   - Имя диска для бэкапа"
+    echo "Использование: $0 disk_uuid api_key api_url backup_path [interval]"
+    echo "  disk_uuid   - UUID диска для бэкапа (должен совпадать с именем диска в базе данных)"
     echo "  api_key     - Ключ API для отправки статусов"
     echo "  api_url     - URL API сервера (например: http://localhost:6005)"
     echo "  backup_path - Путь для сохранения бэкапов"
@@ -14,7 +14,7 @@ if [ $# -lt 4 ]; then
     exit 1
 fi
 
-DISK_NAME="$1"
+DISK_UUID="$1"
 API_KEY="$2"
 API_URL="$3"
 BACKUP_PATH="$4"
@@ -54,24 +54,24 @@ case "$INTERVAL" in
 esac
 
 # Формируем команду для cron
-BACKUP_CMD="$BACKUP_SCRIPT $DISK_NAME $BACKUP_PATH $API_KEY $API_URL $INTERVAL"
+BACKUP_CMD="$BACKUP_SCRIPT $DISK_UUID $BACKUP_PATH $API_KEY $API_URL $INTERVAL"
 
 # Проверяем, существует ли уже задание для этого диска
-EXISTING_CRON=$(crontab -l 2>/dev/null | grep -F "$DISK_NAME $BACKUP_PATH")
+EXISTING_CRON=$(crontab -l 2>/dev/null | grep -F "$DISK_UUID $BACKUP_PATH")
 
 if [ -n "$EXISTING_CRON" ]; then
     # Обновляем существующее задание
-    echo "Обновляем существующее cron-задание для диска $DISK_NAME"
-    (crontab -l 2>/dev/null | grep -v "$DISK_NAME $BACKUP_PATH"; echo "$CRON_EXPR $BACKUP_CMD") | crontab -
+    echo "Обновляем существующее cron-задание для диска $DISK_UUID"
+    (crontab -l 2>/dev/null | grep -v "$DISK_UUID $BACKUP_PATH"; echo "$CRON_EXPR $BACKUP_CMD") | crontab -
 else
     # Добавляем новое задание
-    echo "Добавляем новое cron-задание для диска $DISK_NAME"
+    echo "Добавляем новое cron-задание для диска $DISK_UUID"
     (crontab -l 2>/dev/null; echo "$CRON_EXPR $BACKUP_CMD") | crontab -
 fi
 
 # Проверяем, добавилось ли задание
-if crontab -l 2>/dev/null | grep -q "$DISK_NAME $BACKUP_PATH"; then
-    echo "Cron-задание успешно установлено для диска $DISK_NAME с интервалом $INTERVAL"
+if crontab -l 2>/dev/null | grep -q "$DISK_UUID $BACKUP_PATH"; then
+    echo "Cron-задание успешно установлено для диска $DISK_UUID с интервалом $INTERVAL"
     echo "Расписание: $CRON_EXPR"
     echo "Команда: $BACKUP_CMD"
 else

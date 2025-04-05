@@ -214,6 +214,19 @@
   font-weight: 500;
 }
 
+.backup-status-time {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  margin-left: auto;
+  opacity: 0.8;
+}
+
+.backup-status-time svg {
+  margin-right: 4px;
+  font-size: 10px;
+}
+
 /* Анимация вращения для иконки процесса */
 .spinning {
   animation: spin 1.5s linear infinite;
