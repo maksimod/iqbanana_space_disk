@@ -46,20 +46,22 @@ const FileSearch = ({ files, onSearchResults }) => {
   
   return (
     <div className="file-search">
-      <div className="search-input-container">
-        <FaSearch className="search-icon" />
+      <div className="search-input-container" style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+        <FaSearch className="search-icon" style={{ position: 'absolute', left: '10px', zIndex: 1 }} />
         <input
           type="text"
           className="search-input"
           placeholder="Найти файлы..."
           value={searchTerm}
           onChange={handleSearchChange}
+          style={{ paddingLeft: '35px', width: '100%' }}
         />
         {isSearchActive && (
           <button
             className="clear-search-button"
             onClick={clearSearch}
             title="Очистить поиск"
+            style={{ position: 'absolute', right: '10px', zIndex: 1, background: 'none', border: 'none', cursor: 'pointer' }}
           >
             <FaTimes />
           </button>

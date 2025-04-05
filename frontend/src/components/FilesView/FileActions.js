@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
-import { FaUpload, FaFolderPlus, FaBroom } from 'react-icons/fa';
+import { FaUpload, FaFolderPlus, FaFile } from 'react-icons/fa';
 import FolderDialog from './FolderDialog';
 
 const FileActions = ({ 
   onUpload, 
   onCreateFolder, 
   uploadProgress = 0,
-  onClearUploads
+  onCreateFile
 }) => {
   const [selectedFile, setSelectedFile] = useState(null);
   const [folderName, setFolderName] = useState('');
@@ -63,6 +63,12 @@ const FileActions = ({
     });
   };
 
+  const handleCreateFile = () => {
+    if (onCreateFile) {
+      onCreateFile();
+    }
+  };
+
   return (
     <div className="file-actions">
       <div className="upload-section">
@@ -93,10 +99,10 @@ const FileActions = ({
         </button>
       </div>
       
-      {onClearUploads && (
-        <div className="clear-uploads-section">
-          <button className="action-button clear-button" onClick={onClearUploads}>
-            <FaBroom /> Очистить загрузки
+      {onCreateFile && (
+        <div className="create-file-section">
+          <button className="action-button" onClick={handleCreateFile}>
+            <FaFile /> Создать файл
           </button>
         </div>
       )}

@@ -229,36 +229,6 @@ const useApi = () => {
   }, [fetchData, getAuthHeaders]);
 
   /**
-   * Очистка всех активных загрузок на сервере
-   */
-  const clearActiveUploads = useCallback(async (disk) => {
-    try {
-      const endpoint = disk ? 
-        `/disks/${disk}/clear-uploads` : 
-        '/uploads/clear';
-      
-      const result = await fetchData(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...getAuthHeaders()
-        }
-      });
-      
-      if (result && result.success) {
-        console.log('Активные загрузки успешно очищены на сервере');
-        return { success: true, ...result };
-      } else {
-        console.error('Ошибка при очистке активных загрузок:', result?.error || 'Неизвестная ошибка');
-        return { success: false, error: result?.error || 'Не удалось очистить загрузки' };
-      }
-    } catch (error) {
-      console.error('Ошибка при очистке активных загрузок:', error);
-      return { success: false, error: error.message || 'Не удалось очистить загрузки' };
-    }
-  }, [fetchData, getAuthHeaders]);
-
-  /**
    * Загрузка файла с прогрессом
    */
   const uploadFile = useCallback((disk, path, file, onProgress, onComplete, onError) => {
@@ -817,7 +787,6 @@ const useApi = () => {
     downloadFile,
     uploadFile,
     getActiveUploads,
-    clearActiveUploads,
     getLocalUploads
   };
 };

@@ -33,54 +33,6 @@ const FilesView = () => {
   // Определяем, какие файлы отображать - результаты поиска или все файлы
   const displayFiles = searchResults || files;
   
-  // Функция для полной очистки записей о загрузках в sessionStorage и на сервере
-  const clearAllUploads = useCallback(async () => {
-    try {
-      toast.showInfo('Очистка активных загрузок...');
-      
-      // Очищаем sessionStorage от всех загрузок
-      sessionStorage.removeItem('activeUploads');
-
-      // Очищаем набор уведомлений
-      shownNotifications.current.clear();
-      
-      // Сбрасываем состояние загрузки в UI
-      setActiveUploads([]);
-      setUploadProgress(0);
-      setUploadStatus('');
-
-      // Очищаем активные загрузки на сервере через API
-      const result = await clearActiveUploads(currentDisk);
-      
-      // Перезагружаем файлы
-      await loadFiles();
-      
-      if (result && result.success) {
-        toast.showSuccess('Все записи о загрузках успешно очищены');
-      } else {
-        const errorMsg = result?.error || 'Не удалось очистить все загрузки на сервере';
-        console.warn('Предупреждение при очистке загрузок:', errorMsg);
-        toast.showWarning(`Локальные записи о загрузках очищены, но на сервере могли остаться активные загрузки: ${errorMsg}`);
-      }
-    } catch (e) {
-      console.error('Ошибка при очистке загрузок:', e);
-      toast.showError('Произошла ошибка при очистке загрузок: ' + (e.message || 'Неизвестная ошибка'));
-      
-      // Пытаемся очистить хотя бы локальные данные
-      try {
-        sessionStorage.removeItem('activeUploads');
-        shownNotifications.current.clear();
-        setActiveUploads([]);
-        setUploadProgress(0);
-        setUploadStatus('');
-        
-        toast.showWarning('Локальные записи о загрузках очищены, но на сервере могли остаться активные загрузки');
-      } catch (innerError) {
-        console.error('Критическая ошибка при очистке загрузок:', innerError);
-      }
-    }
-  }, [clearActiveUploads, currentDisk, loadFiles, toast]);
-  
   // Очистка старых загрузок при монтировании компонента
   useEffect(() => {
     // Функция для очистки устаревших загрузок
@@ -439,6 +391,12 @@ const FilesView = () => {
     }
   };
 
+  // Добавляем функцию создания пустого файла
+  const createEmptyFile = async () => {
+    // Логика создания пустого файла будет добавлена позже
+    toast.showInfo('Функция создания файла будет добавлена в следующем обновлении');
+  };
+
   return (
     <div className="files-view">
       <NavigationBar 
@@ -456,7 +414,7 @@ const FilesView = () => {
         onUpload={handleUpload}
         onCreateFolder={handleCreateFolder}
         uploadProgress={uploadProgress}
-        onClearUploads={clearAllUploads}
+        onCreateFile={createEmptyFile}
       />
       
       <div className="files-container">

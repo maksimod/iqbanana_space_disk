@@ -372,9 +372,6 @@ router.delete('/:disk/files', (req, res) => {
 router.post('/:disk/createFolder', fileController.createFolder);
 router.get('/:disk/download', fileController.downloadFile);
 
-// Маршрут для очистки статуса загрузки конкретного файла
-router.post('/:disk/clear-file-upload', fileController.clearFileUploadStatus);
-
 // Маршрут для очистки всех активных загрузок в указанном пути
 router.post('/:disk/clear-folder-uploads', (req, res) => {
   const { disk } = req.params;
