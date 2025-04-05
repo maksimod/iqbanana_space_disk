@@ -7,12 +7,18 @@ import Loading from '../Loading';
 import useApi from '../../hooks/useApi';
 import { useAppContext } from '../../context/AppContext';
 import { useToast } from '../../context/ToastContext';
+import FileDialog from './FileDialog';
+import FileEditor from './FileEditor';
 
 const FilesView = () => {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [searchResults, setSearchResults] = useState(null);
   const [uploadStatus, setUploadStatus] = useState('');
   const [activeUploads, setActiveUploads] = useState([]);
+  const [isFileDialogOpen, setIsFileDialogOpen] = useState(false);
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [editingFile, setEditingFile] = useState(null);
+  const [fileContent, setFileContent] = useState('');
   // Трекер для отслеживания уже показанных уведомлений
   const shownNotifications = useRef(new Set());
   
@@ -27,7 +33,8 @@ const FilesView = () => {
     loadDisks 
   } = useAppContext();
   
-  const { deleteFile, createFolder, getDownloadUrl, downloadFile, uploadFile, getActiveUploads, clearActiveUploads } = useApi();
+  const api = useApi();
+  const { deleteFile, createFolder, getDownloadUrl, downloadFile, uploadFile, getActiveUploads, clearActiveUploads } = api;
   const toast = useToast();
 
   // Определяем, какие файлы отображать - результаты поиска или все файлы
@@ -391,10 +398,112 @@ const FilesView = () => {
     }
   };
 
-  // Добавляем функцию создания пустого файла
-  const createEmptyFile = async () => {
-    // Логика создания пустого файла будет добавлена позже
-    toast.showInfo('Функция создания файла будет добавлена в следующем обновлении');
+  /**
+   * Создает пустой файл
+   */
+  const createEmptyFile = async (fileData) => {
+    try {
+      // Проверяем наличие ID диска
+      if (!currentDisk) {
+        toast.showError('Не выбран диск');
+        return;
+      }
+      
+      const result = await api.createEmptyFile(currentDisk, fileData);
+      if (result.success) {
+        toast.showSuccess('Файл успешно создан');
+        setIsFileDialogOpen(false);
+        loadFiles();
+      }
+    } catch (error) {
+      console.error('Ошибка при создании файла:', error);
+      toast.showError('Не удалось создать файл');
+    }
+  };
+
+  /**
+   * Открывает текстовый файл для редактирования
+   * @param {Object} file - Объект файла для редактирования
+   */
+  const openFileEditor = async (file) => {
+    try {
+      // Проверяем, является ли файл текстовым по расширению
+      const fileExt = file.name.split('.').pop().toLowerCase();
+      const textExtensions = ['txt', 'md', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'json', 'yml', 'yaml', 'xml', 'csv', 'log'];
+      
+      if (!textExtensions.includes(fileExt)) {
+        toast.showWarning('Этот тип файла не поддерживается для редактирования');
+        return;
+      }
+      
+      console.log('Открываем файл для редактирования:', file.name);
+      
+      // Получаем полный путь к файлу
+      const filePath = currentPath
+        ? `${currentPath}/${file.name}`
+        : file.name;
+      
+      console.log('Путь к файлу:', filePath);
+      
+      // Получаем содержимое файла
+      const result = await api.getFileContent(currentDisk, filePath);
+      if (result.success) {
+        console.log('Содержимое файла получено, открываем редактор');
+        setFileContent(result.content);
+        setEditingFile({
+          ...file,
+          path: filePath
+        });
+        setIsEditorOpen(true);
+      }
+    } catch (error) {
+      console.error('Ошибка при открытии файла:', error);
+      toast.showError('Не удалось открыть файл: ' + (error.message || 'Неизвестная ошибка'));
+    }
+  };
+
+  /**
+   * Сохраняет изменения в текстовом файле
+   * @param {string} newContent - Новое содержимое файла
+   */
+  const saveFileContent = async (newContent) => {
+    if (!editingFile) return;
+    
+    try {
+      await api.saveFileContent(currentDisk._id, editingFile.path, newContent);
+      // Обновляем список файлов, чтобы отразить изменение даты модификации и размера
+      loadFiles();
+    } catch (error) {
+      console.error('Ошибка при сохранении файла:', error);
+    }
+  };
+
+  /**
+   * Закрывает редактор файлов
+   */
+  const closeFileEditor = () => {
+    setIsEditorOpen(false);
+    setEditingFile(null);
+    setFileContent('');
+  };
+
+  /**
+   * Обработчик клика по файлу
+   * @param {Object} file - Объект файла
+   */
+  const handleFileClick = async (file) => {
+    // Если это текстовый файл, открываем его в редакторе
+    const fileExt = file.name.split('.').pop().toLowerCase();
+    const textExtensions = ['txt', 'md', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'json', 'yml', 'yaml', 'xml', 'csv', 'log'];
+    
+    if (textExtensions.includes(fileExt)) {
+      openFileEditor(file);
+    } else {
+      // Для других типов файлов используем существующий обработчик
+      if (handleNavigate) {
+        handleNavigate(file);
+      }
+    }
   };
 
   return (
@@ -414,7 +523,7 @@ const FilesView = () => {
         onUpload={handleUpload}
         onCreateFolder={handleCreateFolder}
         uploadProgress={uploadProgress}
-        onCreateFile={createEmptyFile}
+        onCreateFile={() => setIsFileDialogOpen(true)}
       />
       
       <div className="files-container">
@@ -429,13 +538,32 @@ const FilesView = () => {
             )}
             <FilesList 
               files={displayFiles}
-              onNavigate={handleNavigate}
+              onNavigate={(file) => file.isDirectory ? handleNavigate(file) : handleFileClick(file)}
               onDelete={handleDelete}
               onDownload={handleDownload}
             />
           </>
         )}
       </div>
+      
+      {isFileDialogOpen && (
+        <FileDialog
+          isOpen={isFileDialogOpen}
+          onClose={() => setIsFileDialogOpen(false)}
+          onSubmit={createEmptyFile}
+          currentPath={currentPath}
+        />
+      )}
+      
+      {isEditorOpen && editingFile && (
+        <FileEditor
+          isOpen={isEditorOpen}
+          fileName={editingFile.name}
+          fileContent={fileContent}
+          onSave={saveFileContent}
+          onClose={closeFileEditor}
+        />
+      )}
     </div>
   );
 };

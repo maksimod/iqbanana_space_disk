@@ -73,3 +73,55 @@ export const getFileExtension = (filename) => {
     
     return typeColors[fileType] || '#6c757d';
   };
+
+/**
+ * Форматирует размер файла в удобочитаемый вид
+ * @param {number} bytes - Размер файла в байтах
+ * @returns {string} - Отформатированный размер
+ */
+export const formatFileSize = (bytes) => {
+  if (bytes === 0) return '0 Б';
+  
+  const k = 1024;
+  const sizes = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+};
+
+/**
+ * Форматирует дату в локальный формат
+ * @param {string|Date} date - Дата для форматирования
+ * @returns {string} - Отформатированная дата
+ */
+export const formatDate = (date) => {
+  if (!date) return '';
+  
+  const dateObj = typeof date === 'string' ? new Date(date) : date;
+  
+  return dateObj.toLocaleDateString('ru-RU', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).replace(',', '');
+};
+
+/**
+ * Определяет, является ли файл текстовым по его расширению
+ * @param {string} fileName - Имя файла
+ * @returns {boolean} - true, если файл текстовый
+ */
+export const isTextFile = (fileName) => {
+  if (!fileName) return false;
+  
+  const extension = fileName.split('.').pop().toLowerCase();
+  const textExtensions = [
+    'txt', 'md', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 
+    'json', 'yml', 'yaml', 'xml', 'csv', 'log', 'py', 'rb', 
+    'java', 'c', 'cpp', 'php', 'sh', 'bat', 'ps1', 'sql'
+  ];
+  
+  return textExtensions.includes(extension);
+};

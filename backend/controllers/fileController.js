@@ -7,6 +7,8 @@ const archiver = require('archiver');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 const tempStorage = require('../utils/tempStorage');
+const asyncHandler = require('express-async-handler');
+const Disk = require('../models/disk');
 
 const execPromise = util.promisify(exec);
 
@@ -653,6 +655,167 @@ const cancelSync = (req, res) => {
   }
 };
 
+/**
+ * Create an empty file in a specified location
+ * @route POST /:disk/create-empty-file
+ * @access Private
+ */
+const createEmptyFile = asyncHandler(async (req, res) => {
+  const { fileName, path } = req.body;
+  const { disk } = req.params;
+
+  if (!fileName) {
+    return res.status(400).json({ error: 'Имя файла не указано' });
+  }
+
+  // Проверка на недопустимые символы в имени файла
+  const invalidChars = /[\/\\:*?"<>|]/;
+  if (invalidChars.test(fileName)) {
+    return res.status(400).json({ error: 'Имя файла содержит недопустимые символы' });
+  }
+
+  const diskObj = await Disk.findById(disk);
+  if (!diskObj) {
+    return res.status(404).json({ error: 'Диск не найден' });
+  }
+
+  // Использование физического пути из модели диска
+  const diskPath = diskObj.path;
+  const fullPath = path ? `${diskPath}/${path}/${fileName}` : `${diskPath}/${fileName}`;
+
+  try {
+    // Проверяем, существует ли уже файл с таким именем
+    if (fs.existsSync(fullPath)) {
+      return res.status(400).json({ error: 'Файл с таким именем уже существует' });
+    }
+
+    // Создаем пустой файл
+    fs.writeFileSync(fullPath, '');
+
+    // Формируем относительный путь для ответа
+    const relativePath = path ? `${path}/${fileName}` : fileName;
+
+    res.status(201).json({ 
+      success: true, 
+      message: 'Файл успешно создан',
+      file: {
+        name: fileName,
+        path: relativePath,
+        size: 0,
+        isDirectory: false,
+        type: 'text/plain',
+        lastModified: new Date()
+      }
+    });
+  } catch (error) {
+    console.error('Ошибка создания файла:', error);
+    res.status(500).json({ error: 'Не удалось создать файл' });
+  }
+});
+
+/**
+ * Read a text file content
+ * @route GET /:disk/read-file
+ * @access Private
+ */
+const readTextFile = asyncHandler(async (req, res) => {
+  const { filePath } = req.query;
+  const { disk } = req.params;
+
+  if (!filePath) {
+    return res.status(400).json({ error: 'Путь к файлу не указан' });
+  }
+
+  const diskObj = await Disk.findById(disk);
+  if (!diskObj) {
+    return res.status(404).json({ error: 'Диск не найден' });
+  }
+
+  const diskPath = diskObj.path;
+  const fullPath = `${diskPath}/${filePath}`;
+
+  try {
+    // Проверяем существование файла
+    if (!fs.existsSync(fullPath)) {
+      return res.status(404).json({ error: 'Файл не найден' });
+    }
+
+    // Проверяем, является ли это директорией
+    const stats = fs.statSync(fullPath);
+    if (stats.isDirectory()) {
+      return res.status(400).json({ error: 'Указанный путь является директорией' });
+    }
+
+    // Определение типа файла по расширению
+    const fileExtension = path.extname(fullPath).toLowerCase();
+    const textExtensions = ['.txt', '.md', '.js', '.jsx', '.ts', '.tsx', '.html', '.css', '.json', '.yml', '.yaml', '.xml', '.csv', '.log'];
+    
+    if (!textExtensions.includes(fileExtension)) {
+      return res.status(400).json({ error: 'Файл не является текстовым' });
+    }
+
+    // Читаем содержимое файла
+    const content = fs.readFileSync(fullPath, 'utf8');
+    
+    res.status(200).json({
+      success: true,
+      content
+    });
+  } catch (error) {
+    console.error('Ошибка чтения файла:', error);
+    res.status(500).json({ error: 'Не удалось прочитать файл' });
+  }
+});
+
+/**
+ * Save content to a text file
+ * @route PUT /:disk/save-file
+ * @access Private
+ */
+const saveTextFile = asyncHandler(async (req, res) => {
+  const { filePath, content } = req.body;
+  const { disk } = req.params;
+
+  if (!filePath) {
+    return res.status(400).json({ error: 'Путь к файлу не указан' });
+  }
+
+  if (content === undefined) {
+    return res.status(400).json({ error: 'Содержимое файла не указано' });
+  }
+
+  const diskObj = await Disk.findById(disk);
+  if (!diskObj) {
+    return res.status(404).json({ error: 'Диск не найден' });
+  }
+
+  const diskPath = diskObj.path;
+  const fullPath = `${diskPath}/${filePath}`;
+
+  try {
+    // Проверяем существование файла
+    if (!fs.existsSync(fullPath)) {
+      return res.status(404).json({ error: 'Файл не найден' });
+    }
+
+    // Проверяем, является ли это директорией
+    const stats = fs.statSync(fullPath);
+    if (stats.isDirectory()) {
+      return res.status(400).json({ error: 'Указанный путь является директорией' });
+    }
+
+    // Записываем содержимое в файл
+    fs.writeFileSync(fullPath, content);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Файл успешно сохранен'
+    });
+  } catch (error) {
+    console.error('Ошибка сохранения файла:', error);
+    res.status(500).json({ error: 'Не удалось сохранить файл' });
+  }
+});
 
 module.exports = {
   getFiles,
@@ -662,5 +825,8 @@ module.exports = {
   downloadFile,
   synchronizeFile,
   getSyncStatus,
-  cancelSync
+  cancelSync,
+  createEmptyFile,
+  readTextFile,
+  saveTextFile
 };

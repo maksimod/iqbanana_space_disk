@@ -774,6 +774,102 @@ const useApi = () => {
     }
   }, []);
 
+  /**
+   * Создание пустого файла
+   * @param {string} diskId - ID диска
+   * @param {object} fileData - Данные о создаваемом файле
+   * @returns {Promise} - Promise с результатом запроса
+   */
+  const createEmptyFile = async (diskId, fileData) => {
+    try {
+      const response = await fetch(getApiUrl(`/files/${diskId}/create-empty-file`), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
+        body: JSON.stringify(fileData)
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Ошибка HTTP: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Ошибка при создании файла:', error);
+      const errorMessage = error.message || 'Не удалось создать файл';
+      toast.showError(errorMessage);
+      throw error;
+    }
+  };
+
+  /**
+   * Получение содержимого текстового файла
+   * @param {string} diskId - ID диска
+   * @param {string} filePath - Путь к файлу
+   * @returns {Promise} - Promise с содержимым файла
+   */
+  const getFileContent = async (diskId, filePath) => {
+    try {
+      const url = new URL(getApiUrl(`/files/${diskId}/read-file`));
+      url.searchParams.append('filePath', filePath);
+      
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          ...getAuthHeaders()
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Ошибка HTTP: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Ошибка при чтении файла:', error);
+      const errorMessage = error.message || 'Не удалось прочитать файл';
+      toast.showError(errorMessage);
+      throw error;
+    }
+  };
+
+  /**
+   * Сохранение содержимого текстового файла
+   * @param {string} diskId - ID диска
+   * @param {string} filePath - Путь к файлу
+   * @param {string} content - Новое содержимое файла
+   * @returns {Promise} - Promise с результатом запроса
+   */
+  const saveFileContent = async (diskId, filePath, content) => {
+    try {
+      const response = await fetch(getApiUrl(`/files/${diskId}/save-file`), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
+        body: JSON.stringify({ filePath, content })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Ошибка HTTP: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      toast.showSuccess('Файл успешно сохранен');
+      return data;
+    } catch (error) {
+      console.error('Ошибка при сохранении файла:', error);
+      const errorMessage = error.message || 'Не удалось сохранить файл';
+      toast.showError(errorMessage);
+      throw error;
+    }
+  };
+
   // Возвращаем API-методы
   return {
     loading,
@@ -787,7 +883,10 @@ const useApi = () => {
     downloadFile,
     uploadFile,
     getActiveUploads,
-    getLocalUploads
+    getLocalUploads,
+    createEmptyFile,
+    getFileContent,
+    saveFileContent,
   };
 };
 

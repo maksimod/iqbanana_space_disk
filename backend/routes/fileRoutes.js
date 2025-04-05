@@ -839,4 +839,13 @@ router.get('/sync/:fileId/status', fileController.getSyncStatus);
 // Маршрут для отмены синхронизации
 router.post('/sync/:fileId/cancel', fileController.cancelSync);
 
+// Маршрут для создания пустого файла
+router.post('/:disk/create-empty-file', fileController.createEmptyFile);
+
+// Маршрут для чтения содержимого текстового файла
+router.get('/:disk/read-file', fileController.readTextFile);
+
+// Маршрут для сохранения содержимого текстового файла
+router.put('/:disk/save-file', fileController.saveTextFile);
+
 module.exports = router;
