@@ -85,7 +85,10 @@ const getFiles = (req, res, next) => {
       try {
         // Фильтруем файлы, удаляя .tmp_chunks и .disk_uuid
         const filteredFiles = files.filter(file => {
-          return !file.name.includes('.tmp_chunks') && file.name !== '.disk_uuid';
+          // Исключаем системные файлы и файл со звездочкой (*)
+          return !file.name.includes('.tmp_chunks') && 
+                 file.name !== '.disk_uuid' && 
+                 file.name !== '*';
         });
         
         // Для лучшей отладки логируем содержимое директории
