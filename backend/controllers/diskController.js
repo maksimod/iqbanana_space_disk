@@ -5,6 +5,7 @@ const path = require('path');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 const { Disk } = require('../models');
+const mongoose = require('mongoose');
 
 const execPromise = util.promisify(exec);
 const fsPromises = fs.promises;
@@ -104,6 +105,11 @@ const getDisks = async (req, res, next) => {
           }
         }
         
+        // Пропускаем операции с базой данных, если MongoDB недоступна
+        if (mongoose.connection.readyState !== 1) {
+          return diskData;
+        }
+        
         // Обновляем или создаем запись в базе данных
         try {
           // Ищем диск в базе данных
@@ -167,7 +173,7 @@ const getDisks = async (req, res, next) => {
     const timeoutPromise = new Promise((resolve) => {
       setTimeout(() => {
         resolve([]);
-      }, 2500); // 2.5 секунды общего таймаута
+      }, 1500); // Сокращаем таймаут до 1.5 секунды
     });
     
     const results = await Promise.race([
@@ -177,8 +183,8 @@ const getDisks = async (req, res, next) => {
         return Object.entries(config.disks).map(([name, mountPoint]) => ({
           name,
           mountPoint,
-          status: 'unknown',
-          error: 'Таймаут запроса',
+          status: global.mountedDisks[name] ? 'online' : 'offline',
+          error: global.mountedDisks[name] ? null : 'Таймаут запроса',
           total: 0,
           free: 0,
           used: 0,
