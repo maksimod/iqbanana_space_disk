@@ -152,25 +152,39 @@ body {
 
 .file-actions {
   display: flex;
-  gap: 5px;
-  margin-left: auto;
+  gap: 10px;
+  margin-bottom: 20px;
 }
 
-.file-actions button {
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 18px;
-  padding: 4px;
-  border-radius: 4px;
+.action-button {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 8px;
+  padding: 10px 15px;
+  background-color: #4a90e2;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
   transition: background-color 0.2s;
 }
 
-.file-actions button:hover {
-  background-color: rgba(0, 0, 0, 0.05);
+.action-button:hover {
+  background-color: #3a80d2;
+}
+
+.action-button svg {
+  font-size: 16px;
+}
+
+.files-actions-container {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .upload-section, .create-folder-section {
@@ -208,23 +222,6 @@ input[type="text"] {
   border: 1px solid #ced4da;
   border-radius: 4px;
   font-size: 14px;
-}
-
-.action-button {
-  background-color: #3498db;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  padding: 8px 15px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 14px;
-}
-
-.action-button:hover {
-  background-color: #2980b9;
 }
 
 .files-container {

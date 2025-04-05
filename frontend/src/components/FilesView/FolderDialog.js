@@ -1,67 +1,68 @@
 import React, { useState } from 'react';
-import './FolderDialog.css';
+import '../../App.css';
 
-const FolderDialog = ({ onClose, onSubmit }) => {
+const FolderDialog = ({ isOpen, onClose, onSubmit, currentPath }) => {
   const [folderName, setFolderName] = useState('');
   const [error, setError] = useState('');
 
+  const validateFolderName = (name) => {
+    if (!name.trim()) {
+      setError('Имя папки не может быть пустым');
+      return false;
+    }
+
+    // Проверка на недопустимые символы в имени папки
+    const invalidChars = /[\/\\:*?"<>|]/;
+    if (invalidChars.test(name)) {
+      setError('Имя папки содержит недопустимые символы (/ \\ : * ? " < > |)');
+      return false;
+    }
+
+    setError('');
+    return true;
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
-    
-    // Валидация имени папки
-    if (!folderName.trim()) {
-      setError('Имя папки не может быть пустым');
-      return;
+    if (validateFolderName(folderName)) {
+      onSubmit({ folderName, path: currentPath });
+      setFolderName('');
     }
-    
-    // Проверка на недопустимые символы в имени папки
-    const invalidChars = /[<>:"/\\|?*]/;
-    if (invalidChars.test(folderName)) {
-      setError('Имя папки содержит недопустимые символы (< > : " / \\ | ? *)');
-      return;
-    }
-    
-    onSubmit(folderName.trim());
   };
 
-  const handleKeyDown = (e) => {
-    if (e.key === 'Escape') {
-      onClose();
-    }
+  const handleClose = () => {
+    setFolderName('');
+    setError('');
+    onClose();
   };
+
+  if (!isOpen) return null;
 
   return (
-    <div className="folder-dialog-overlay" onClick={onClose}>
-      <div className="folder-dialog" onClick={(e) => e.stopPropagation()} onKeyDown={handleKeyDown}>
-        <div className="folder-dialog-header">
+    <div className="dialog-overlay">
+      <div className="dialog-container">
+        <div className="dialog-header">
           <h3>Создать новую папку</h3>
-          <button className="close-button" onClick={onClose}>×</button>
+          <button className="close-button" onClick={handleClose}>&times;</button>
         </div>
-        
         <form onSubmit={handleSubmit}>
-          <div className="folder-dialog-content">
-            <label htmlFor="folder-name">Имя папки:</label>
-            <input
-              id="folder-name"
-              type="text"
-              value={folderName}
-              onChange={(e) => {
-                setFolderName(e.target.value);
-                setError(''); // Сбрасываем ошибку при изменении
-              }}
-              autoFocus
-              placeholder="Новая папка"
-            />
-            {error && <div className="error-message">{error}</div>}
+          <div className="dialog-content">
+            <div className="form-group">
+              <label htmlFor="folderName">Имя папки:</label>
+              <input
+                type="text"
+                id="folderName"
+                value={folderName}
+                onChange={(e) => setFolderName(e.target.value)}
+                placeholder="Введите имя папки"
+                autoFocus
+              />
+              {error && <div className="error">{error}</div>}
+            </div>
           </div>
-          
-          <div className="folder-dialog-footer">
-            <button type="button" className="cancel-button" onClick={onClose}>
-              Отмена
-            </button>
-            <button type="submit" className="create-button">
-              Создать
-            </button>
+          <div className="dialog-actions">
+            <button type="button" onClick={handleClose}>Отмена</button>
+            <button type="submit" className="primary">Создать</button>
           </div>
         </form>
       </div>

@@ -4,17 +4,23 @@ import { FaSearch, FaTimes } from 'react-icons/fa';
 /**
  * Компонент для поиска файлов
  */
-const FileSearch = ({ files, onSearchResults }) => {
+const FileSearch = ({ files, onSearch, onClearSearch }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [isSearchActive, setIsSearchActive] = useState(false);
   
   // Выполняем поиск при изменении searchTerm или files
   useEffect(() => {
     if (!searchTerm.trim()) {
-      onSearchResults(null);
+      if (onClearSearch) {
+        onClearSearch();
+      } else if (onSearch) {
+        onSearch(null);
+      }
       return;
     }
     
+    if (!files || !onSearch) return;
+
     const lowerSearchTerm = searchTerm.toLowerCase();
     
     // Фильтруем файлы с учетом исключения служебных файлов
@@ -24,8 +30,8 @@ const FileSearch = ({ files, onSearchResults }) => {
       file.name !== '.disk_uuid'
     );
     
-    onSearchResults(results);
-  }, [searchTerm, files, onSearchResults]);
+    onSearch(results);
+  }, [searchTerm, files, onSearch, onClearSearch]);
   
   // Обработчик изменения поисковой фразы
   const handleSearchChange = (e) => {
@@ -41,7 +47,11 @@ const FileSearch = ({ files, onSearchResults }) => {
   const clearSearch = () => {
     setSearchTerm('');
     setIsSearchActive(false);
-    onSearchResults(null);
+    if (onClearSearch) {
+      onClearSearch();
+    } else if (onSearch) {
+      onSearch(null);
+    }
   };
   
   return (

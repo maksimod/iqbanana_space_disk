@@ -9,6 +9,7 @@ import { useAppContext } from '../../context/AppContext';
 import { useToast } from '../../context/ToastContext';
 import FileDialog from './FileDialog';
 import FileEditor from './FileEditor';
+import FolderDialog from './FolderDialog';
 
 const FilesView = () => {
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -19,6 +20,7 @@ const FilesView = () => {
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editingFile, setEditingFile] = useState(null);
   const [fileContent, setFileContent] = useState('');
+  const [isFolderDialogOpen, setIsFolderDialogOpen] = useState(false);
   // Трекер для отслеживания уже показанных уведомлений
   const shownNotifications = useRef(new Set());
   
@@ -352,15 +354,16 @@ const FilesView = () => {
   };
 
   // Создание новой папки
-  const handleCreateFolder = async (folderName, onComplete) => {
+  const handleCreateFolder = async (folderData) => {
     try {
+      const { folderName } = folderData;
       console.log('Отправка запроса на создание папки:', { folderName, path: currentPath });
       
       const result = await createFolder(currentDisk, currentPath, folderName);
       if (result && result.success) {
         toast.showSuccess('Папка успешно создана');
         loadFiles();
-        if (onComplete) onComplete();
+        setIsFolderDialogOpen(false);
         // Сбрасываем результаты поиска после создания папки
         setSearchResults(null);
       } else {
@@ -470,7 +473,7 @@ const FilesView = () => {
     if (!editingFile) return;
     
     try {
-      await api.saveFileContent(currentDisk._id, editingFile.path, newContent);
+      await api.saveFileContent(currentDisk, editingFile.path, newContent);
       // Обновляем список файлов, чтобы отразить изменение даты модификации и размера
       loadFiles();
     } catch (error) {
@@ -506,24 +509,58 @@ const FilesView = () => {
     }
   };
 
+  // Обработка загрузки файла
+  const handleFileChange = (event) => {
+    const files = event.target.files;
+    if (files.length > 0) {
+      const fileArray = Array.from(files);
+      
+      // Загружаем каждый файл
+      fileArray.forEach(file => {
+        handleUpload(file);
+      });
+      
+      // Сброс input после выбора файлов
+      event.target.value = '';
+    }
+  };
+
+  // Добавляем обработчики для кнопок действий
+  const handleUploadClick = () => {
+    document.getElementById('file-input').click();
+  };
+
+  const handleClearSearch = () => {
+    setSearchResults(null);
+  };
+
   return (
     <div className="files-view">
       <NavigationBar 
-        currentDisk={currentDisk} 
-        currentPath={currentPath} 
+        path={currentPath} 
         onBack={handleBack} 
+        onNavigate={handleNavigate}
       />
       
-      <FileSearch 
-        files={files} 
-        onSearchResults={handleSearchResults} 
-      />
+      <div className="files-actions-container">
+        <FileSearch 
+          files={files}
+          onSearch={handleSearchResults}
+          onClearSearch={handleClearSearch}
+        />
+        <FileActions 
+          onUploadFile={handleUploadClick}
+          onCreateFolder={() => setIsFolderDialogOpen(true)}
+          onCreateFile={() => setIsFileDialogOpen(true)}
+        />
+      </div>
       
-      <FileActions 
-        onUpload={handleUpload}
-        onCreateFolder={handleCreateFolder}
-        uploadProgress={uploadProgress}
-        onCreateFile={() => setIsFileDialogOpen(true)}
+      <input
+        type="file"
+        id="file-input"
+        style={{ display: 'none' }}
+        onChange={handleFileChange}
+        multiple
       />
       
       <div className="files-container">
@@ -545,6 +582,15 @@ const FilesView = () => {
           </>
         )}
       </div>
+      
+      {isFolderDialogOpen && (
+        <FolderDialog
+          isOpen={isFolderDialogOpen}
+          onClose={() => setIsFolderDialogOpen(false)}
+          onSubmit={handleCreateFolder}
+          currentPath={currentPath}
+        />
+      )}
       
       {isFileDialogOpen && (
         <FileDialog

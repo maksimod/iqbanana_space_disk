@@ -813,10 +813,9 @@ const useApi = () => {
    */
   const getFileContent = async (diskId, filePath) => {
     try {
-      const url = new URL(getApiUrl(`/files/${diskId}/read-file`));
-      url.searchParams.append('filePath', filePath);
-      
-      const response = await fetch(url, {
+      // Используем простой URL с параметром запроса вместо конструктора URL
+      const encodedPath = encodeURIComponent(filePath);
+      const response = await fetch(getApiUrl(`/disks/${diskId}/read-file?filePath=${encodedPath}`), {
         method: 'GET',
         headers: {
           ...getAuthHeaders()
@@ -846,7 +845,7 @@ const useApi = () => {
    */
   const saveFileContent = async (diskId, filePath, content) => {
     try {
-      const response = await fetch(getApiUrl(`/files/${diskId}/save-file`), {
+      const response = await fetch(getApiUrl(`/disks/${diskId}/save-file`), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
