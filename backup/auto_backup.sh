@@ -8,7 +8,8 @@ source "$SCRIPT_DIR/backup_config.sh"
 
 # Получаем API ключ из .env файла бэкенда
 BACKEND_ENV_FILE="/home/user/iqbanana_space_disk/backend/.env"
-API_URL="http://localhost:6005"
+SERVER_IP=$(hostname -I | awk '{print $1}')
+API_URL="http://${SERVER_IP}:6005"
 
 # Функция для записи в лог
 log() {
@@ -22,12 +23,15 @@ if [ ! -f "$BACKEND_ENV_FILE" ]; then
     exit 1
 fi
 
-# Извлекаем API_KEY из .env файла
-API_KEY=$(grep API_KEY $BACKEND_ENV_FILE | cut -d'=' -f2 | tr -d '\r' | tr -d ' ' | tr -d '"' | tr -d "'")
-if [ -z "$API_KEY" ]; then
-    log "ОШИБКА: API_KEY не найден в файле .env"
+# Извлекаем BACKUP_API_KEY из .env файла
+BACKUP_API_KEY=$(grep BACKUP_API_KEY $BACKEND_ENV_FILE | cut -d'=' -f2 | tr -d '\r' | tr -d ' ' | tr -d '"' | tr -d "'")
+if [ -z "$BACKUP_API_KEY" ]; then
+    log "ОШИБКА: BACKUP_API_KEY не найден в файле .env"
+    log "Пожалуйста, добавьте в файл .env строку BACKUP_API_KEY=ваш_ключ"
     exit 1
 fi
+
+log "Используется BACKUP_API_KEY из .env файла: $BACKUP_API_KEY"
 
 # Получаем порт из .env, если есть
 ENV_PORT=$(grep PORT $BACKEND_ENV_FILE | cut -d'=' -f2 | tr -d '\r')
@@ -185,6 +189,7 @@ check_and_install_deps() {
     check_cmd "df" "coreutils" || return 1
     check_cmd "timeout" "coreutils" || return 1
     check_cmd "pv" "pv" || echo "Утилита pv не установлена, будет использоваться простой вывод прогресса"
+    check_cmd "ping" "iputils-ping" || echo "Утилита ping не установлена"
     
     echo "Все необходимые зависимости установлены"
     return 0
@@ -205,6 +210,23 @@ MAX_BACKUPS="${5:-5}"  # Максимальное количество бэка�
 INTERVAL="${6:-daily}"
 TIMEOUT_MINUTES=120    # Максимальное время выполнения команды tar в минутах
 
+# Если API_URL содержит localhost, заменяем на IP-адрес
+if echo "$API_URL" | grep -q "localhost"; then
+    # Извлекаем порт из URL
+    PORT=$(echo "$API_URL" | sed -n 's/.*localhost:\([0-9]\+\).*/\1/p')
+    if [ -n "$PORT" ]; then
+        # Получаем IP-адрес сервера
+        SERVER_IP=$(hostname -I | awk '{print $1}')
+        if [ -n "$SERVER_IP" ]; then
+            NEW_API_URL="http://${SERVER_IP}:${PORT}"
+            echo "Заменяем localhost на IP адрес: $NEW_API_URL"
+            API_URL="$NEW_API_URL"
+        else
+            echo "Не удалось определить IP-адрес сервера, используем исходный URL: $API_URL"
+        fi
+    fi
+fi
+
 # Получаем короткое имя диска (для имени файла и логов)
 DISK_NAME=$(echo $DISK_UUID | cut -d'-' -f1)
 
@@ -222,16 +244,38 @@ send_backup_status() {
     json_data="{\"diskName\":\"$DISK_UUID\",\"status\":\"$status\",\"message\":\"$message\"}"
     
     log_message "Отправка статуса '$status' в API: $message"
+    log_message "URL: ${API_URL}/api/system/backup-status"
+    log_message "API Key: $API_KEY"
     
-    # Отправляем запрос на API
-    response=$(curl -s -X POST \
+    # Проверяем доступность API сервера
+    if command -v ping &> /dev/null; then
+        API_HOST=$(echo "$API_URL" | sed -n 's/http[s]*:\/\/\([^:]*\).*/\1/p')
+        log_message "Проверка доступности API сервера ($API_HOST)..."
+        if ! ping -c 1 -W 2 "$API_HOST" &> /dev/null; then
+            log_message "ПРЕДУПРЕЖДЕНИЕ: Сервер API ($API_HOST) недоступен!"
+        else
+            log_message "Сервер API ($API_HOST) доступен"
+        fi
+    fi
+    
+    # Отправляем запрос на API с подробным выводом
+    response=$(curl -v -s -X POST \
         -H "Content-Type: application/json" \
         -H "X-API-KEY: $API_KEY" \
         -d "$json_data" \
-        "${API_URL}/api/system/backup-status")
+        "${API_URL}/api/system/backup-status" 2>&1)
     
     # Проверяем ответ
     log_message "API response: $response"
+    
+    # Проверяем наличие ошибки соединения в ответе
+    if echo "$response" | grep -q "Connection refused"; then
+        log_message "ОШИБКА: Не удалось подключиться к API (отказано в соединении)"
+        log_message "Пожалуйста, проверьте, что сервер запущен и доступен по адресу ${API_URL}"
+    elif echo "$response" | grep -q "Couldn't connect to server"; then
+        log_message "ОШИБКА: Не удалось подключиться к API (сервер недоступен)"
+        log_message "Пожалуйста, проверьте, что сервер запущен и доступен по адресу ${API_URL}"
+    fi
 }
 
 # Запись в лог с датой
@@ -521,12 +565,12 @@ ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root
 
 # Запускаем скрипт для настройки cron
 log "Настройка cron задания для бэкапа диска $SOURCE_UUID"
-ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "bash -c '/root/setup_cron.sh /root/make_backup.sh \"$SOURCE_UUID\" \"$BACKUP_PATH\" \"$API_KEY\" \"$API_URL\" \"$MAX_BACKUPS\" \"$BACKUP_FREQUENCY\"'"
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "bash -c '/root/setup_cron.sh /root/make_backup.sh \"$SOURCE_UUID\" \"$BACKUP_PATH\" \"$BACKUP_API_KEY\" \"$API_URL\" \"$MAX_BACKUPS\" \"$BACKUP_FREQUENCY\"'"
 
 # Запускаем бэкап немедленно, если указано
 if [ "$1" == "now" ]; then
     log "Запуск немедленного резервного копирования..."
-    ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "bash -c '/root/make_backup.sh \"$SOURCE_UUID\" \"$BACKUP_PATH\" \"$API_KEY\" \"$API_URL\" \"$MAX_BACKUPS\" \"$BACKUP_FREQUENCY\"'"
+    ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "bash -c '/root/make_backup.sh \"$SOURCE_UUID\" \"$BACKUP_PATH\" \"$BACKUP_API_KEY\" \"$API_URL\" \"$MAX_BACKUPS\" \"$BACKUP_FREQUENCY\"'"
     
     # Проверяем статус выполнения
     if [ $? -eq 0 ]; then

@@ -331,11 +331,12 @@ function startDiskMonitoring() {
             logger.info(`Сервер запущен на порту ${PORT} (0.0.0.0)`);
             logger.info(`API доступно по адресу /api/${API_VERSION}`);
             
-            const mountedDisksNames = Object.entries(global.mountedDisks)
-                .filter(([_, isMounted]) => isMounted)
-                .map(([name]) => name);
+            // Выводим информацию о доступных дисках
+            const availableDisks = Object.keys(global.mountedDisks)
+                .filter(disk => global.mountedDisks[disk])
+                .join(', ');
             
-            logger.info(`Доступные диски: ${mountedDisksNames.join(', ')}`);
+            logger.info(`Доступные диски: ${availableDisks || 'Нет доступных дисков'}`);
         });
         
         // Обработка необработанных ошибок
