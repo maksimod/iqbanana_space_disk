@@ -12,6 +12,7 @@ SCRIPTS_DIR="/home/user/iqbanana_space_disk/scripts"
 # Получаем API ключ из .env файла бэкенда
 BACKEND_ENV_FILE="/home/user/iqbanana_space_disk/backend/.env"
 SERVER_IP=$(hostname -I | awk '{print $1}')
+# Всегда используем SERVER_IP вместо localhost для API URL
 API_URL="http://${SERVER_IP}:6005"
 
 # Функция для записи в лог
@@ -47,7 +48,9 @@ log "Путь для сохранения бэкапов на сервере: $B
 # Получаем порт из .env, если есть
 ENV_PORT=$(grep PORT $BACKEND_ENV_FILE | cut -d'=' -f2 | tr -d '\r')
 if [ -n "$ENV_PORT" ]; then
-    API_URL="http://localhost:$ENV_PORT"
+    # Никогда не используем localhost даже если порт указан в ENV
+    API_URL="http://${SERVER_IP}:${ENV_PORT}"
+    log "Обновлен API URL с учетом порта из .env: $API_URL"
 fi
 
 # Проверка наличия ключа SSH
@@ -201,31 +204,34 @@ if [ "$1" == "now" ]; then
     log "Запуск немедленного резервного копирования..."
     log "Параметры: DISK_UUID=$SOURCE_UUID, BACKUP_PATH=$TARGET_MOUNT, API_KEY=$BACKUP_API_KEY, API_URL=$API_URL"
     
+    # Всегда обновляем скрипт перед запуском
+    log "Обновление скрипта make_backup.sh на удаленном сервере..."
+    scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -P "$BACKUP_SERVER_PORT" "$SCRIPTS_DIR/make_backup.sh" root@$BACKUP_SERVER:/root/make_backup.sh
+    ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "chmod +x /root/make_backup.sh"
+    
     # Проверка доступности API сервера перед запуском
     log "Проверка доступности API сервера..."
     API_HOST=$(echo "$API_URL" | sed -E 's#^https?://([^:/]+).*$#\1#')
     API_PORT=$(echo "$API_URL" | sed -E 's#^https?://[^:]+:([0-9]+).*$#\1#')
     
-    if [ "$API_HOST" = "localhost" ]; then
-        # Для localhost проверяем порт на локальной машине
-        log "API сервер на localhost, проверка порта $API_PORT"
-        if netstat -tuln | grep -q ":$API_PORT "; then
-            log "API сервер доступен на порту $API_PORT"
-        else 
-            log "ВНИМАНИЕ: Порт $API_PORT не прослушивается! API может быть недоступен."
-        fi
+    # Никогда не используем localhost, всегда используем SERVER_IP
+    if [[ "$API_URL" == *"localhost"* ]]; then
+        log "API сервер содержит localhost, заменяем на $SERVER_IP:$API_PORT"
+        API_URL="http://${SERVER_IP}:${API_PORT}"
+    fi
+    
+    # Проверяем доступность API через curl
+    log "Проверка доступности API на $API_URL..."
+    if curl -s --head --request GET "${API_URL}" | grep "200\|302\|401\|403" > /dev/null; then
+        log "API сервер доступен по адресу $API_URL"
     else
-        # Для удаленного хоста пробуем пинговать
-        log "Пинг API сервера $API_HOST..."
-        if ping -c 1 -W 2 $API_HOST >/dev/null 2>&1; then
-            log "API сервер $API_HOST доступен по ping"
-        else
-            log "ВНИМАНИЕ: API сервер $API_HOST не отвечает на ping! Проверьте подключение."
-        fi
+        log "ВНИМАНИЕ: Не удалось подключиться к API по адресу $API_URL."
+        log "Пробуем запустить curl напрямую для получения больше информации..."
+        curl -v "${API_URL}" || true
     fi
     
     # Запускаем скрипт бэкапа с правильным путем для бэкапов
-    log "Запуск скрипта бэкапа..."
+    log "Запуск скрипта бэкапа с API URL: $API_URL"
     # Порядок аргументов: disk_uuid, backup_path, api_key, api_url, interval
     ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "bash -c '/root/make_backup.sh \"$SOURCE_UUID\" \"$TARGET_MOUNT\" \"$BACKUP_API_KEY\" \"$API_URL\" \"$BACKUP_FREQUENCY\"'"
     
