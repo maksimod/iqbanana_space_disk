@@ -236,32 +236,88 @@ const getDisks = async (req, res, next) => {
       }
     });
     
-    // Устанавливаем общий таймаут для всех операций и возвращаем то, что успели получить
-    const timeoutPromise = new Promise((resolve) => {
-      setTimeout(() => {
-        resolve([]);
-      }, 1500); // Сокращаем таймаут до 1.5 секунды
-    });
-    
+    // Получаем результаты для всех дисков с общим таймаутом
+    const timeout = timeoutPromise(5000, 'Превышено время ожидания при получении информации о дисках');
     const results = await Promise.race([
       Promise.all(diskPromises),
-      timeoutPromise.then(() => {
-        logger.warn('Таймаут общего запроса дисков, возвращаем частичные данные');
-        return Object.entries(config.disks).map(([name, mountPoint]) => ({
-          name,
-          mountPoint,
-          status: global.mountedDisks[name] ? 'online' : 'offline',
-          error: global.mountedDisks[name] ? null : 'Таймаут запроса',
-          total: 0,
-          free: 0,
-          used: 0,
-          userFilesSize: 0
-        }));
-      })
+      timeout
     ]);
+
+    // Если результаты не успели получиться, формируем базовый ответ
+    if (!results || results instanceof Error) {
+      logger.error('Таймаут получения информации о дисках');
+      return res.status(500).json({ error: 'Превышено время ожидания при получении информации о дисках' });
+    }
+
+    // Обогащаем данные информацией о бэкапе
+    const enrichDisksWithBackupInfo = async (disks) => {
+      // Если MongoDB не подключена, просто возвращаем диски как есть
+      if (mongoose.connection.readyState !== 1) {
+        // Проверяем фейковую модель Disk для каждого диска
+        if (typeof global.fakeDiskModel === 'object' && global.fakeDiskModel !== null) {
+          return disks.map(disk => {
+            // Получаем UUID диска
+            const diskUuid = getDiskUuidFromName(disk.name);
+            
+            if (diskUuid) {
+              // Проверяем, есть ли информация о бэкапе в фейковой модели с таким UUID
+              const backupInfo = global.fakeDiskModel[diskUuid];
+              
+              if (backupInfo) {
+                logger.info(`Найдена информация о бэкапе для диска ${disk.name} (UUID: ${diskUuid}): статус=${backupInfo.backupStatus || 'не задан'}`);
+                // Добавляем информацию о бэкапе к объекту диска
+                disk.backupStatus = backupInfo.backupStatus;
+                disk.backupMessage = backupInfo.backupMessage;
+                disk.backupUpdatedAt = backupInfo.backupUpdatedAt;
+              }
+            }
+            
+            return formatDiskObject(disk);
+          });
+        }
+        
+        return disks.map(disk => formatDiskObject(disk));
+      }
+      
+      // Обогащаем каждый диск данными о бэкапе
+      const enrichedDisksPromises = disks.map(async (disk) => {
+        // Если диск уже имеет информацию о бэкапе, используем её
+        if (disk.backupStatus || disk.backupMessage || disk.backupUpdatedAt) {
+          return formatDiskObject(disk);
+        }
+        
+        try {
+          // Получаем UUID диска
+          const diskUuid = getDiskUuidFromName(disk.name);
+          
+          if (diskUuid) {
+            // Проверяем наличие данных о бэкапе в базе данных по UUID
+            const diskInDb = await Disk.findOne({ name: diskUuid }).exec();
+            if (diskInDb && (diskInDb.backupStatus || diskInDb.backupMessage || diskInDb.backupUpdatedAt)) {
+              // Обновляем информацию о бэкапе
+              disk.backupStatus = diskInDb.backupStatus;
+              disk.backupMessage = diskInDb.backupMessage;
+              disk.backupUpdatedAt = diskInDb.backupUpdatedAt;
+              logger.info(`Найдена информация о бэкапе для диска ${disk.name} (UUID: ${diskUuid}): статус=${disk.backupStatus}`);
+            }
+          }
+        } catch (dbError) {
+          logger.warn(`Не удалось получить информацию о бэкапе для диска ${disk.name} из базы данных: ${dbError.message}`);
+        }
+        
+        return formatDiskObject(disk);
+      });
+      
+      // Дожидаемся завершения всех запросов
+      return await Promise.all(enrichedDisksPromises);
+    };
+
+    // Сортируем диски по имени
+    const sortedResults = results.sort((a, b) => a.name.localeCompare(b.name));
     
-    logger.info(`Получена информация о ${results.length} дисках`);
-    res.json(results);
+    // Обогащаем данные информацией о бэкапе и возвращаем результат
+    const enrichedResults = await enrichDisksWithBackupInfo(sortedResults);
+    return res.json(enrichedResults);
   } catch (error) {
     logger.error('Ошибка при получении информации о дисках', error);
     next(error);
@@ -386,6 +442,63 @@ const refreshDisksStatus = async (req, res, next) => {
     logger.error('Ошибка при обновлении статуса дисков', error);
     next(error);
   }
+};
+
+// Проверяем, что контроллер возвращает статус бэкапа и связанную информацию
+const formatDiskObject = (disk) => {
+  // Добавляем отладочный вывод
+  logger.info(`Форматирование объекта диска ${disk.name}. Статус бэкапа: ${disk.backupStatus || 'отсутствует'}`);
+  
+  // Преобразуем объект диска, возвращаемый из базы данных
+  return {
+    name: disk.name,
+    path: disk.path,
+    mountPoint: disk.mountPoint,
+    total: disk.total,
+    used: disk.used,
+    free: disk.free,
+    userFilesSize: disk.userFilesSize,
+    status: disk.status,
+    error: disk.error,
+    // Добавляем информацию о бэкапе, чтобы она отображалась на фронтенде
+    backupStatus: disk.backupStatus,
+    backupMessage: disk.backupMessage,
+    backupUpdatedAt: disk.backupUpdatedAt
+  };
+};
+
+// Добавляем функцию для сопоставления UUID и имени диска
+const getUuidFromDiskName = (diskName) => {
+  if (!diskName) return null;
+  
+  // Итерируем по всем дискам из конфига
+  for (const [name, mountPoint] of Object.entries(config.disks)) {
+    // Извлекаем UUID из пути монтирования
+    const match = mountPoint.match(/\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i);
+    if (match && match[1]) {
+      const uuid = match[1];
+      logger.info(`Сопоставление диска: ${name} -> UUID: ${uuid}`);
+      
+      // Если имя диска совпадает с UUID, возвращаем имя
+      if (diskName === uuid) {
+        return name;
+      }
+    }
+  }
+  
+  // Если UUID не найден, возвращаем исходное имя
+  return null;
+};
+
+// Получаем UUID диска из его имени
+const getDiskUuidFromName = (diskName) => {
+  if (!diskName) return null;
+  
+  const mountPoint = config.disks[diskName];
+  if (!mountPoint) return null;
+  
+  const match = mountPoint.match(/\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i);
+  return match && match[1] ? match[1] : null;
 };
 
 module.exports = {

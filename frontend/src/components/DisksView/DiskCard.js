@@ -26,7 +26,17 @@ const DiskCard = ({ disk, onSelect }) => {
 
   // Компонент отображения статуса бэкапа
   const renderBackupStatus = () => {
-    if (!disk.backupStatus) return null;
+    // Добавляем подробное логирование для отладки
+    console.log("Рендеринг статуса бэкапа для диска:", disk.name);
+    console.log("Объект диска целиком:", disk);
+    console.log("Статус бэкапа:", disk.backupStatus);
+    console.log("Сообщение бэкапа:", disk.backupMessage);
+    console.log("Время обновления бэкапа:", disk.backupUpdatedAt);
+    
+    if (!disk.backupStatus) {
+      console.log(`Диск ${disk.name} НЕ имеет статуса бэкапа!`);
+      return null;
+    }
     
     let statusIcon, statusText, statusClass;
     
@@ -47,6 +57,7 @@ const DiskCard = ({ disk, onSelect }) => {
         statusClass = "backup-status-error";
         break;
       default:
+        console.log("Неизвестный статус бэкапа:", disk.backupStatus);
         return null;
     }
     
@@ -56,13 +67,17 @@ const DiskCard = ({ disk, onSelect }) => {
     
     return (
       <div className={`backup-status ${statusClass}`} title={hasDetailMessage ? disk.backupMessage : ""}>
-        {statusIcon}
-        <span className="backup-status-text">{statusText}</span>
+        <div className="backup-status-header">
+          {statusIcon}
+          <span className="backup-status-text">{statusText}</span>
+        </div>
+        
         {hasDetailMessage && (
           <div className="backup-status-message">
             {disk.backupMessage}
           </div>
         )}
+        
         {updatedTime && (
           <div className="backup-status-time">
             <FaClock /> {updatedTime}
