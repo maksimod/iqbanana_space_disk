@@ -12,6 +12,7 @@ const diskRoutes = require('./routes/diskRoutes');
 const fileRoutes = require('./routes/fileRoutes');
 const systemRoutes = require('./routes/systemRoutes');
 const authRoutes = require('./routes/authRoutes');
+const backupController = require('./controllers/backupController');
 const logger = require('./utils/logger');
 const cors = require('cors');
 const morgan = require('morgan');
@@ -110,7 +111,36 @@ const createFakeModels = () => {
     },
     // Другие методы модели, которые могут понадобиться
     updateOne: async () => ({}),
-    create: async () => ({})
+    // Добавляем статический метод create как функцию верхнего уровня объекта
+    create: async (diskData) => {
+      logger.info(`[FAKE MODEL] Создание новой записи диска: ${JSON.stringify(diskData)}`);
+      
+      // Создаем объект диска с данными из запроса
+      const newDisk = {
+        _id: diskData.name,
+        ...diskData,
+        // По умолчанию для полей, которые могут отсутствовать
+        status: diskData.status || 'online',
+        total: diskData.total || 0,
+        free: diskData.free || 0,
+        used: diskData.used || 0,
+        userFilesSize: diskData.userFilesSize || 0,
+        
+        // Добавляем метод save для обратной совместимости
+        save: async () => {
+          logger.info(`[FAKE MODEL] Сохранение диска с ID: ${diskData.name}`);
+          return newDisk;
+        }
+      };
+      
+      // Регистрируем диск в глобальном объекте дисков, если его там нет
+      if (config.disks && !config.disks[diskData.name]) {
+        config.disks[diskData.name] = diskData.path || diskData.mountPoint;
+        logger.info(`[FAKE MODEL] Диск ${diskData.name} добавлен в конфигурацию`);
+      }
+      
+      return newDisk;
+    }
   };
   
   // Подменяем реальную модель на фейковую - важно, чтобы это произошло до любых запросов к MongoDB
@@ -155,13 +185,21 @@ const createFakeModels = () => {
 
 // Настройка CORS более детально
 const corsOptions = {
-  origin: ['http://iqbanana.online:6001', 'http://localhost:6001', 'http://localhost:3000', 'http://127.0.0.1:6001'],
+  origin: ['http://iqbanana.online:6001', 'http://localhost:6001', 'http://localhost:3000', 'http://127.0.0.1:6001', '*'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-KEY'],
   credentials: true,
   optionsSuccessStatus: 200
 };
 app.use(cors(corsOptions));
+
+// Опция для общего доступа к API (для тестирования)
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, X-API-KEY, Authorization');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  next();
+});
 
 // Основные middleware
 app.use(corsMiddleware);
@@ -294,6 +332,10 @@ function startDiskMonitoring() {
         // Маршруты аутентификации (без проверки)
         app.use(`/api/${API_VERSION}/auth`, authRoutes);
         app.use('/api/auth', authRoutes); // Обратная совместимость
+        
+        // Исправление: Добавляем отдельный маршрут без аутентификации для обновления статуса бэкапа
+        // Нужно разместить ДО других маршрутов системы
+        app.use('/api/system/backup-status', backupController.checkBackupApiKey, backupController.updateBackupStatus);
         
         // Добавляем маршрут для системной информации
         app.use(`/api/${API_VERSION}/system`, authMiddleware, systemRoutes);

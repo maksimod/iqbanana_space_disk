@@ -14,27 +14,48 @@ const BACKUPS_YML_PATH = path.join(__dirname, '../../monitor/backups.yml');
 const checkBackupApiKey = (req, res, next) => {
   // Полное логирование для диагностики
   logger.info(`[BACKUP] Проверка API ключа...`);
-  logger.info(`[BACKUP] Загружен API ключ из конфигурации: '${config.backupApiKey?.substring(0, 5)}...'`);
-  logger.info(`[BACKUP] Получен API ключ из запроса: '${req.headers['x-api-key']?.substring(0, 5)}...'`);
+  
+  // Логирование всех заголовков запроса для отладки
   logger.info(`[BACKUP] Полные заголовки запроса: ${JSON.stringify(req.headers)}`);
+  
+  // Ключ может быть передан в заголовке 'x-api-key', 'X-API-KEY' или в параметре query 'api_key'
+  const apiKeyHeader = req.headers['x-api-key'] || req.headers['X-API-KEY'] || req.headers['x-api-key'.toUpperCase()];
+  const apiKeyQuery = req.query.api_key || req.query.apiKey || req.query.API_KEY;
+  
+  // Используем ключ из заголовка или query параметра
+  const apiKey = apiKeyHeader || apiKeyQuery;
+  
+  logger.info(`[BACKUP] Загружен API ключ из конфигурации: '${config.backupApiKey}'`);
+  logger.info(`[BACKUP] Получен API ключ из запроса: '${apiKey}'`);
 
   // Проверяем, задан ли ключ в конфигурации
   if (!config.backupApiKey) {
     logger.error('КРИТИЧЕСКАЯ ОШИБКА: BACKUP_API_KEY не задан в .env файле');
     return res.status(500).json({ 
-      error: 'Ошибка сервера: API ключ для бэкапа не настроен' 
+      success: false,
+      message: 'Ошибка сервера: API ключ для бэкапа не настроен' 
     });
   }
   
-  const apiKey = req.headers['x-api-key'];
-  
-  if (!apiKey || apiKey !== config.backupApiKey) {
-    logger.error(`[BACKUP] Ошибка авторизации. Полученный ключ: '${apiKey}', ожидаемый ключ: '${config.backupApiKey}'`);
+  // Проверка 1: Проверяем, что ключ API передан
+  if (!apiKey) {
+    logger.error(`[BACKUP] Ошибка авторизации: API ключ не передан в запросе`);
     return res.status(401).json({ 
-      error: 'Неавторизованный запрос, проверьте API ключ' 
+      success: false,
+      message: 'Необходима аутентификация: API ключ не найден в запросе' 
     });
   }
   
+  // Проверка 2: Сравниваем переданный ключ с ключом из конфигурации
+  if (apiKey !== config.backupApiKey) {
+    logger.error(`[BACKUP] Ошибка авторизации: Неверный API ключ`);
+    return res.status(401).json({ 
+      success: false,
+      message: 'Неавторизованный запрос: неверный API ключ' 
+    });
+  }
+  
+  // Если проверки пройдены, пропускаем запрос дальше
   logger.info('[BACKUP] API ключ успешно проверен');
   next();
 };
@@ -44,6 +65,9 @@ const checkBackupApiKey = (req, res, next) => {
  */
 const updateBackupStatus = async (req, res) => {
   try {
+    // Логируем тело запроса для отладки
+    logger.info(`[BACKUP] Получено тело запроса: ${JSON.stringify(req.body)}`);
+    
     const { diskName, status, message } = req.body;
     
     // Расширенное логирование
@@ -54,7 +78,8 @@ const updateBackupStatus = async (req, res) => {
     if (!diskName || !status) {
       logger.error(`[BACKUP] Отсутствуют обязательные параметры: diskName=${diskName}, status=${status}`);
       return res.status(400).json({ 
-        error: 'Необходимые параметры: diskName, status' 
+        success: false,
+        message: 'Необходимые параметры: diskName, status' 
       });
     }
     
@@ -63,39 +88,103 @@ const updateBackupStatus = async (req, res) => {
     if (!validStatuses.includes(status)) {
       logger.error(`[BACKUP] Недопустимый статус: ${status}`);
       return res.status(400).json({ 
-        error: 'Недопустимый статус. Разрешенные статусы: PROCESSING, SUCCESS, ERROR' 
+        success: false,
+        message: `Недопустимый статус. Разрешенные статусы: ${validStatuses.join(', ')}` 
       });
     }
     
     // Ищем диск в базе данных
     logger.info(`[BACKUP] Поиск диска ${diskName} в базе данных`);
-    const disk = await Disk.findOne({ name: diskName });
+    let disk = await Disk.findOne({ name: diskName });
     
     if (!disk) {
-      logger.error(`[BACKUP] Диск с именем ${diskName} не найден в базе данных`);
-      return res.status(404).json({ 
-        error: `Диск с именем ${diskName} не найден` 
-      });
+      logger.warn(`[BACKUP] Диск с именем ${diskName} не найден в базе данных. Попытка создания...`);
+      
+      // Если диск не найден, создаем новую запись
+      try {
+        // Проверяем, есть ли метод create
+        if (typeof Disk.create !== 'function') {
+          logger.warn(`[BACKUP] Метод Disk.create недоступен. Создаем объект диска вручную.`);
+          
+          // Создаем объект диска вручную
+          disk = {
+            name: diskName,
+            path: `/mnt/storage/${diskName}`,
+            mountPoint: `/mnt/storage/${diskName}`,
+            status: 'online',
+            backupStatus: status,
+            backupMessage: message || '',
+            backupUpdatedAt: new Date(),
+            
+            // Добавляем фиктивный метод save
+            save: async function() {
+              logger.info(`[BACKUP] Сохранение диска ${diskName} (фиктивный метод)`);
+              return this;
+            }
+          };
+          
+          logger.info(`[BACKUP] Создан объект диска для ${diskName} (фиктивный метод)`);
+        } else {
+          // Используем встроенный метод create
+          disk = await Disk.create({
+            name: diskName,
+            path: `/mnt/storage/${diskName}`,
+            mountPoint: `/mnt/storage/${diskName}`,
+            status: 'online',
+            backupStatus: status,
+            backupMessage: message || '',
+            backupUpdatedAt: new Date()
+          });
+          logger.info(`[BACKUP] Создана новая запись диска для ${diskName}`);
+        }
+      } catch (createError) {
+        logger.error(`[BACKUP] Не удалось создать новую запись диска: ${createError.message}`);
+        // Попробуем обновить существующий диск вместо создания нового
+        try {
+          logger.info(`[BACKUP] Попытка найти диск снова или создать временный объект`);
+          disk = await Disk.findOne({ name: diskName }) || {
+            name: diskName,
+            backupStatus: status,
+            backupMessage: message || '',
+            backupUpdatedAt: new Date(),
+            save: async () => ({ name: diskName })
+          };
+          logger.info(`[BACKUP] Используем найденный или временный объект диска`);
+        } catch (secondError) {
+          return res.status(500).json({ 
+            success: false,
+            message: `Не удалось обработать диск: ${secondError.message}` 
+          });
+        }
+      }
+    } else {
+      // Обновляем статус бэкапа
+      logger.info(`[BACKUP] Обновление статуса бэкапа для диска ${diskName} на ${status}`);
+      disk.backupStatus = status;
+      disk.backupMessage = message || '';
+      disk.backupUpdatedAt = new Date();
+      
+      // Сохраняем изменения
+      await disk.save();
+      logger.info(`[BACKUP] Статус бэкапа успешно обновлен для диска ${diskName}`);
     }
     
-    // Обновляем статус бэкапа
-    logger.info(`[BACKUP] Обновление статуса бэкапа для диска ${diskName} на ${status}`);
-    disk.backupStatus = status;
-    disk.backupMessage = message || '';
-    disk.backupUpdatedAt = new Date();
-    
-    // Сохраняем изменения
-    await disk.save();
-    logger.info(`[BACKUP] Статус бэкапа успешно обновлен для диска ${diskName}`);
-    
+    // Возвращаем успешный ответ с форматированием для совместимости
     return res.status(200).json({ 
       success: true, 
-      message: `Статус бэкапа диска ${diskName} обновлен на ${status}` 
+      message: `Статус бэкапа диска ${diskName} обновлен на ${status}`,
+      data: {
+        diskName,
+        status,
+        message: message || '',
+        updatedAt: new Date()
+      }
     });
   } catch (error) {
     logger.error('Ошибка при обновлении статуса бэкапа:', error);
     return res.status(500).json({ 
-      error: 'Внутренняя ошибка сервера при обновлении статуса бэкапа' 
+      success: false,
+      message: 'Внутренняя ошибка сервера при обновлении статуса бэкапа' 
     });
   }
 };

@@ -10,7 +10,7 @@ router.get('/info', systemController.getSystemInfo);
 // Новый маршрут для обновления информации о дисках
 router.post('/update-disks', updateDisksController.checkApiKey, updateDisksController.updateDisks);
 
-// Маршрут для обновления статуса бэкапа
-router.post('/backup-status', backupController.checkBackupApiKey, backupController.updateBackupStatus);
+// Маршрут для обновления статуса бэкапа - больше не нужен здесь, обрабатывается напрямую в server.js
+// router.post('/backup-status', backupController.checkBackupApiKey, backupController.updateBackupStatus);
 
 module.exports = router;

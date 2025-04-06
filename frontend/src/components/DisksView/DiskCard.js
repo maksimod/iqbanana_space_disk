@@ -50,13 +50,19 @@ const DiskCard = ({ disk, onSelect }) => {
         return null;
     }
     
-    // Добавляем информацию о времени последнего обновления
+    // Добавляем информацию о времени последнего обновления и сообщение если есть
     const updatedTime = disk.backupUpdatedAt ? new Date(disk.backupUpdatedAt).toLocaleString() : null;
+    const hasDetailMessage = disk.backupMessage && disk.backupMessage !== statusText;
     
     return (
-      <div className={`backup-status ${statusClass}`}>
+      <div className={`backup-status ${statusClass}`} title={hasDetailMessage ? disk.backupMessage : ""}>
         {statusIcon}
         <span className="backup-status-text">{statusText}</span>
+        {hasDetailMessage && (
+          <div className="backup-status-message">
+            {disk.backupMessage}
+          </div>
+        )}
         {updatedTime && (
           <div className="backup-status-time">
             <FaClock /> {updatedTime}
