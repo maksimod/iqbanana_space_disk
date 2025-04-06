@@ -37,12 +37,12 @@ fi
 # Проверка пути для сохранения бэкапов
 if [ -z "$BACKUP_PATH" ]; then
     log "ОШИБКА: BACKUP_PATH не задан в конфигурации"
-    log "Устанавливаем путь по умолчанию: /root/backups"
-    BACKUP_PATH="/root/backups"
+    log "Используем путь по умолчанию - целевое монтирование: $TARGET_MOUNT"
+    BACKUP_PATH="$TARGET_MOUNT"
 fi
 
 log "Используется BACKUP_API_KEY из .env файла: $BACKUP_API_KEY"
-log "Путь для сохранения бэкапов: $BACKUP_PATH"
+log "Путь для сохранения бэкапов на сервере: $BACKUP_PATH"
 
 # Получаем порт из .env, если есть
 ENV_PORT=$(grep PORT $BACKEND_ENV_FILE | cut -d'=' -f2 | tr -d '\r')
@@ -62,6 +62,37 @@ log "Проверка подключения к серверу $BACKUP_SERVER ч
 if ! ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "$BACKUP_SERVER_PORT" "root@$BACKUP_SERVER" "echo 'Подключение работает'"; then
     log "Ошибка: Не удалось подключиться к серверу $BACKUP_SERVER"
     exit 1
+fi
+
+# Проверка доступности пути для бэкапа на сервере
+log "Проверка доступности пути для бэкапа на сервере: $BACKUP_PATH"
+if ! ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "[ -d \"$BACKUP_PATH\" ]"; then
+    log "Путь $BACKUP_PATH не существует на сервере. Проверяем монтирование..."
+    
+    # Проверка монтирования диска на сервере
+    if ! ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "lsblk | grep -q \"$TARGET_UUID\""; then
+        log "ВНИМАНИЕ: Диск с UUID $TARGET_UUID не найден на сервере"
+        log "Доступные диски на сервере:"
+        ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "lsblk"
+    else
+        log "Диск с UUID $TARGET_UUID найден на сервере, создаем точку монтирования"
+        ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "mkdir -p \"$TARGET_MOUNT\""
+        
+        # Проверяем, смонтирован ли уже диск
+        if ! ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "mount | grep -q \"$TARGET_MOUNT\""; then
+            log "Попытка монтирования диска на сервере"
+            if ! ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "mount -U \"$TARGET_UUID\" \"$TARGET_MOUNT\""; then
+                log "ОШИБКА: Не удалось смонтировать диск на сервере"
+                exit 1
+            else
+                log "Диск успешно смонтирован на сервере в $TARGET_MOUNT"
+            fi
+        else
+            log "Диск уже смонтирован на сервере в $TARGET_MOUNT"
+        fi
+    fi
+else
+    log "Путь $BACKUP_PATH доступен на сервере"
 fi
 
 # Проверка и установка необходимых зависимостей на удаленном сервере
@@ -150,9 +181,9 @@ scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -P "$BACKUP_SERVER_PORT" "$SC
 log "Установка прав на выполнение скриптов"
 ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "chmod +x /root/make_backup.sh /root/setup_cron.sh"
 
-# Создаем каталог для резервного копирования на удаленном сервере
-log "Создание каталога для бэкапов на сервере $BACKUP_SERVER: $BACKUP_PATH"
-ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "mkdir -p $BACKUP_PATH"
+# Проверяем доступность пути для бэкапа на сервере (не создаем - он должен быть уже смонтирован)
+log "Проверка доступности пути для бэкапа на сервере: $BACKUP_PATH"
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "if [ ! -d \"$BACKUP_PATH\" ]; then echo \"ОШИБКА: Путь $BACKUP_PATH не доступен\"; exit 1; else echo \"Путь $BACKUP_PATH доступен\"; fi"
 
 # Удаляем старую запись crontab, если она существует
 log "Удаление старых crontab-заданий для диска $SOURCE_UUID"
@@ -160,15 +191,43 @@ ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root
 
 # Напрямую добавляем правильную задачу в crontab
 CRON_EXPR="0 2 * * *"
-BACKUP_CMD="/root/make_backup.sh $SOURCE_UUID $BACKUP_PATH $BACKUP_API_KEY $API_URL $BACKUP_FREQUENCY"
+# Всегда используем правильный путь для бэкапов на сервере
+BACKUP_CMD="/root/make_backup.sh $SOURCE_UUID $TARGET_MOUNT $BACKUP_API_KEY $API_URL $BACKUP_FREQUENCY"
 log "Добавление новой задачи в crontab: $CRON_EXPR $BACKUP_CMD"
 ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "(crontab -l 2>/dev/null || echo '') | grep -v 'make_backup.sh.*$SOURCE_UUID' | { cat; echo '$CRON_EXPR $BACKUP_CMD'; } | crontab -"
 
 # Запускаем бэкап немедленно, если указано
 if [ "$1" == "now" ]; then
     log "Запуск немедленного резервного копирования..."
+    log "Параметры: DISK_UUID=$SOURCE_UUID, BACKUP_PATH=$TARGET_MOUNT, API_KEY=$BACKUP_API_KEY, API_URL=$API_URL"
+    
+    # Проверка доступности API сервера перед запуском
+    log "Проверка доступности API сервера..."
+    API_HOST=$(echo "$API_URL" | sed -E 's#^https?://([^:/]+).*$#\1#')
+    API_PORT=$(echo "$API_URL" | sed -E 's#^https?://[^:]+:([0-9]+).*$#\1#')
+    
+    if [ "$API_HOST" = "localhost" ]; then
+        # Для localhost проверяем порт на локальной машине
+        log "API сервер на localhost, проверка порта $API_PORT"
+        if netstat -tuln | grep -q ":$API_PORT "; then
+            log "API сервер доступен на порту $API_PORT"
+        else 
+            log "ВНИМАНИЕ: Порт $API_PORT не прослушивается! API может быть недоступен."
+        fi
+    else
+        # Для удаленного хоста пробуем пинговать
+        log "Пинг API сервера $API_HOST..."
+        if ping -c 1 -W 2 $API_HOST >/dev/null 2>&1; then
+            log "API сервер $API_HOST доступен по ping"
+        else
+            log "ВНИМАНИЕ: API сервер $API_HOST не отвечает на ping! Проверьте подключение."
+        fi
+    fi
+    
+    # Запускаем скрипт бэкапа с правильным путем для бэкапов
+    log "Запуск скрипта бэкапа..."
     # Порядок аргументов: disk_uuid, backup_path, api_key, api_url, interval
-    ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "bash -c '/root/make_backup.sh \"$SOURCE_UUID\" \"$BACKUP_PATH\" \"$BACKUP_API_KEY\" \"$API_URL\" \"$BACKUP_FREQUENCY\"'"
+    ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "bash -c '/root/make_backup.sh \"$SOURCE_UUID\" \"$TARGET_MOUNT\" \"$BACKUP_API_KEY\" \"$API_URL\" \"$BACKUP_FREQUENCY\"'"
     
     # Проверяем статус выполнения
     if [ $? -eq 0 ]; then
