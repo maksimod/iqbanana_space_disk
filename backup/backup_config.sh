@@ -29,5 +29,8 @@ MAX_BACKUPS=24
 # Путь монтирования целевого диска
 TARGET_MOUNT="/mnt/backup_${TARGET_UUID}"
 
+# Путь для сохранения резервных копий
+BACKUP_PATH="/root/backups"
+
 # Путь к лог-файлу
 LOG_FILE="$(dirname "$(readlink -f "$0")")/backup.log"
