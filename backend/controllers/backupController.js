@@ -216,6 +216,8 @@ const getBackupsList = async (req, res) => {
     
     // Получаем UUID диска из его имени
     const diskUuid = getDiskUuidFromName(diskName);
+    logger.info(`[BACKUP] UUID диска ${diskName}: ${diskUuid}`);
+    
     if (!diskUuid) {
       logger.error(`[BACKUP] Не удалось получить UUID для диска ${diskName}`);
       return res.status(404).json({
@@ -224,59 +226,129 @@ const getBackupsList = async (req, res) => {
       });
     }
     
-    // Папка, где хранятся бэкапы диска
-    const backupPath = path.join(config.backup.path || '/mnt/backups', diskUuid);
+    // Находим UUID для бэкапа из конфигурации
+    let backupUuid = config.backup_disks && config.backup_disks[diskName] 
+      ? config.backup_disks[diskName] 
+      : diskUuid;
     
-    // Проверяем существование директории бэкапов
-    if (!fs.existsSync(backupPath)) {
-      logger.warn(`[BACKUP] Папка бэкапов не существует: ${backupPath}`);
-      return res.json({
-        success: true,
-        message: `Для диска ${diskName} нет доступных бэкапов`,
-        backups: []
+    logger.info(`[BACKUP] Используем UUID для бэкапа: ${backupUuid} (из конфигурации backup_disks)`);
+    
+    // Формируем путь к директории с бэкапами на удаленном сервере
+    const remotePath = `/mnt/backup_${backupUuid}`;
+    logger.info(`[BACKUP] Ищем бэкапы на удаленном сервере по пути: ${remotePath}`);
+    
+    // Путь к SSH ключу и параметры SSH соединения
+    const sshKeyPath = process.env.SSH_KEY_PATH || `/home/user/.ssh/id_rsa_server`;
+    const sshOptions = `-i "${sshKeyPath}" -o StrictHostKeyChecking=no -o BatchMode=yes`;
+    const sshServer = process.env.BACKUP_SERVER || "192.168.0.106";
+    const sshPort = process.env.BACKUP_SERVER_PORT || "22";
+    
+    logger.info(`[BACKUP] Используем SSH ключ: ${sshKeyPath} для подключения к ${sshServer}:${sshPort}`);
+    
+    // Выполняем SSH команду для получения списка файлов
+    const { execSync } = require('child_process');
+    const sshCmd = `ssh ${sshOptions} -p ${sshPort} root@${sshServer} "ls -la ${remotePath}"`;
+    logger.info(`[BACKUP] Выполняем команду: ${sshCmd}`);
+    
+    let sshOutput;
+    try {
+      sshOutput = execSync(sshCmd, { encoding: 'utf8' });
+      logger.info(`[BACKUP] Результат SSH команды:\n${sshOutput}`);
+    } catch (sshError) {
+      logger.error(`[BACKUP] Ошибка при выполнении SSH команды: ${sshError.message}`);
+      return res.status(500).json({
+        success: false,
+        message: `Ошибка при подключении к серверу бэкапов: ${sshError.message}`
       });
     }
     
-    // Получаем список файлов в директории бэкапов
-    const files = fs.readdirSync(backupPath)
-      .filter(file => file.endsWith('.tar.gz') || file.endsWith('.zip')) // Фильтруем только архивы
-      .map(file => {
-        // Получаем информацию о файле
-        const filePath = path.join(backupPath, file);
-        const stats = fs.statSync(filePath);
+    // Получаем список файлов через SSH
+    const fileListCmd = `ssh ${sshOptions} -p ${sshPort} root@${sshServer} "find ${remotePath} -maxdepth 1 -type f -name '*.tar.gz' -o -name '*.zip' | sort -r"`;
+    let filesOutput;
+    try {
+      filesOutput = execSync(fileListCmd, { encoding: 'utf8' });
+      logger.info(`[BACKUP] Список файлов бэкапов:\n${filesOutput}`);
+    } catch (listError) {
+      logger.error(`[BACKUP] Ошибка при получении списка файлов бэкапов: ${listError.message}`);
+      return res.status(500).json({
+        success: false,
+        message: `Ошибка при получении списка файлов бэкапов: ${listError.message}`
+      });
+    }
+    
+    // Парсим вывод команды для получения списка файлов
+    const backupFiles = filesOutput.trim().split('\n').filter(line => line.trim()).map(filePath => {
+      const filename = path.basename(filePath);
+      
+      // Получаем информацию о файле через SSH
+      const statCmd = `ssh ${sshOptions} -p ${sshPort} root@${sshServer} "stat -c '%s %Y' ${filePath}"`;
+      let fileStats;
+      try {
+        fileStats = execSync(statCmd, { encoding: 'utf8' }).trim();
+        const [size, mtime] = fileStats.split(' ');
         
         // Извлекаем дату из имени файла, если возможно
         let backupDate = null;
-        const dateMatch = file.match(/(\d{4}-\d{2}-\d{2}[-_]\d{2}-\d{2}-\d{2})/);
+        const dateMatch = filename.match(/(\d{4}-\d{2}-\d{2}[-_]\d{2}-\d{2}-\d{2})|(\d{8}_\d{6})/);
         if (dateMatch) {
-          backupDate = dateMatch[1].replace(/[-_]/g, '-').replace(/-(\d{2})-(\d{2})-(\d{2})$/, 'T$1:$2:$3');
+          const dateStr = dateMatch[1] || dateMatch[2];
+          if (dateStr) {
+            // Преобразуем формат даты в зависимости от найденного паттерна
+            if (dateStr.includes('-')) {
+              backupDate = dateStr.replace(/[-_]/g, '-').replace(/-(\d{2})-(\d{2})-(\d{2})$/, 'T$1:$2:$3');
+            } else if (dateStr.includes('_')) {
+              const year = dateStr.substring(0, 4);
+              const month = dateStr.substring(4, 6);
+              const day = dateStr.substring(6, 8);
+              const hour = dateStr.substring(9, 11);
+              const minute = dateStr.substring(11, 13);
+              const second = dateStr.substring(13, 15);
+              backupDate = `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+            }
+          }
         }
         
+        const mtimeDate = new Date(parseInt(mtime) * 1000);
+        
         return {
-          filename: file,
+          filename,
           path: filePath,
-          size: stats.size,
-          created: backupDate ? new Date(backupDate) : stats.mtime,
-          mtime: stats.mtime,
+          size: parseInt(size),
+          created: backupDate ? new Date(backupDate) : mtimeDate,
+          mtime: mtimeDate,
           // Добавляем форматированную дату для отображения
           dateFormatted: backupDate 
             ? new Date(backupDate).toLocaleString('ru-RU')
-            : stats.mtime.toLocaleString('ru-RU')
+            : mtimeDate.toLocaleString('ru-RU')
         };
-      })
-      .sort((a, b) => b.mtime - a.mtime); // Сортируем от новых к старым
+        
+      } catch (statError) {
+        logger.error(`[BACKUP] Ошибка при получении информации о файле ${filePath}: ${statError.message}`);
+        // Возвращаем минимальную информацию, если не удалось получить stat
+        return {
+          filename,
+          path: filePath,
+          size: 0,
+          created: new Date(),
+          mtime: new Date(),
+          dateFormatted: new Date().toLocaleString('ru-RU')
+        };
+      }
+    }).sort((a, b) => b.mtime - a.mtime); // Сортируем от новых к старым
     
-    logger.info(`[BACKUP] Найдено ${files.length} бэкапов для диска ${diskName}`);
+    logger.info(`[BACKUP] Найдено ${backupFiles.length} бэкапов для диска ${diskName}`);
     
     return res.json({
       success: true,
-      message: `Найдено ${files.length} бэкапов для диска ${diskName}`,
+      message: `Найдено ${backupFiles.length} бэкапов для диска ${diskName}`,
       diskName,
       diskUuid,
-      backups: files
+      backups: backupFiles
     });
+    
   } catch (error) {
     logger.error(`[BACKUP] Ошибка при получении списка бэкапов: ${error.message}`, error);
+    logger.error(`[BACKUP] Stack trace: ${error.stack}`);
     return res.status(500).json({
       success: false,
       message: 'Ошибка при получении списка бэкапов'
@@ -300,6 +372,8 @@ const restoreBackup = async (req, res) => {
     
     // Получаем UUID диска из его имени
     const diskUuid = getDiskUuidFromName(diskName);
+    logger.info(`[BACKUP] UUID диска ${diskName}: ${diskUuid}`);
+    
     if (!diskUuid) {
       logger.error(`[BACKUP] Не удалось получить UUID для диска ${diskName}`);
       return res.status(404).json({
@@ -308,73 +382,129 @@ const restoreBackup = async (req, res) => {
       });
     }
     
-    // Проверяем существование файла бэкапа
-    const backupPath = path.join(config.backup.path || '/mnt/backups', diskUuid);
-    const backupFilePath = path.join(backupPath, backupFile);
+    // Находим UUID для бэкапа из конфигурации
+    let backupUuid = config.backup_disks && config.backup_disks[diskName] 
+      ? config.backup_disks[diskName] 
+      : diskUuid;
     
-    if (!fs.existsSync(backupFilePath)) {
-      logger.error(`[BACKUP] Файл бэкапа не существует: ${backupFilePath}`);
-      return res.status(404).json({
-        success: false,
-        message: `Файл бэкапа не найден: ${backupFile}`
-      });
-    }
+    logger.info(`[BACKUP] Используем UUID для бэкапа: ${backupUuid} (из конфигурации backup_disks)`);
     
-    // Получаем точку монтирования диска
-    const mountPoint = config.disks[diskName];
-    if (!mountPoint) {
-      logger.error(`[BACKUP] Точка монтирования для диска ${diskName} не найдена`);
-      return res.status(404).json({
-        success: false,
-        message: `Точка монтирования для диска ${diskName} не найдена`
-      });
-    }
+    // Путь к SSH ключу и параметры SSH соединения
+    const sshKeyPath = process.env.SSH_KEY_PATH || `/home/user/.ssh/id_rsa_server`;
+    const sshOptions = `-i "${sshKeyPath}" -o StrictHostKeyChecking=no -o BatchMode=yes`;
+    const sshServer = process.env.BACKUP_SERVER || "192.168.0.106";
+    const sshPort = process.env.BACKUP_SERVER_PORT || "22";
     
-    // Обновляем статус бэкапа
-    await updateDiskBackupStatus(diskUuid, 'PROCESSING', `Восстановление из бэкапа: ${backupFile}`);
+    logger.info(`[BACKUP] Используем SSH ключ: ${sshKeyPath} для подключения к ${sshServer}:${sshPort}`);
     
-    // Запускаем процесс восстановления
-    const scriptPath = path.join(__dirname, '../../scripts/restore_backup.sh');
+    // Проверяем существование файла бэкапа на удаленном сервере
+    const remotePath = `/mnt/backup_${backupUuid}/${backupFile}`;
+    logger.info(`[BACKUP] Проверка файла бэкапа на удаленном сервере: ${remotePath}`);
     
-    // Проверяем существование скрипта
-    if (!fs.existsSync(scriptPath)) {
-      logger.error(`[BACKUP] Скрипт восстановления не найден: ${scriptPath}`);
-      await updateDiskBackupStatus(diskUuid, 'ERROR', `Скрипт восстановления не найден: ${scriptPath}`);
+    const { execSync } = require('child_process');
+    
+    // Проверяем существование файла
+    const checkCmd = `ssh ${sshOptions} -p ${sshPort} root@${sshServer} "test -f '${remotePath}' && echo 'exists' || echo 'not found'"`;
+    let fileExists;
+    try {
+      fileExists = execSync(checkCmd, { encoding: 'utf8' }).trim() === 'exists';
+      logger.info(`[BACKUP] Проверка файла бэкапа: ${fileExists ? 'файл существует' : 'файл не найден'}`);
+    } catch (checkError) {
+      logger.error(`[BACKUP] Ошибка при проверке файла бэкапа: ${checkError.message}`);
       return res.status(500).json({
         success: false,
-        message: 'Скрипт восстановления не найден'
+        message: `Ошибка при проверке файла бэкапа: ${checkError.message}`
       });
     }
     
-    // Запускаем скрипт восстановления в фоновом режиме
-    const child = require('child_process').spawn('bash', [
-      scriptPath,
-      backupFilePath, // Путь к файлу бэкапа
-      mountPoint,     // Точка монтирования диска
-      diskUuid        // UUID диска для обновления статуса
-    ], {
-      detached: true,
-      stdio: 'ignore'
-    });
+    if (!fileExists) {
+      // Проверяем альтернативный путь на сервере
+      const altRemotePath = `/mnt/backup_${diskUuid}/${backupFile}`;
+      logger.info(`[BACKUP] Проверка альтернативного пути к файлу бэкапа: ${altRemotePath}`);
+      
+      const altCheckCmd = `ssh ${sshOptions} -p ${sshPort} root@${sshServer} "test -f '${altRemotePath}' && echo 'exists' || echo 'not found'"`;
+      try {
+        fileExists = execSync(altCheckCmd, { encoding: 'utf8' }).trim() === 'exists';
+        logger.info(`[BACKUP] Проверка альтернативного пути: ${fileExists ? 'файл существует' : 'файл не найден'}`);
+        
+        if (fileExists) {
+          // Используем альтернативный путь
+          return startRestoreProcessViaSsh(diskName, diskUuid, altRemotePath, res, sshOptions, sshServer, sshPort);
+        }
+      } catch (altCheckError) {
+        logger.error(`[BACKUP] Ошибка при проверке альтернативного пути: ${altCheckError.message}`);
+      }
+      
+      if (!fileExists) {
+        return res.status(404).json({
+          success: false,
+          message: `Файл бэкапа не найден: ${backupFile}`
+        });
+      }
+    }
     
-    // Отключаем от родительского процесса
-    child.unref();
+    // Запускаем процесс восстановления через SSH
+    return startRestoreProcessViaSsh(diskName, diskUuid, remotePath, res, sshOptions, sshServer, sshPort);
     
-    logger.info(`[BACKUP] Запущен процесс восстановления для диска ${diskName} из бэкапа ${backupFile}`);
-    
-    return res.json({
-      success: true,
-      message: `Начато восстановление диска ${diskName} из бэкапа ${backupFile}`,
-      restoreId: `${diskUuid}_${Date.now()}`
-    });
   } catch (error) {
     logger.error(`[BACKUP] Ошибка при восстановлении из бэкапа: ${error.message}`, error);
+    logger.error(`[BACKUP] Stack trace: ${error.stack}`);
     return res.status(500).json({
       success: false,
       message: 'Ошибка при восстановлении из бэкапа'
     });
   }
 };
+
+// Функция для запуска процесса восстановления через SSH
+function startRestoreProcessViaSsh(diskName, diskUuid, backupFilePath, res, sshOptions, sshServer, sshPort) {
+  // Путь к диску, который нужно восстановить
+  const diskPath = config.disks[diskName];
+  
+  if (!diskPath) {
+    logger.error(`[BACKUP] Не найден путь к диску ${diskName}`);
+    return res.status(404).json({
+      success: false,
+      message: `Не найден путь к диску ${diskName}`
+    });
+  }
+  
+  logger.info(`[BACKUP] Запуск восстановления диска ${diskName} (${diskPath}) из бэкапа ${backupFilePath}`);
+  
+  // Команда для восстановления бэкапа через SSH
+  // Извлекаем tar.gz архив в директорию диска
+  const restoreCmd = `ssh ${sshOptions} -p ${sshPort} root@${sshServer} "tar -xzf '${backupFilePath}' -C '${diskPath}' --overwrite"`;
+  logger.info(`[BACKUP] Выполняем команду восстановления: ${restoreCmd}`);
+  
+  // Запускаем процесс восстановления асинхронно
+  const { exec } = require('child_process');
+  const restoreProcess = exec(restoreCmd);
+  
+  // Отправляем успешный ответ пользователю сразу
+  res.json({
+    success: true,
+    message: `Запущен процесс восстановления диска ${diskName} из бэкапа ${path.basename(backupFilePath)}`
+  });
+  
+  // Обрабатываем результат восстановления
+  restoreProcess.on('close', (code) => {
+    if (code === 0) {
+      logger.info(`[BACKUP] Восстановление диска ${diskName} успешно завершено`);
+    } else {
+      logger.error(`[BACKUP] Ошибка при восстановлении диска ${diskName}, код ошибки: ${code}`);
+    }
+  });
+  
+  restoreProcess.stdout.on('data', (data) => {
+    logger.info(`[BACKUP] Процесс восстановления: ${data.toString().trim()}`);
+  });
+  
+  restoreProcess.stderr.on('data', (data) => {
+    logger.error(`[BACKUP] Ошибка процесса восстановления: ${data.toString().trim()}`);
+  });
+  
+  return true;
+}
 
 // Вспомогательная функция для обновления статуса бэкапа
 const updateDiskBackupStatus = async (diskUuid, status, message) => {

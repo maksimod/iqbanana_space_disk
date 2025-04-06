@@ -49,10 +49,15 @@ const config = {
   
   // Настройки для резервного копирования
   backup: {
-    path: process.env.BACKUP_PATH || '/mnt/backups',
+    path: process.env.BACKUP_PATH || '/mnt/backup_',
     maxBackups: 5, // Максимальное количество сохраняемых бэкапов для каждого диска
     retentionDays: 30 // Сколько дней хранить резервные копии
-  }
+  },
+
+  // Соответствие имен дисков и UUID для бэкапов
+  backup_disks: {
+  "C": "ae3ff395-3049-4ec8-8524-3ed631eb4a46"
+}
 };
 
 module.exports = config;
