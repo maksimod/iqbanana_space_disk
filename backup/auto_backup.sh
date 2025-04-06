@@ -150,10 +150,19 @@ scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -P "$BACKUP_SERVER_PORT" "$SC
 log "Установка прав на выполнение скриптов"
 ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "chmod +x /root/make_backup.sh /root/setup_cron.sh"
 
-# Запускаем скрипт для настройки cron
-log "Настройка cron задания для бэкапа диска $SOURCE_UUID"
-# Порядок аргументов: disk_uuid, api_key, api_url, backup_path, interval
-ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "bash -c '/root/setup_cron.sh \"$SOURCE_UUID\" \"$BACKUP_API_KEY\" \"$API_URL\" \"$BACKUP_PATH\" \"$BACKUP_FREQUENCY\"'"
+# Создаем каталог для резервного копирования на удаленном сервере
+log "Создание каталога для бэкапов на сервере $BACKUP_SERVER: $BACKUP_PATH"
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "mkdir -p $BACKUP_PATH"
+
+# Удаляем старую запись crontab, если она существует
+log "Удаление старых crontab-заданий для диска $SOURCE_UUID"
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "crontab -l | grep -v 'make_backup.sh.*$SOURCE_UUID' | crontab -"
+
+# Напрямую добавляем правильную задачу в crontab
+CRON_EXPR="0 2 * * *"
+BACKUP_CMD="/root/make_backup.sh $SOURCE_UUID $BACKUP_PATH $BACKUP_API_KEY $API_URL $BACKUP_FREQUENCY"
+log "Добавление новой задачи в crontab: $CRON_EXPR $BACKUP_CMD"
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -p "$BACKUP_SERVER_PORT" root@$BACKUP_SERVER "(crontab -l 2>/dev/null || echo '') | grep -v 'make_backup.sh.*$SOURCE_UUID' | { cat; echo '$CRON_EXPR $BACKUP_CMD'; } | crontab -"
 
 # Запускаем бэкап немедленно, если указано
 if [ "$1" == "now" ]; then
