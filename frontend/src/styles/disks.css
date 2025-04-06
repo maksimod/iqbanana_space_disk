@@ -260,3 +260,36 @@
   justify-content: center;
   width: 100%;
 }
+
+/* Стили для кнопки восстановления из бэкапа */
+.disk-actions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.restore-backup-btn {
+  background-color: #2196F3;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: background-color 0.2s, transform 0.2s;
+}
+
+.restore-backup-btn:hover {
+  background-color: #1976D2;
+  transform: translateY(-2px);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+.restore-backup-btn:active {
+  transform: translateY(0);
+  box-shadow: none;
+}

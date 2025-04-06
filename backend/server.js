@@ -338,16 +338,16 @@ function startDiskMonitoring() {
         app.use('/api/system/backup-status', backupController.checkBackupApiKey, backupController.updateBackupStatus);
         
         // Добавляем маршрут для системной информации
-        app.use(`/api/${API_VERSION}/system`, authMiddleware, systemRoutes);
-        app.use('/api/system', authMiddleware, systemRoutes); // Обратная совместимость
+        app.use(`/api/${API_VERSION}/system`, authMiddleware.authenticate, systemRoutes);
+        app.use('/api/system', authMiddleware.authenticate, systemRoutes); // Обратная совместимость
         
         // API для работы с дисками (защищенные маршруты)
-        app.use(`/api/${API_VERSION}/disks`, authMiddleware, diskRoutes);
-        app.use(`/api/${API_VERSION}/disks`, authMiddleware, fileRoutes);
+        app.use(`/api/${API_VERSION}/disks`, authMiddleware.authenticate, diskRoutes);
+        app.use(`/api/${API_VERSION}/disks`, authMiddleware.authenticate, fileRoutes);
         
         // Обратная совместимость с предыдущей версией API
-        app.use('/api/disks', authMiddleware, diskRoutes);
-        app.use('/api/disks', authMiddleware, fileRoutes);
+        app.use('/api/disks', authMiddleware.authenticate, diskRoutes);
+        app.use('/api/disks', authMiddleware.authenticate, fileRoutes);
         
         // Регистрация маршрутов для удаленного API доступа
         // Это API не требует аутентификации через authMiddleware, вместо этого

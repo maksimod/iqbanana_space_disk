@@ -1,0 +1,266 @@
+/* Стили для модального окна восстановления из бэкапа */
+.restore-backup-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.restore-backup-modal {
+  background-color: #fff;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  width: 90%;
+  max-width: 800px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.restore-backup-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px 20px;
+  background-color: #2c3e50;
+  color: white;
+}
+
+.restore-backup-modal-header h2 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  color: white;
+  font-size: 1.2rem;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.close-button:hover {
+  color: #ff6b6b;
+}
+
+.restore-backup-modal-content {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+  position: relative;
+}
+
+.restore-backup-modal-footer {
+  padding: 15px 20px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  background-color: #f5f5f5;
+  border-top: 1px solid #ddd;
+}
+
+.loading-container, .error-container, .empty-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 0;
+  text-align: center;
+}
+
+.spinner {
+  animation: spin 1.5s linear infinite;
+  font-size: 2rem;
+  color: #3498db;
+  margin-bottom: 15px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.error-icon {
+  font-size: 2rem;
+  color: #e74c3c;
+  margin-bottom: 15px;
+}
+
+.backups-list {
+  margin-bottom: 20px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.backups-list-header {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  padding: 10px 15px;
+  background-color: #f5f5f5;
+  border-bottom: 1px solid #ddd;
+  font-weight: bold;
+}
+
+.backup-item {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  padding: 10px 15px;
+  border-bottom: 1px solid #eee;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.backup-item:last-child {
+  border-bottom: none;
+}
+
+.backup-item:hover {
+  background-color: #f0f7ff;
+}
+
+.backup-item.selected {
+  background-color: #e3f2fd;
+  border-left: 4px solid #2196F3;
+}
+
+.backup-name, .backup-date, .backup-size {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selected-backup-info {
+  background-color: #f9f9f9;
+  border-radius: 4px;
+  padding: 15px;
+  margin-top: 20px;
+  border-left: 4px solid #2196F3;
+}
+
+.selected-backup-info h3 {
+  margin-top: 0;
+  color: #2c3e50;
+}
+
+.confirmation-dialog {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(255, 255, 255, 0.9);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10;
+}
+
+.confirmation-content {
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 25px;
+  max-width: 90%;
+  text-align: center;
+}
+
+.warning-icon {
+  font-size: 3rem;
+  color: #f39c12;
+  margin-bottom: 15px;
+}
+
+.warning-text {
+  color: #e74c3c;
+  font-weight: bold;
+  font-size: 1.1rem;
+  margin: 15px 0;
+}
+
+.confirmation-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 15px;
+  margin-top: 20px;
+}
+
+.cancel-button, .restore-button, .confirm-button {
+  padding: 10px 20px;
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: background-color 0.2s;
+}
+
+.cancel-button {
+  background-color: #f5f5f5;
+  color: #333;
+}
+
+.cancel-button:hover {
+  background-color: #e0e0e0;
+}
+
+.restore-button, .confirm-button {
+  background-color: #2196F3;
+  color: white;
+}
+
+.restore-button:hover, .confirm-button:hover {
+  background-color: #1976D2;
+}
+
+.confirm-button {
+  background-color: #e74c3c;
+}
+
+.confirm-button:hover {
+  background-color: #c0392b;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Стили для адаптивности */
+@media (max-width: 768px) {
+  .backups-list-header, .backup-item {
+    grid-template-columns: 1.5fr 1fr 0.8fr;
+    font-size: 0.9rem;
+    padding: 8px 10px;
+  }
+  
+  .restore-backup-modal-header h2 {
+    font-size: 1.2rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .restore-backup-modal {
+    width: 95%;
+  }
+  
+  .backups-list-header, .backup-item {
+    grid-template-columns: 1.2fr 1fr 0.8fr;
+    font-size: 0.8rem;
+    padding: 8px;
+  }
+  
+  .confirmation-buttons {
+    flex-direction: column;
+  }
+} 

@@ -4,6 +4,7 @@ const logger = require('../utils/logger');
 const yaml = require('js-yaml');
 const config = require('../config/config');
 const { Disk } = require('../models');
+const mongoose = require('mongoose');
 
 // Путь к файлу с статусами бэкапов
 const BACKUPS_YML_PATH = path.join(__dirname, '../../monitor/backups.yml');
@@ -199,7 +200,256 @@ const updateBackupStatus = async (req, res) => {
   }
 };
 
+// Функция для получения списка бэкапов для конкретного диска
+const getBackupsList = async (req, res) => {
+  try {
+    const { diskName } = req.params;
+    
+    if (!diskName) {
+      return res.status(400).json({
+        success: false,
+        message: 'Не указано имя диска'
+      });
+    }
+    
+    logger.info(`[BACKUP] Запрос на получение списка бэкапов для диска ${diskName}`);
+    
+    // Получаем UUID диска из его имени
+    const diskUuid = getDiskUuidFromName(diskName);
+    if (!diskUuid) {
+      logger.error(`[BACKUP] Не удалось получить UUID для диска ${diskName}`);
+      return res.status(404).json({
+        success: false,
+        message: `Диск ${diskName} не найден или не имеет UUID`
+      });
+    }
+    
+    // Папка, где хранятся бэкапы диска
+    const backupPath = path.join(config.backup.path || '/mnt/backups', diskUuid);
+    
+    // Проверяем существование директории бэкапов
+    if (!fs.existsSync(backupPath)) {
+      logger.warn(`[BACKUP] Папка бэкапов не существует: ${backupPath}`);
+      return res.json({
+        success: true,
+        message: `Для диска ${diskName} нет доступных бэкапов`,
+        backups: []
+      });
+    }
+    
+    // Получаем список файлов в директории бэкапов
+    const files = fs.readdirSync(backupPath)
+      .filter(file => file.endsWith('.tar.gz') || file.endsWith('.zip')) // Фильтруем только архивы
+      .map(file => {
+        // Получаем информацию о файле
+        const filePath = path.join(backupPath, file);
+        const stats = fs.statSync(filePath);
+        
+        // Извлекаем дату из имени файла, если возможно
+        let backupDate = null;
+        const dateMatch = file.match(/(\d{4}-\d{2}-\d{2}[-_]\d{2}-\d{2}-\d{2})/);
+        if (dateMatch) {
+          backupDate = dateMatch[1].replace(/[-_]/g, '-').replace(/-(\d{2})-(\d{2})-(\d{2})$/, 'T$1:$2:$3');
+        }
+        
+        return {
+          filename: file,
+          path: filePath,
+          size: stats.size,
+          created: backupDate ? new Date(backupDate) : stats.mtime,
+          mtime: stats.mtime,
+          // Добавляем форматированную дату для отображения
+          dateFormatted: backupDate 
+            ? new Date(backupDate).toLocaleString('ru-RU')
+            : stats.mtime.toLocaleString('ru-RU')
+        };
+      })
+      .sort((a, b) => b.mtime - a.mtime); // Сортируем от новых к старым
+    
+    logger.info(`[BACKUP] Найдено ${files.length} бэкапов для диска ${diskName}`);
+    
+    return res.json({
+      success: true,
+      message: `Найдено ${files.length} бэкапов для диска ${diskName}`,
+      diskName,
+      diskUuid,
+      backups: files
+    });
+  } catch (error) {
+    logger.error(`[BACKUP] Ошибка при получении списка бэкапов: ${error.message}`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Ошибка при получении списка бэкапов'
+    });
+  }
+};
+
+// Функция для восстановления из бэкапа
+const restoreBackup = async (req, res) => {
+  try {
+    const { diskName, backupFile } = req.body;
+    
+    if (!diskName || !backupFile) {
+      return res.status(400).json({
+        success: false,
+        message: 'Необходимо указать имя диска и файл бэкапа'
+      });
+    }
+    
+    logger.info(`[BACKUP] Запрос на восстановление бэкапа ${backupFile} для диска ${diskName}`);
+    
+    // Получаем UUID диска из его имени
+    const diskUuid = getDiskUuidFromName(diskName);
+    if (!diskUuid) {
+      logger.error(`[BACKUP] Не удалось получить UUID для диска ${diskName}`);
+      return res.status(404).json({
+        success: false,
+        message: `Диск ${diskName} не найден или не имеет UUID`
+      });
+    }
+    
+    // Проверяем существование файла бэкапа
+    const backupPath = path.join(config.backup.path || '/mnt/backups', diskUuid);
+    const backupFilePath = path.join(backupPath, backupFile);
+    
+    if (!fs.existsSync(backupFilePath)) {
+      logger.error(`[BACKUP] Файл бэкапа не существует: ${backupFilePath}`);
+      return res.status(404).json({
+        success: false,
+        message: `Файл бэкапа не найден: ${backupFile}`
+      });
+    }
+    
+    // Получаем точку монтирования диска
+    const mountPoint = config.disks[diskName];
+    if (!mountPoint) {
+      logger.error(`[BACKUP] Точка монтирования для диска ${diskName} не найдена`);
+      return res.status(404).json({
+        success: false,
+        message: `Точка монтирования для диска ${diskName} не найдена`
+      });
+    }
+    
+    // Обновляем статус бэкапа
+    await updateDiskBackupStatus(diskUuid, 'PROCESSING', `Восстановление из бэкапа: ${backupFile}`);
+    
+    // Запускаем процесс восстановления
+    const scriptPath = path.join(__dirname, '../../scripts/restore_backup.sh');
+    
+    // Проверяем существование скрипта
+    if (!fs.existsSync(scriptPath)) {
+      logger.error(`[BACKUP] Скрипт восстановления не найден: ${scriptPath}`);
+      await updateDiskBackupStatus(diskUuid, 'ERROR', `Скрипт восстановления не найден: ${scriptPath}`);
+      return res.status(500).json({
+        success: false,
+        message: 'Скрипт восстановления не найден'
+      });
+    }
+    
+    // Запускаем скрипт восстановления в фоновом режиме
+    const child = require('child_process').spawn('bash', [
+      scriptPath,
+      backupFilePath, // Путь к файлу бэкапа
+      mountPoint,     // Точка монтирования диска
+      diskUuid        // UUID диска для обновления статуса
+    ], {
+      detached: true,
+      stdio: 'ignore'
+    });
+    
+    // Отключаем от родительского процесса
+    child.unref();
+    
+    logger.info(`[BACKUP] Запущен процесс восстановления для диска ${diskName} из бэкапа ${backupFile}`);
+    
+    return res.json({
+      success: true,
+      message: `Начато восстановление диска ${diskName} из бэкапа ${backupFile}`,
+      restoreId: `${diskUuid}_${Date.now()}`
+    });
+  } catch (error) {
+    logger.error(`[BACKUP] Ошибка при восстановлении из бэкапа: ${error.message}`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Ошибка при восстановлении из бэкапа'
+    });
+  }
+};
+
+// Вспомогательная функция для обновления статуса бэкапа
+const updateDiskBackupStatus = async (diskUuid, status, message) => {
+  try {
+    // Проверяем валидность статуса
+    const validStatuses = ['PROCESSING', 'SUCCESS', 'ERROR'];
+    if (!validStatuses.includes(status)) {
+      logger.error(`[BACKUP] Недопустимый статус: ${status}`);
+      return false;
+    }
+    
+    // Обновляем статус в fakeDiskModel
+    if (typeof global.fakeDiskModel !== 'object' || global.fakeDiskModel === null) {
+      global.fakeDiskModel = {};
+    }
+    
+    // Создаем или обновляем запись в fakeDiskModel для UUID
+    global.fakeDiskModel[diskUuid] = {
+      name: diskUuid,
+      status: 'online',
+      backupStatus: status,
+      backupMessage: message || '',
+      backupUpdatedAt: new Date()
+    };
+    
+    logger.info(`[BACKUP] Статус бэкапа обновлен для диска ${diskUuid}: ${status}, ${message}`);
+    
+    // Пытаемся обновить статус в базе данных, если она доступна
+    if (mongoose && mongoose.connection.readyState === 1) {
+      try {
+        let disk = await Disk.findOne({ name: diskUuid });
+        
+        if (disk) {
+          disk.backupStatus = status;
+          disk.backupMessage = message || '';
+          disk.backupUpdatedAt = new Date();
+          await disk.save();
+          logger.info(`[BACKUP] Статус бэкапа обновлен в базе данных для диска ${diskUuid}`);
+        } else {
+          // Создаем новую запись, если диска нет в базе
+          disk = await Disk.create({
+            name: diskUuid,
+            status: 'online',
+            backupStatus: status,
+            backupMessage: message || '',
+            backupUpdatedAt: new Date()
+          });
+          logger.info(`[BACKUP] Создана новая запись в базе данных для диска ${diskUuid}`);
+        }
+      } catch (dbError) {
+        logger.error(`[BACKUP] Ошибка при обновлении статуса в базе данных: ${dbError.message}`);
+      }
+    }
+    
+    return true;
+  } catch (error) {
+    logger.error(`[BACKUP] Ошибка при обновлении статуса бэкапа: ${error.message}`);
+    return false;
+  }
+};
+
+// Функция для получения UUID диска из его имени
+const getDiskUuidFromName = (diskName) => {
+  if (!diskName) return null;
+  
+  const mountPoint = config.disks[diskName];
+  if (!mountPoint) return null;
+  
+  const match = mountPoint.match(/\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i);
+  return match && match[1] ? match[1] : null;
+};
+
 module.exports = {
   checkBackupApiKey,
-  updateBackupStatus
+  updateBackupStatus,
+  getBackupsList,
+  restoreBackup
 }; 

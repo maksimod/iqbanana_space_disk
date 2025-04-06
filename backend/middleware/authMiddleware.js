@@ -88,4 +88,34 @@ const authMiddleware = (req, res, next) => {
   }
 };
 
-module.exports = authMiddleware; 
+/**
+ * Middleware для проверки прав администратора
+ * Требует наличия предыдущего middleware auth для получения данных пользователя
+ */
+const requireAdmin = (req, res, next) => {
+  // Проверяем, есть ли информация о пользователе от предыдущего middleware
+  if (!req.user) {
+    logger.error('Ошибка авторизации: отсутствует информация о пользователе. Возможно middleware аутентификации не был вызван перед проверкой прав администратора');
+    return res.status(401).json({
+      success: false,
+      message: 'Необходима аутентификация'
+    });
+  }
+  
+  // Проверяем, является ли пользователь администратором
+  if (!req.user.isAdmin) {
+    logger.error(`Отказ в доступе: пользователь ${req.user.username} не является администратором`);
+    return res.status(403).json({
+      success: false,
+      message: 'Доступ запрещен. Требуются права администратора'
+    });
+  }
+  
+  logger.info(`Проверка прав администратора для ${req.user.username}: доступ разрешен`);
+  next();
+};
+
+module.exports = {
+  authenticate: authMiddleware,
+  requireAdmin
+}; 

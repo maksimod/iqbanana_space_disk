@@ -13,6 +13,7 @@ import FilesView from './components/FilesView/FilesView';
 import SystemInfo from './components/SystemInfo/SystemInfo';
 import ToastContainer from './components/Toast/ToastContainer';
 import AuthPage from './components/Auth/AuthPage';
+import RestoreBackupModal from './components/RestoreBackupModal/RestoreBackupModal';
 import { AppProvider, useAppContext } from './context/AppContext';
 import { ToastProvider } from './context/ToastContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -53,6 +54,9 @@ const AppContent = () => {
       )}
       
       <ToastContainer />
+      
+      {/* Добавляем модальное окно восстановления из бэкапа */}
+      <RestoreBackupModal />
     </div>
   );
 };

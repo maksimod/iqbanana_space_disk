@@ -204,7 +204,8 @@ export const AuthProvider = ({ children }) => {
     register,
     login,
     logout,
-    getAuthHeaders
+    getAuthHeaders,
+    token: localStorage.getItem('token')
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

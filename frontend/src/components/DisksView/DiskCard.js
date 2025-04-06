@@ -1,13 +1,15 @@
 // frontend/src/components/DisksView/DiskCard.js
 import React from 'react';
 import { formatFileSize, calculateUsagePercent } from '../../utils/formatters';
-import { FaExclamationTriangle, FaPlug, FaExclamationCircle, FaSpinner, FaCheck, FaClock } from 'react-icons/fa';
+import { FaExclamationTriangle, FaPlug, FaExclamationCircle, FaSpinner, FaCheck, FaClock, FaHistory } from 'react-icons/fa';
 import DiskUsageChart from './DiskUsageChart';
 import { useToast } from '../../context/ToastContext';
+import { useAuth } from '../../context/AuthContext';
 
 const DiskCard = ({ disk, onSelect }) => {
   // Use toast context for showing warnings
   const toast = useToast();
+  const { user } = useAuth();
   
   // Determine if disk is in error state and create a CSS class for it
   const cardClassName = `disk-card ${disk.error ? 'disk-card-error' : ''}`;
@@ -22,6 +24,22 @@ const DiskCard = ({ disk, onSelect }) => {
     
     // Only navigate to available disks
     onSelect(disk.name);
+  };
+  
+  // Обработчик для кнопки восстановления из бэкапа
+  const handleRestoreBackup = (e) => {
+    e.stopPropagation(); // Предотвращаем дальнейшую обработку клика
+    
+    // Проверяем, доступен ли диск
+    if (disk.error || disk.status === 'offline' || disk.status === 'error') {
+      toast.showWarning(`Диск ${disk.name} недоступен. ${disk.error || 'Проверьте подключение и повторите попытку.'}`);
+      return;
+    }
+    
+    // Открываем модальное окно с выбором бэкапа
+    window.dispatchEvent(new CustomEvent('open-restore-backup-modal', { 
+      detail: { diskName: disk.name }
+    }));
   };
 
   // Компонент отображения статуса бэкапа
@@ -133,6 +151,19 @@ const DiskCard = ({ disk, onSelect }) => {
           
           {/* Отображение статуса бэкапа */}
           {renderBackupStatus()}
+          
+          {/* Кнопка восстановления из бэкапа (только для администратора) */}
+          {user && user.isAdmin && (
+            <div className="disk-actions">
+              <button
+                className="restore-backup-btn"
+                onClick={handleRestoreBackup}
+                title="Восстановить из бэкапа"
+              >
+                <FaHistory /> Восстановить из бэкапа
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>
