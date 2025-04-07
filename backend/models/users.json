@@ -12,14 +12,14 @@
       "id": 1,
       "username": "admin",
       "password": "c287dfd2f748ef17679bbbb9c5c2cef51db544d19779523b6fcef1616a1f1bc8",
-      "token": "f58475fc12ab936cf08d66ab6969850c37680490c433c431f5a551d348974135",
+      "token": "4398dbf288bc61a6a819a65772e14c2f7306cbb821e0a4864a870ed59f74acdc",
       "created": "2025-04-07T20:18:31.602Z"
     },
     {
       "id": 2,
       "username": "Коптелов Максим",
       "password": "b68eed5f8f4eccf8c6fefffd536ffe67ddaf26b5cd8ae7cad745e9cf1eef5a37",
-      "token": "4bcfa2ac7519171dccbedcde4edf810dd361c938d3bb71fe37d803da364287c9",
+      "token": null,
       "created": "2025-04-07T20:19:55.685Z"
     }
   ]

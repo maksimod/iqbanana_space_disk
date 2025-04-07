@@ -8,6 +8,7 @@ import FileUploader from '../FileUploader';
 import useApi from '../../hooks/useApi';
 import { useAppContext } from '../../context/AppContext';
 import { useToast } from '../../context/ToastContext';
+import { useAuth } from '../../context/AuthContext';
 import FileDialog from './FileDialog';
 import FileEditor from './FileEditor';
 import FolderDialog from './FolderDialog';
@@ -38,6 +39,7 @@ const FilesView = () => {
   const api = useApi();
   const { deleteFile, createFolder, getDownloadUrl, downloadFile, uploadFile, getActiveUploads, clearActiveUploads } = api;
   const toast = useToast();
+  const { initialized, user } = useAuth();
 
   // Определяем, какие файлы отображать - результаты поиска или все файлы
   const displayFiles = searchResults || files;
@@ -77,8 +79,13 @@ const FilesView = () => {
     
   }, []);
   
-  // Проверяем активные загрузки при монтировании компонента и смене диска/папки
+  // Проверяем активные загрузки при монтировании компонента и смене диска/папки только после авторизации
   useEffect(() => {
+    // Проверяем, что авторизация завершена и есть пользователь перед выполнением операций
+    if (!initialized || !user) {
+      return;
+    }
+    
     // Очищаем трекер уведомлений при смене диска/папки
     shownNotifications.current.clear();
     
@@ -163,10 +170,14 @@ const FilesView = () => {
     } catch (e) {
       console.error('Ошибка при проверке незавершенных загрузок:', e);
     }
-  }, [currentDisk, currentPath, getActiveUploads, loadFiles, toast]);
+  }, [currentDisk, currentPath, getActiveUploads, loadFiles, toast, initialized, user]);
   
-  // Периодически проверяем активные загрузки
+  // Периодически проверяем активные загрузки только после авторизации
   useEffect(() => {
+    if (!initialized || !user) {
+      return;
+    }
+    
     if (currentDisk && activeUploads.length > 0) {
       const intervalId = setInterval(() => {
         getActiveUploads(currentDisk, currentPath).then(response => {
@@ -242,7 +253,7 @@ const FilesView = () => {
         clearInterval(intervalId);
       };
     }
-  }, [currentDisk, currentPath, activeUploads, getActiveUploads, loadFiles, toast]);
+  }, [currentDisk, currentPath, activeUploads, getActiveUploads, loadFiles, toast, initialized, user]);
 
   // Удаление файла или директории
   const handleDelete = async (file) => {

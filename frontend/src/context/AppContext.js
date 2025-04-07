@@ -2,6 +2,7 @@ import React, { createContext, useState, useContext, useEffect } from 'react';
 import useApi from '../hooks/useApi';
 import useLocalStorage from '../hooks/useLocalStorage';
 import { useToast } from './ToastContext';
+import { useAuth } from '../context/AuthContext';
 
 // Создание контекста
 const AppContext = createContext();
@@ -17,32 +18,43 @@ export const AppProvider = ({ children }) => {
   const [files, setFiles] = useState([]);
   const { loading, error, fetchDisks, fetchFiles, setError } = useApi();
   const toast = useToast();
+  const { initialized, user } = useAuth();
 
-  // Загрузка списка дисков при монтировании компонента
+  // Загрузка списка дисков только после инициализации аутентификации
   useEffect(() => {
-    loadDisks();
-  }, []);
+    // Ждем инициализации аутентификации и проверяем наличие пользователя
+    if (initialized && user) {
+      loadDisks();
+    }
+  }, [initialized, user]);
 
-  // Загрузка файлов при изменении диска или пути
+  // Загрузка файлов при изменении диска или пути, но только если авторизация завершена
   useEffect(() => {
-    if (currentDisk) {
+    // Проверяем, что авторизация завершена и есть пользователь перед загрузкой файлов
+    if (initialized && user && currentDisk) {
       loadFiles();
     }
-  }, [currentDisk, currentPath]);
+  }, [initialized, user, currentDisk, currentPath]);
 
   // Функция загрузки дисков
   const loadDisks = async () => {
-    const data = await fetchDisks();
-    if (data) {
-      setDisks(data);
+    // Загружаем диски только если пользователь авторизован
+    if (user) {
+      const data = await fetchDisks();
+      if (data) {
+        setDisks(data);
+      }
     }
   };
 
   // Функция загрузки файлов
   const loadFiles = async () => {
-    const data = await fetchFiles(currentDisk, currentPath);
-    if (data) {
-      setFiles(data);
+    // Загружаем файлы только если пользователь авторизован
+    if (user && currentDisk) {
+      const data = await fetchFiles(currentDisk, currentPath);
+      if (data) {
+        setFiles(data);
+      }
     }
   };
 
