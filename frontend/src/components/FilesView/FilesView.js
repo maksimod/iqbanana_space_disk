@@ -144,8 +144,6 @@ const FilesView = () => {
                   // Обрабатываем текущую загрузку
                   toast.showInfo(`Загрузка файла ${upload.filename} в процессе (${upload.progress}%)`);
                   shownNotifications.current.add(uploadId);
-                  setUploadStatus(`Загрузка ${upload.filename}: ${upload.progress}%`);
-                  setUploadProgress(upload.progress);
                 }
               }
             }
@@ -476,15 +474,6 @@ const FilesView = () => {
     }
   };
 
-  // Клик по кнопке загрузки файла - будет использовать FileUploader
-  const handleUploadClick = useCallback(() => {
-    // Находим input в FileUploader и активируем его клик
-    const fileUploaderInput = document.querySelector('.file-uploader-container input[type="file"]');
-    if (fileUploaderInput) {
-      fileUploaderInput.click();
-    }
-  }, []);
-
   const handleClearSearch = () => {
     setSearchResults(null);
   };
@@ -504,12 +493,12 @@ const FilesView = () => {
           onClearSearch={handleClearSearch}
         />
         <FileActions 
-          onUploadFile={handleUploadClick}
           onCreateFolder={() => setIsFolderDialogOpen(true)}
           onCreateFile={() => setIsFileDialogOpen(true)}
         />
       </div>
       
+      {/* Компонент загрузки файлов с отображением прогресса */}
       <FileUploader 
         onFileUploadComplete={() => loadFiles()}
         currentPath={currentPath}

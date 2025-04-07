@@ -345,26 +345,6 @@ const FileUploader = ({ onFileUploadComplete, currentPath, selectedDisk }) => {
 
   return (
     <div className="file-uploader-container">
-      {uploading && (
-        <div className="global-upload-progress">
-          <div className="global-progress-info">
-            <div className="global-progress-title">
-              <FontAwesomeIcon icon={faUpload} className="upload-icon" />
-              <span>Загрузка файлов: {completedFiles} из {totalFiles}</span>
-            </div>
-            <div className="global-progress-bar-container">
-              <div 
-                className="global-progress-bar" 
-                style={{ width: `${overallProgress}%` }}
-              ></div>
-            </div>
-            <div className="global-progress-text">
-              {overallProgress}% завершено
-            </div>
-          </div>
-        </div>
-      )}
-      
       <div 
         className={`file-uploader-dropzone ${dragging ? 'dragging' : ''}`}
         onDragOver={handleDragOver}
