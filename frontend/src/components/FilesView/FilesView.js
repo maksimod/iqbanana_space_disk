@@ -492,7 +492,8 @@ const FilesView = () => {
           onSearch={handleSearchResults}
           onClearSearch={handleClearSearch}
         />
-        <FileActions 
+        
+        <FileActions
           onCreateFolder={() => setIsFolderDialogOpen(true)}
           onCreateFile={() => setIsFileDialogOpen(true)}
         />

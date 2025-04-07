@@ -1,23 +1,26 @@
 {
   "approvedUsers": [
     "admin",
-    "user1",
-    "user2"
+    "Коптелов Максим",
+    "Перевощиков Григорий",
+    "Кобзев Андрей",
+    "Костенко Юрий",
+    "Бабий Кирилл"
   ],
   "users": [
     {
       "id": 1,
       "username": "admin",
-      "password": "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4",
-      "token": "473d0a58425ba145f6853a1dccc4937121a2c006462defb969a0cb199936a349",
-      "created": "2025-03-28T20:28:24.459Z"
+      "password": "c287dfd2f748ef17679bbbb9c5c2cef51db544d19779523b6fcef1616a1f1bc8",
+      "token": "f58475fc12ab936cf08d66ab6969850c37680490c433c431f5a551d348974135",
+      "created": "2025-04-07T20:18:31.602Z"
     },
     {
       "id": 2,
-      "username": "user1",
-      "password": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
-      "token": null,
-      "created": "2025-03-31T10:29:57.863Z"
+      "username": "Коптелов Максим",
+      "password": "b68eed5f8f4eccf8c6fefffd536ffe67ddaf26b5cd8ae7cad745e9cf1eef5a37",
+      "token": "4bcfa2ac7519171dccbedcde4edf810dd361c938d3bb71fe37d803da364287c9",
+      "created": "2025-04-07T20:19:55.685Z"
     }
   ]
 }
