@@ -379,114 +379,158 @@ const useApi = () => {
           console.log(`Загрузка чанка ${i+1}/${totalChunks} (${(start/(1024*1024)).toFixed(2)}-${(end/(1024*1024)).toFixed(2)} MB)`);
           
           try {
-            // Отправляем чанк на сервер
-            const response = await fetch(getApiUrl(`/disks/${disk}/upload-chunk`), {
-              method: 'POST',
-              body: formData,
-              signal: abortController.signal,
-              headers: {
-                ...getAuthHeaders()
-              }
+            // Вычисляем текущий прогресс перед началом загрузки чанка
+            const progressBeforeChunk = (i / totalChunks) * 100;
+            const progressAfterChunk = ((i + 1) / totalChunks) * 100;
+            
+            // Обновляем прогресс в начале загрузки чанка
+            if (onProgress) {
+              onProgress(Math.round(progressBeforeChunk));
+              lastProgress = Math.round(progressBeforeChunk);
+            }
+
+            // Обновляем статус в localStorage
+            updateLocalUploadStatus(uploadId, {
+              status: 'uploading',
+              currentChunk: i + 1,
+              totalChunks,
+              progress: Math.round(progressBeforeChunk)
             });
             
-            if (!response.ok) {
-              const data = await response.json().catch(() => ({}));
-              console.error(`Ошибка при загрузке чанка ${i}:`, data.error || response.statusText);
-              
-              // Делаем до 3-х попыток загрузки проблемного чанка
-              let retryCount = 0;
-              let retrySuccess = false;
-              
-              while (retryCount < 3 && !retrySuccess && !requestAborted) {
-                retryCount++;
-                console.log(`Повторная попытка ${retryCount}/3 для чанка ${i}`);
-                
-                // Обновляем статус в localStorage
-                updateLocalUploadStatus(uploadId, {
-                  status: 'retrying',
-                  retryChunk: i,
-                  retryCount
-                });
-                
-                // Ждем перед повторной попыткой
-                await new Promise(resolve => setTimeout(resolve, retryCount * 1000));
-                
-                try {
-                  const retryResponse = await fetch(getApiUrl(`/disks/${disk}/upload-chunk`), {
-                    method: 'POST',
-                    body: formData,
-                    signal: abortController.signal,
-                    headers: {
-                      ...getAuthHeaders()
-                    }
-                  });
-                  
-                  if (retryResponse.ok) {
-                    console.log(`Успешно повторно загружен чанк ${i}`);
-                    retrySuccess = true;
-                  } else {
-                    console.error(`Ошибка при повторной загрузке чанка ${i}:`, 
-                      (await retryResponse.json().catch(() => ({}))).error || retryResponse.statusText);
-                  }
-                } catch (retryError) {
-                  console.error(`Ошибка сети при повторной загрузке чанка ${i}:`, retryError);
-                }
-              }
-              
-              if (!retrySuccess) {
-                hasError = true;
-                throw new Error(`Не удалось загрузить чанк ${i} после нескольких попыток`);
-              }
-            }
+            // Создаем объект для отслеживания прогресса загрузки чанка
+            const xhr = new XMLHttpRequest();
             
-            // Обновляем счетчик загруженных чанков
+            // Асинхронная обертка для XMLHttpRequest
+            const sendChunkWithXHR = () => {
+              return new Promise((resolve, reject) => {
+                xhr.open('POST', getApiUrl(`/disks/${disk}/upload-chunk`), true);
+                
+                // Добавляем заголовки авторизации
+                const authHeaders = getAuthHeaders();
+                for (const [header, value] of Object.entries(authHeaders)) {
+                  xhr.setRequestHeader(header, value);
+                }
+                
+                // Слушаем событие прогресса загрузки
+                xhr.upload.onprogress = (e) => {
+                  if (e.lengthComputable && !requestAborted) {
+                    // Вычисляем прогресс внутри чанка (0-100%)
+                    const chunkProgress = (e.loaded / e.total) * 100;
+                    
+                    // Вычисляем общий прогресс с учетом прогресса чанка
+                    const overallProgress = progressBeforeChunk + 
+                      (chunkProgress * (progressAfterChunk - progressBeforeChunk) / 100);
+                    
+                    // Обновляем индикатор прогресса
+                    if (onProgress) {
+                      onProgress(Math.round(overallProgress));
+                      lastProgress = Math.round(overallProgress);
+                    }
+                    
+                    // Обновляем статус в localStorage
+                    updateLocalUploadStatus(uploadId, {
+                      status: 'uploading',
+                      currentChunk: i + 1,
+                      totalChunks,
+                      chunkProgress: Math.round(chunkProgress),
+                      progress: Math.round(overallProgress)
+                    });
+                  }
+                };
+                
+                // Обработка завершения запроса
+                xhr.onload = () => {
+                  if (xhr.status >= 200 && xhr.status < 300) {
+                    try {
+                      const data = JSON.parse(xhr.responseText);
+                      resolve(data);
+                    } catch (e) {
+                      resolve({});
+                    }
+                  } else {
+                    try {
+                      const errorData = JSON.parse(xhr.responseText);
+                      reject(new Error(errorData.error || `Ошибка HTTP: ${xhr.status}`));
+                    } catch (e) {
+                      reject(new Error(`Ошибка HTTP: ${xhr.status}`));
+                    }
+                  }
+                };
+                
+                // Обработка ошибок
+                xhr.onerror = () => reject(new Error('Ошибка сети при загрузке'));
+                xhr.ontimeout = () => reject(new Error('Превышено время ожидания ответа'));
+                
+                // Отправляем данные
+                xhr.send(formData);
+                
+                // Сохраняем функцию для отмены запроса
+                abortController.signal.addEventListener('abort', () => {
+                  xhr.abort();
+                  reject(new Error('Загрузка отменена пользователем'));
+                });
+              });
+            };
+            
+            // Отправляем чанк на сервер с отслеживанием прогресса
+            await sendChunkWithXHR();
+            
+            // Увеличиваем счетчик загруженных чанков
             uploadedChunks++;
             
-            // Рассчитываем прогресс загрузки (от 0 до 95% - для загрузки чанков)
-            const progress = Math.floor((uploadedChunks / totalChunks) * 95);
+            // Обновляем прогресс после загрузки чанка
+            if (onProgress) {
+              onProgress(Math.round(progressAfterChunk));
+              lastProgress = Math.round(progressAfterChunk);
+            }
             
-            console.log(`Прогресс загрузки: ${progress}% (${uploadedChunks}/${totalChunks} чанков)`);
+          } catch (error) {
+            console.error(`Ошибка при загрузке чанка ${i}:`, error);
             
-            // Обновляем прогресс
-            if (progress > lastProgress) {
-              if (onProgress) {
-                onProgress(progress);
-              }
-              
-              lastProgress = progress;
+            // Делаем до 3-х попыток загрузки проблемного чанка
+            let retryCount = 0;
+            let retrySuccess = false;
+            
+            while (retryCount < 3 && !retrySuccess && !requestAborted) {
+              retryCount++;
+              console.log(`Повторная попытка ${retryCount}/3 для чанка ${i}`);
               
               // Обновляем статус в localStorage
               updateLocalUploadStatus(uploadId, {
-                status: 'uploading',
-                progress,
-                uploadedChunks
+                status: 'retrying',
+                retryChunk: i,
+                retryCount
               });
+              
+              // Ждем перед повторной попыткой
+              await new Promise(resolve => setTimeout(resolve, retryCount * 1000));
+              
+              try {
+                const retryResponse = await fetch(getApiUrl(`/disks/${disk}/upload-chunk`), {
+                  method: 'POST',
+                  body: formData,
+                  signal: abortController.signal,
+                  headers: {
+                    ...getAuthHeaders()
+                  }
+                });
+                
+                if (retryResponse.ok) {
+                  console.log(`Успешно повторно загружен чанк ${i}`);
+                  retrySuccess = true;
+                } else {
+                  console.error(`Ошибка при повторной загрузке чанка ${i}:`, 
+                    (await retryResponse.json().catch(() => ({}))).error || retryResponse.statusText);
+                }
+              } catch (retryError) {
+                console.error(`Ошибка сети при повторной загрузке чанка ${i}:`, retryError);
+              }
             }
-          } catch (error) {
-            if (requestAborted) {
-              console.log('Загрузка была отменена');
-              break;
+            
+            if (!retrySuccess) {
+              hasError = true;
+              throw new Error(`Не удалось загрузить чанк ${i} после нескольких попыток`);
             }
-            
-            console.error(`Ошибка при загрузке чанка ${i}:`, error);
-            hasError = true;
-            
-            // Обновляем статус в localStorage
-            updateLocalUploadStatus(uploadId, {
-              status: 'error',
-              error: error.message,
-              failedChunk: i
-            });
-            
-            // Вызываем колбэк ошибки
-            if (onError) {
-              onError(error.message);
-            }
-            
-            // Удаляем обработчик beforeunload
-            window.removeEventListener('beforeunload', handleBeforeUnload);
-            
-            return;
           }
         }
         
@@ -710,10 +754,10 @@ const useApi = () => {
         return false;
       }
     };
-    
+
     // Запускаем загрузку
     startChunkedUpload();
-    
+
     // Возвращаем функцию для отмены загрузки
     return () => {
       console.log('Отмена загрузки файла:', file.name);
@@ -869,23 +913,22 @@ const useApi = () => {
     }
   };
 
-  // Возвращаем API-методы
   return {
     loading,
     error,
-    setError,
+    fetchData,
     fetchDisks,
     fetchFiles,
     deleteFile,
     createFolder,
     getDownloadUrl,
     downloadFile,
-    uploadFile,
     getActiveUploads,
     getLocalUploads,
     createEmptyFile,
     getFileContent,
     saveFileContent,
+    uploadFile
   };
 };
 

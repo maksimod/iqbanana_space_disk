@@ -4,6 +4,7 @@ import FileActions from './FileActions';
 import FilesList from './FilesList';
 import FileSearch from './FileSearch';
 import Loading from '../Loading';
+import FileUploader from '../FileUploader';
 import useApi from '../../hooks/useApi';
 import { useAppContext } from '../../context/AppContext';
 import { useToast } from '../../context/ToastContext';
@@ -12,9 +13,7 @@ import FileEditor from './FileEditor';
 import FolderDialog from './FolderDialog';
 
 const FilesView = () => {
-  const [uploadProgress, setUploadProgress] = useState(0);
   const [searchResults, setSearchResults] = useState(null);
-  const [uploadStatus, setUploadStatus] = useState('');
   const [activeUploads, setActiveUploads] = useState([]);
   const [isFileDialogOpen, setIsFileDialogOpen] = useState(false);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
@@ -190,10 +189,6 @@ const FilesView = () => {
                   shownNotifications.current.add(uploadId);
                   loadFiles();
                 } 
-                else if (upload.status === 'uploading') {
-                  setUploadStatus(`Загрузка ${upload.filename}: ${upload.progress}%`);
-                  setUploadProgress(upload.progress);
-                }
               }
             }
             
@@ -224,8 +219,6 @@ const FilesView = () => {
           } else {
             // Если на сервере нет активных загрузок, очищаем наш список
             setActiveUploads([]);
-            setUploadProgress(0);
-            setUploadStatus('');
             
             // Очищаем sessionStorage для текущего пути
             try {
@@ -249,92 +242,9 @@ const FilesView = () => {
       
       return () => {
         clearInterval(intervalId);
-        // Очищаем трекер уведомлений при размонтировании
-        shownNotifications.current.clear();
       };
     }
   }, [currentDisk, currentPath, activeUploads, getActiveUploads, loadFiles, toast]);
-
-  // Загрузка файла
-  const handleUpload = (file, onComplete) => {
-    // Очищаем все старые уведомления перед новой загрузкой
-    shownNotifications.current.clear();
-    
-    // Очищаем данные предыдущих загрузок
-    setUploadProgress(0);
-    setUploadStatus('');
-    
-    // Показываем информацию о файле
-    const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2);
-    setUploadStatus(`Подготовка к загрузке файла ${file.name} (${fileSizeMB} MB)...`);
-    toast.showInfo(`Начинается загрузка файла: ${file.name} (${fileSizeMB} MB)`);
-    
-    // Большие файлы загружаем с более подробным отображением статуса
-    if (file.size > 50 * 1024 * 1024) {
-      console.log(`Начало загрузки большого файла: ${file.name} (${fileSizeMB} MB)`);
-    }
-    
-    const cancelUpload = uploadFile(
-      currentDisk,
-      currentPath,
-      file,
-      (progress) => {
-        setUploadProgress(progress);
-        if (progress % 10 === 0 || progress === 100) {
-          setUploadStatus(`Загрузка: ${progress}%`);
-        }
-      },
-      (response) => {
-        // Устанавливаем прогресс в 100% и обновляем статус
-        setUploadProgress(100);
-        setUploadStatus('Загрузка завершена');
-        
-        // Специальный идентификатор для предотвращения дублирования уведомлений
-        const notificationId = `${file.name}:completed:${Date.now()}`;
-        if (!shownNotifications.current.has(notificationId)) {
-          toast.showSuccess(`Файл ${file.name} успешно загружен`);
-          shownNotifications.current.add(notificationId);
-        }
-        
-        // Увеличиваем задержку для маленьких файлов
-        // Это дает больше времени для корректной обработки соединения
-        const delayTime = file.size < 1024 * 1024 ? 1500 : 1000;
-        
-        // Даем время для завершения всех операций на сервере
-        setTimeout(() => {
-          console.log('Завершение загрузки после задержки:', file.name);
-          setUploadProgress(0);
-          setUploadStatus('');
-          // Перезагружаем список файлов и дисков
-          loadFiles();
-          loadDisks();
-          if (onComplete) onComplete();
-        }, delayTime);
-      },
-      (errorMsg) => {
-        setUploadProgress(0);
-        setUploadStatus('');
-        
-        // Если ошибка связана с тем, что файл уже загружается, 
-        // предлагаем очистить записи о загрузках
-        if (errorMsg && errorMsg.includes('уже загружается')) {
-          toast.showError(`${errorMsg}. Нажмите кнопку "Очистить загрузки" и попробуйте снова.`);
-          return;
-        }
-        
-        // Специальный идентификатор для предотвращения дублирования уведомлений об ошибках
-        const errorId = `${file.name}:error:${Date.now()}`;
-        if (!shownNotifications.current.has(errorId)) {
-          toast.showError(errorMsg || `Ошибка при загрузке файла ${file.name}. Пожалуйста, попробуйте снова.`);
-          shownNotifications.current.add(errorId);
-        }
-      }
-    );
-    
-    // В случае, если компонент будет размонтирован до завершения загрузки,
-    // возвращаем функцию отмены для использования в useEffect cleanup
-    return cancelUpload;
-  };
 
   // Удаление файла или директории
   const handleDelete = async (file) => {
@@ -566,26 +476,14 @@ const FilesView = () => {
     }
   };
 
-  // Обработка загрузки файла
-  const handleFileChange = (event) => {
-    const files = event.target.files;
-    if (files.length > 0) {
-      const fileArray = Array.from(files);
-      
-      // Загружаем каждый файл
-      fileArray.forEach(file => {
-        handleUpload(file);
-      });
-      
-      // Сброс input после выбора файлов
-      event.target.value = '';
+  // Клик по кнопке загрузки файла - будет использовать FileUploader
+  const handleUploadClick = useCallback(() => {
+    // Находим input в FileUploader и активируем его клик
+    const fileUploaderInput = document.querySelector('.file-uploader-container input[type="file"]');
+    if (fileUploaderInput) {
+      fileUploaderInput.click();
     }
-  };
-
-  // Добавляем обработчики для кнопок действий
-  const handleUploadClick = () => {
-    document.getElementById('file-input').click();
-  };
+  }, []);
 
   const handleClearSearch = () => {
     setSearchResults(null);
@@ -612,12 +510,10 @@ const FilesView = () => {
         />
       </div>
       
-      <input
-        type="file"
-        id="file-input"
-        style={{ display: 'none' }}
-        onChange={handleFileChange}
-        multiple
+      <FileUploader 
+        onFileUploadComplete={() => loadFiles()}
+        currentPath={currentPath}
+        selectedDisk={currentDisk}
       />
       
       <div className="files-container">

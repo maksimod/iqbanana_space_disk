@@ -1,5 +1,6 @@
 .file-uploader-container {
   margin-bottom: 20px;
+  position: relative;
 }
 
 .file-uploader-dropzone {
@@ -22,9 +23,83 @@
   background-color: #e6f3ff;
 }
 
+.file-uploader-dropzone h3 {
+  margin: 10px 0;
+  color: #333;
+  font-size: 18px;
+}
+
 .file-uploader-dropzone p {
   margin: 10px 0 0;
   color: #666;
+}
+
+.upload-icon {
+  color: #0d6efd;
+  margin-bottom: 10px;
+}
+
+/* Глобальный прогресс-бар */
+.global-upload-progress {
+  background-color: #f8f9fa;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 15px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from {
+    transform: translateY(-20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.global-progress-info {
+  width: 100%;
+}
+
+.global-progress-title {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+  font-weight: 500;
+  color: #333;
+}
+
+.global-progress-title .upload-icon {
+  margin-right: 10px;
+  margin-bottom: 0;
+}
+
+.global-progress-bar-container {
+  height: 10px;
+  background-color: #e9ecef;
+  border-radius: 5px;
+  overflow: hidden;
+  margin-bottom: 5px;
+}
+
+.global-progress-bar {
+  height: 100%;
+  background-color: #0d6efd;
+  width: 0%;
+  transition: width 0.3s ease;
+  border-radius: 5px;
+}
+
+.global-progress-text {
+  text-align: right;
+  font-size: 14px;
+  color: #6c757d;
 }
 
 .upload-progress-container {
@@ -40,12 +115,23 @@
 .upload-progress-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 10px;
+  padding: 12px;
   background-color: #f8f9fa;
   border-radius: 5px;
   margin-bottom: 8px;
   position: relative;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  transition: all 0.2s ease;
+}
+
+.upload-progress-item:hover {
+  background-color: #f1f8ff;
+}
+
+.upload-progress-file-icon {
+  margin-right: 12px;
+  color: #6c757d;
+  font-size: 18px;
 }
 
 .upload-progress-info {
@@ -60,6 +146,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   margin-bottom: 5px;
+  color: #333;
 }
 
 .upload-progress-bar-container {
@@ -89,10 +176,41 @@
   background-color: #6c757d;
 }
 
+.upload-progress-bar.syncing {
+  background-color: #fd7e14;
+  background-image: linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.15) 25%,
+    transparent 25%,
+    transparent 50%,
+    rgba(255, 255, 255, 0.15) 50%,
+    rgba(255, 255, 255, 0.15) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-size: 1rem 1rem;
+  animation: progress-bar-stripes 1s linear infinite;
+}
+
+@keyframes progress-bar-stripes {
+  from {
+    background-position: 1rem 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+
+.upload-progress-details {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+}
+
 .upload-progress-text {
   font-size: 12px;
   color: #6c757d;
-  margin-left: 5px;
+  margin-right: 10px;
 }
 
 .upload-progress-actions {
@@ -108,10 +226,15 @@
   cursor: pointer;
   font-size: 16px;
   padding: 5px;
+  transition: color 0.2s;
 }
 
 .upload-action-button:hover {
   color: #dc3545;
+}
+
+.upload-action-button:focus {
+  outline: none;
 }
 
 .success-icon {
@@ -122,22 +245,90 @@
   color: #dc3545;
 }
 
+.sync-icon {
+  color: #fd7e14;
+}
+
 .upload-error-message {
   color: #dc3545;
   font-size: 12px;
-  margin-top: 5px;
+  margin-top: 3px;
+  display: flex;
+  align-items: center;
 }
 
-/* Адаптивные стили для мобильных устройств */
+.upload-error-message .error-icon {
+  margin-right: 5px;
+}
+
+/* Адаптивные стили для разных устройств */
+@media (max-width: 768px) {
+  .global-upload-progress {
+    padding: 12px;
+  }
+  
+  .global-progress-title {
+    font-size: 14px;
+  }
+  
+  .upload-progress-item {
+    padding: 10px;
+  }
+}
+
 @media (max-width: 576px) {
+  .file-uploader-dropzone h3 {
+    font-size: 16px;
+  }
+  
   .upload-progress-item {
     flex-direction: column;
     align-items: flex-start;
+  }
+  
+  .upload-progress-file-icon {
+    margin-bottom: 5px;
   }
 
   .upload-progress-actions {
     margin-left: 0;
     margin-top: 10px;
     align-self: flex-end;
+    position: absolute;
+    top: 10px;
+    right: 10px;
+  }
+  
+  .global-progress-title {
+    font-size: 13px;
+  }
+  
+  .global-progress-bar-container {
+    height: 8px;
+  }
+}
+
+/* Стили для маленьких экранов */
+@media (max-width: 420px) {
+  .file-uploader-dropzone {
+    padding: 15px 10px;
+  }
+  
+  .file-uploader-dropzone h3 {
+    font-size: 14px;
+    margin: 5px 0;
+  }
+  
+  .file-uploader-dropzone p {
+    font-size: 12px;
+  }
+  
+  .global-progress-title {
+    font-size: 12px;
+  }
+  
+  .upload-filename {
+    font-size: 13px;
+    max-width: 80%;
   }
 } 
