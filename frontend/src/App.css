@@ -150,11 +150,19 @@ body {
   white-space: nowrap;
 }
 
+.files-actions-container {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 15px;
+}
+
 .file-actions {
   display: flex;
-  gap: 8px;
-  min-width: 80px;
-  justify-content: flex-end;
+  gap: 10px;
+  margin-bottom: 0;
 }
 
 .action-button {
@@ -169,6 +177,7 @@ body {
   cursor: pointer;
   font-size: 14px;
   transition: background-color 0.2s;
+  white-space: nowrap;
 }
 
 .action-button:hover {
@@ -177,15 +186,6 @@ body {
 
 .action-button svg {
   font-size: 16px;
-}
-
-.files-actions-container {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-  flex-wrap: wrap;
-  gap: 10px;
 }
 
 .upload-section, .create-folder-section {
@@ -273,35 +273,57 @@ input[type="text"] {
   text-decoration: underline;
 }
 
-.file-actions-buttons {
+.file-actions button {
+  background: transparent;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.file-actions button:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.file-actions .download-btn {
+  color: #2196f3;
+}
+
+.file-actions .delete-btn {
+  color: #f44336;
+}
+
+/* Стили для кнопок в компоненте файла */
+.file-item .file-actions {
   display: flex;
   gap: 8px;
+  min-width: 80px;
+  justify-content: flex-end;
+  margin-bottom: 0;
 }
 
-.download-button {
-  background-color: #28a745;
-  color: white;
+.file-item .file-actions button {
+  background: transparent;
   border: none;
-  border-radius: 4px;
-  padding: 5px 10px;
+  font-size: 20px;
   cursor: pointer;
-}
-
-.download-button:hover {
-  background-color: #218838;
-}
-
-.delete-button {
-  background-color: #dc3545;
-  color: white;
-  border: none;
+  padding: 6px;
   border-radius: 4px;
-  padding: 5px 10px;
-  cursor: pointer;
+  transition: background-color 0.2s;
 }
 
-.delete-button:hover {
-  background-color: #c82333;
+.file-item .file-actions button:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.file-item .file-actions .download-btn {
+  color: #2196f3;
+}
+
+.file-item .file-actions .delete-btn {
+  color: #f44336;
 }
 
 @media (max-width: 768px) {
@@ -309,9 +331,24 @@ input[type="text"] {
     grid-template-columns: 1fr;
   }
   
-  .file-actions {
+  .files-actions-container {
     flex-direction: column;
     align-items: stretch;
+    gap: 15px;
+  }
+  
+  .file-actions {
+    display: flex;
+    flex-direction: row;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  
+  .action-button {
+    flex: 1;
+    min-width: 120px;
+    justify-content: center;
   }
   
   .upload-section, .create-folder-section {
@@ -343,6 +380,28 @@ input[type="text"] {
 }
 
 @media (max-width: 576px) {
+  .files-actions-container {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .file-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 10px;
+    width: 100%;
+    justify-content: center;
+  }
+  
+  .action-button {
+    flex: 1 1 auto;
+    min-width: 45%;
+    padding: 10px 5px;
+    white-space: nowrap;
+    text-align: center;
+    justify-content: center;
+  }
+  
   .file-item {
     display: flex;
     align-items: center;
@@ -363,15 +422,19 @@ input[type="text"] {
     font-size: 11px;
   }
   
-  .file-actions {
+  .file-item .file-actions {
     min-width: 70px;
     display: flex;
+    flex-direction: row;
     justify-content: flex-end;
+    width: auto;
   }
   
-  .file-actions button {
+  .file-item .file-actions button {
     padding: 6px;
     font-size: 16px;
+    flex: none;
+    min-width: auto;
   }
 }
 
@@ -636,26 +699,4 @@ input[type="text"] {
   font-size: 12px;
   color: #757575;
   margin-top: 4px;
-}
-
-.file-actions button {
-  background: transparent;
-  border: none;
-  font-size: 20px;
-  cursor: pointer;
-  padding: 6px;
-  border-radius: 4px;
-  transition: background-color 0.2s;
-}
-
-.file-actions button:hover {
-  background-color: rgba(0, 0, 0, 0.05);
-}
-
-.file-actions .download-btn {
-  color: #2196f3;
-}
-
-.file-actions .delete-btn {
-  color: #f44336;
 }
