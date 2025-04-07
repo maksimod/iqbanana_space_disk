@@ -1,67 +1,66 @@
-const mongoose = require('mongoose');
 const DiskSchema = require('./disk');
 
-// Условная регистрация моделей для предотвращения таймаута MongoDB
-let Disk;
-
-try {
-  // Проверяем, подключена ли MongoDB
-  if (mongoose.connection.readyState === 1) {
-    // MongoDB подключена, регистрируем настоящую модель
-    Disk = mongoose.model('Disk', DiskSchema);
-  } else {
-    // MongoDB не подключена, создаем фейковую модель
-    console.log('MongoDB не подключена, использование фейковой модели Disk');
-    
-    // Фейковая модель с расширенным функционалом
-    Disk = {
-      find: async () => [],
-      findOne: async () => null,
-      findById: async () => null,
-      
-      // Добавляем метод create для совместимости с контроллером бэкапа
-      create: async (diskData) => {
-        console.log('Создание фейкового диска:', diskData);
-        return {
-          ...diskData,
-          save: async () => diskData
-        };
-      },
-      
-      // Другие методы, которые могут понадобиться
-      updateOne: async () => ({}),
-      deleteOne: async () => ({}),
-      
-      // Метод для обновления/сохранения
-      save: async function() {
-        console.log('Сохранение фейкового диска:', this);
-        return this;
-      }
+// Создаем базовую модель для работы с дисками
+const Disk = {
+  find: async () => {
+    return Object.entries(require('../config/config').disks).map(([name, path]) => ({
+      _id: name,
+      name,
+      path,
+      mountPoint: path,
+      status: global.mountedDisks && global.mountedDisks[name] ? 'online' : 'offline',
+      total: 0,
+      free: 0,
+      used: 0,
+      userFilesSize: 0
+    }));
+  },
+  findOne: async ({ name }) => {
+    const path = require('../config/config').disks[name];
+    if (!path) return null;
+    return {
+      _id: name,
+      name,
+      path,
+      mountPoint: path,
+      status: global.mountedDisks && global.mountedDisks[name] ? 'online' : 'offline',
+      total: 0,
+      free: 0,
+      used: 0,
+      userFilesSize: 0
     };
-  }
-} catch (error) {
-  console.error('Ошибка при регистрации модели Disk:', error);
-  
-  // В случае ошибки тоже используем фейковую модель с расширенным функционалом
-  Disk = {
-    find: async () => [],
-    findOne: async () => null,
-    findById: async () => null,
-    
-    // Добавляем метод create для совместимости
-    create: async (diskData) => {
-      console.log('Создание фейкового диска (после ошибки):', diskData);
+  },
+  findById: async (id) => {
+    if (require('../config/config').disks[id]) {
+      const path = require('../config/config').disks[id];
       return {
-        ...diskData,
-        save: async () => diskData
+        _id: id,
+        name: id,
+        path,
+        mountPoint: path,
+        status: global.mountedDisks && global.mountedDisks[id] ? 'online' : 'offline',
+        total: 0,
+        free: 0,
+        used: 0,
+        userFilesSize: 0
       };
-    },
-    
-    // Другие методы
-    updateOne: async () => ({}),
-    deleteOne: async () => ({})
-  };
-}
+    }
+    return null;
+  },
+  create: async (diskData) => {
+    const newDisk = {
+      _id: diskData.name,
+      ...diskData,
+      status: diskData.status || 'online',
+      total: diskData.total || 0,
+      free: diskData.free || 0,
+      used: diskData.used || 0,
+      userFilesSize: diskData.userFilesSize || 0
+    };
+    return newDisk;
+  },
+  updateOne: async () => ({})
+};
 
 module.exports = {
   Disk

@@ -18,16 +18,8 @@ const cors = require('cors');
 const morgan = require('morgan');
 const multer = require('multer');
 const tempStorage = require('./utils/tempStorage');
-const mongoose = require('mongoose');
 // Load dotenv for API key environment variables
 const dotenv = require('dotenv');
-// Добавляем возможность использования MongoDB Memory Server
-let mongoMemory;
-try {
-  mongoMemory = require('./mongodb-memory');
-} catch (err) {
-  logger.info('MongoDB Memory Server не установлен, используем стандартное подключение');
-}
 
 // Load environment variables
 dotenv.config();
@@ -41,7 +33,7 @@ const API_VERSION = config.apiVersion;
 
 // Создание фейковой модели Disk
 const createFakeModels = () => {
-  logger.warn('Создание фейковой модели Disk для работы без MongoDB');
+  logger.info('Создание модели Disk для работы с конфигурацией');
   
   const fakeDiskModel = {
     fakeModel: true,
@@ -113,7 +105,7 @@ const createFakeModels = () => {
     updateOne: async () => ({}),
     // Добавляем статический метод create как функцию верхнего уровня объекта
     create: async (diskData) => {
-      logger.info(`[FAKE MODEL] Создание новой записи диска: ${JSON.stringify(diskData)}`);
+      logger.info(`[MODEL] Создание новой записи диска: ${JSON.stringify(diskData)}`);
       
       // Создаем объект диска с данными из запроса
       const newDisk = {
@@ -128,7 +120,7 @@ const createFakeModels = () => {
         
         // Добавляем метод save для обратной совместимости
         save: async () => {
-          logger.info(`[FAKE MODEL] Сохранение диска с ID: ${diskData.name}`);
+          logger.info(`[MODEL] Сохранение диска с ID: ${diskData.name}`);
           return newDisk;
         }
       };
@@ -136,7 +128,7 @@ const createFakeModels = () => {
       // Регистрируем диск в глобальном объекте дисков, если его там нет
       if (config.disks && !config.disks[diskData.name]) {
         config.disks[diskData.name] = diskData.path || diskData.mountPoint;
-        logger.info(`[FAKE MODEL] Диск ${diskData.name} добавлен в конфигурацию`);
+        logger.info(`[MODEL] Диск ${diskData.name} добавлен в конфигурацию`);
       }
       
       return newDisk;
@@ -147,37 +139,19 @@ const createFakeModels = () => {
   try {
     const models = require('./models');
     models.Disk = fakeDiskModel;
-    logger.info('Фейковая модель Disk настроена');
+    logger.info('Модель Disk настроена');
   } catch (error) {
-    logger.error('Ошибка при настройке фейковой модели:', error);
+    logger.error('Ошибка при настройке модели:', error);
   }
   
   return fakeDiskModel;
 };
 
-// Проверка доступности MongoDB и создание фейковой модели
+// Инициализация модели
 (async () => {
   try {
-    logger.info('Настройка фейковой модели Disk вместо MongoDB...');
-    // Сразу создаем фейковую модель, не дожидаясь попытки подключения к MongoDB
-    const fakeDiskModel = createFakeModels();
-    
-    // Теперь настраиваем прослушиватели событий для MongoDB, но не блокируем работу
-    const mongoose = require('mongoose');
-    
-    // Устанавливаем таймаут в 5 секунд вместо 10 для более быстрого ответа
-    mongoose.set('bufferTimeoutMS', 5000);
-    
-    // Прослушиваем события подключения и ошибок MongoDB, но не блокируем работу
-    mongoose.connection.on('connected', () => {
-      logger.info('MongoDB подключена');
-    });
-    
-    mongoose.connection.on('error', (err) => {
-      logger.warn(`Ошибка подключения к MongoDB: ${err.message}`);
-    });
-    
-    // Не ждем подключения к MongoDB для продолжения запуска сервера
+    logger.info('Настройка модели Disk...');
+    const diskModel = createFakeModels();
   } catch (error) {
     logger.error('Ошибка при настройке моделей:', error);
   }

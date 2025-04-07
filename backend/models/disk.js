@@ -1,36 +1,13 @@
-const mongoose = require('mongoose');
-
-const DiskSchema = new mongoose.Schema({
+// Базовая структура данных для диска
+const DiskSchema = {
   // Основная информация о диске
-  name: {
-    type: String,
-    required: true,
-    unique: true
-  },
-  path: {
-    type: String,
-    required: true
-  },
-  mountPoint: {
-    type: String,
-    required: true
-  },
-  total: {
-    type: Number,
-    default: 0
-  },
-  used: {
-    type: Number,
-    default: 0
-  },
-  free: {
-    type: Number,
-    default: 0
-  },
-  userFilesSize: {
-    type: Number,
-    default: 0
-  },
+  name: String,
+  path: String,
+  mountPoint: String,
+  total: Number,
+  used: Number,
+  free: Number,
+  userFilesSize: Number,
   
   // Информация о статусе
   status: {
@@ -38,10 +15,7 @@ const DiskSchema = new mongoose.Schema({
     enum: ['online', 'offline', 'error'],
     default: 'offline'
   },
-  error: {
-    type: String,
-    default: null
-  },
+  error: String,
   
   // Информация о бэкапе
   backupStatus: {
@@ -49,26 +23,12 @@ const DiskSchema = new mongoose.Schema({
     enum: ['PROCESSING', 'SUCCESS', 'ERROR', null],
     default: null
   },
-  backupMessage: {
-    type: String,
-    default: ''
-  },
-  backupUpdatedAt: {
-    type: Date,
-    default: null
-  },
+  backupMessage: String,
+  backupUpdatedAt: Date,
   
   // Временные метки
-  createdAt: {
-    type: Date,
-    default: Date.now
-  },
-  updatedAt: {
-    type: Date,
-    default: Date.now
-  }
-}, {
-  timestamps: true // Автоматически обновляет createdAt и updatedAt
-});
+  createdAt: Date,
+  updatedAt: Date
+};
 
 module.exports = DiskSchema; 
