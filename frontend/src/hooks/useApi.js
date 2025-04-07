@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { useToast } from '../context/ToastContext';
 import syncService from '../services/syncService';
 import { useAuth } from '../context/AuthContext';
@@ -16,6 +16,8 @@ const useApi = () => {
   const [error, setError] = useState('');
   const toast = useToast();
   const { getAuthHeaders } = useAuth();
+  // Отслеживаем активные запросы для предотвращения дублирования
+  const activeRequests = useRef(new Map());
 
   // Формирование базового URL с версией API
   const getApiUrl = useCallback((endpoint) => {
@@ -23,55 +25,141 @@ const useApi = () => {
   }, []);
 
   /**
-   * Общая функция для выполнения запросов с таймаутом
+   * Общая функция для выполнения запросов с таймаутом и повторными попытками
    */
-  const fetchData = useCallback(async (endpoint, options = {}, timeoutMs = 15000) => {
-    setLoading(true);
-    setError('');
+  const fetchData = useCallback(async (endpoint, options = {}, timeoutMs = 15000, maxRetries = 2) => {
+    // Создаем уникальный ключ для запроса
+    const requestKey = `${options.method || 'GET'}-${endpoint}-${JSON.stringify(options.body || {})}`;
     
-    // Создаем контроллер для возможности отмены запроса
-    const controller = new AbortController();
-    const { signal } = controller;
+    // Проверяем, не выполняется ли уже такой же запрос
+    if (activeRequests.current.has(requestKey)) {
+      console.log(`Запрос к ${endpoint} уже выполняется, ожидаем его завершения`);
+      try {
+        // Ожидаем завершения активного запроса
+        return await activeRequests.current.get(requestKey);
+      } catch (err) {
+        console.error(`Ошибка при ожидании текущего запроса к ${endpoint}:`, err);
+        return null;
+      }
+    }
     
-    // Устанавливаем таймаут
-    const timeoutId = setTimeout(() => {
-      controller.abort();
-      console.warn(`Запрос к ${endpoint} отменён по таймауту (${timeoutMs}ms)`);
-    }, timeoutMs);
+    // Функция для выполнения запроса с возможностью повторных попыток
+    const executeRequest = async (retryCount = 0) => {
+      setLoading(true);
+      
+      if (retryCount > 0) {
+        console.log(`Повторная попытка запроса к ${endpoint} (${retryCount}/${maxRetries})`);
+        // Добавляем задержку перед повторной попыткой
+        await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+      }
+      
+      // Создаем контроллер для возможности отмены запроса
+      const controller = new AbortController();
+      const { signal } = controller;
+      
+      // Устанавливаем таймаут, увеличивая его для повторных попыток
+      const currentTimeoutMs = timeoutMs + (retryCount * 5000);
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+        console.warn(`Запрос к ${endpoint} отменён по таймауту (${currentTimeoutMs}ms)`);
+      }, currentTimeoutMs);
+      
+      try {
+        const response = await fetch(getApiUrl(endpoint), {
+          headers: {
+            ...getAuthHeaders()
+          },
+          signal,
+          ...options
+        });
+        
+        // Очищаем таймаут после получения ответа
+        clearTimeout(timeoutId);
+        
+        // Проверяем на 502 Bad Gateway и другие ошибки инфраструктуры
+        if (response.status === 502 || response.status === 503 || response.status === 504) {
+          // Делаем повторную попытку для этих специфических ошибок
+          if (retryCount < maxRetries) {
+            console.warn(`Ошибка ${response.status} при запросе к ${endpoint}, пробуем снова`);
+            return await executeRequest(retryCount + 1);
+          }
+          throw new Error(`Ошибка сервера: ${response.status}`);
+        }
+        
+        // Если получили 404, это может быть нормально для некоторых эндпоинтов проверки доступности
+        if (response.status === 404) {
+          // Для эндпоинтов, которые являются проверкой доступности, можно вернуть пустой объект
+          if (endpoint === '' || endpoint === '/') {
+            console.log(`Эндпоинт ${endpoint} вернул 404, но сервер доступен`);
+            return {};
+          }
+        }
+        
+        if (!response.ok) {
+          let errorData = {};
+          try {
+            errorData = await response.json();
+          } catch (e) {
+            console.warn('Невозможно разобрать ответ как JSON:', e);
+          }
+          throw new Error(errorData.error || `Ошибка HTTP: ${response.status}`);
+        }
+        
+        // Проверяем, что ответ не пустой
+        const text = await response.text();
+        if (!text) {
+          console.warn(`Пустой ответ от сервера для ${endpoint}`);
+          return {}; // Возвращаем пустой объект вместо null
+        }
+        
+        try {
+          const data = JSON.parse(text);
+          return data;
+        } catch (e) {
+          console.error(`Ошибка при разборе JSON для ${endpoint}:`, e);
+          throw new Error('Некорректный формат данных от сервера');
+        }
+      } catch (err) {
+        // Очищаем таймаут в случае ошибки
+        clearTimeout(timeoutId);
+        
+        // Повторяем запрос при определенных условиях
+        if (retryCount < maxRetries && 
+            (err.name === 'AbortError' || 
+             err.message.includes('502') || 
+             err.message.includes('503') || 
+             err.message.includes('504') ||
+             err.message.includes('network'))) {
+          console.warn(`Ошибка при запросе к ${endpoint}, выполняем повторную попытку:`, err);
+          return await executeRequest(retryCount + 1);
+        }
+        
+        if (err.name === 'AbortError') {
+          console.error(`Таймаут запроса к API (${endpoint})`);
+          setError(`Превышено время ожидания ответа от сервера`);
+        } else {
+          console.error(`Ошибка API (${endpoint}):`, err);
+          setError(err.message || 'Произошла ошибка при выполнении запроса');
+        }
+        throw err;
+      }
+    };
+    
+    // Создаем промис для текущего запроса
+    const requestPromise = executeRequest().finally(() => {
+      // Удаляем запрос из активных при завершении
+      activeRequests.current.delete(requestKey);
+      setLoading(false);
+    });
+    
+    // Сохраняем промис в Map активных запросов
+    activeRequests.current.set(requestKey, requestPromise);
     
     try {
-      const response = await fetch(getApiUrl(endpoint), {
-        headers: {
-          ...getAuthHeaders()
-        },
-        signal,
-        ...options
-      });
-      
-      // Очищаем таймаут после получения ответа
-      clearTimeout(timeoutId);
-      
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `Ошибка HTTP: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      return data;
+      return await requestPromise;
     } catch (err) {
-      // Очищаем таймаут в случае ошибки
-      clearTimeout(timeoutId);
-      
-      if (err.name === 'AbortError') {
-        console.error(`Таймаут запроса к API (${endpoint})`);
-        setError(`Превышено время ожидания ответа от сервера`);
-      } else {
-        console.error(`Ошибка API (${endpoint}):`, err);
-        setError(err.message || 'Произошла ошибка при выполнении запроса');
-      }
+      console.error(`Ошибка запроса к ${endpoint}:`, err);
       return null;
-    } finally {
-      setLoading(false);
     }
   }, [getApiUrl, getAuthHeaders]);
 
@@ -916,6 +1004,7 @@ const useApi = () => {
   return {
     loading,
     error,
+    setError,
     fetchData,
     fetchDisks,
     fetchFiles,
