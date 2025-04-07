@@ -152,8 +152,9 @@ body {
 
 .file-actions {
   display: flex;
-  gap: 10px;
-  margin-bottom: 20px;
+  gap: 8px;
+  min-width: 80px;
+  justify-content: flex-end;
 }
 
 .action-button {
@@ -324,6 +325,53 @@ input[type="text"] {
   
   .files-table th, .files-table td {
     padding: 8px 10px;
+  }
+  
+  .file-item {
+    padding: 12px 8px;
+  }
+  
+  .file-icon-container {
+    width: 32px;
+    min-width: 32px;
+    margin-right: 8px;
+  }
+  
+  .file-icon {
+    font-size: 20px;
+  }
+}
+
+@media (max-width: 576px) {
+  .file-item {
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    position: relative;
+  }
+  
+  .file-details {
+    min-width: 0;
+    padding-right: 5px;
+  }
+  
+  .file-name {
+    font-size: 14px;
+  }
+  
+  .file-info {
+    font-size: 11px;
+  }
+  
+  .file-actions {
+    min-width: 70px;
+    display: flex;
+    justify-content: flex-end;
+  }
+  
+  .file-actions button {
+    padding: 6px;
+    font-size: 16px;
   }
 }
 
@@ -570,6 +618,8 @@ input[type="text"] {
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  padding-right: 10px;
 }
 
 .file-name {
@@ -577,7 +627,7 @@ input[type="text"] {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 300px;
+  width: 100%;
 }
 
 .file-info {
@@ -586,4 +636,26 @@ input[type="text"] {
   font-size: 12px;
   color: #757575;
   margin-top: 4px;
+}
+
+.file-actions button {
+  background: transparent;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.file-actions button:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.file-actions .download-btn {
+  color: #2196f3;
+}
+
+.file-actions .delete-btn {
+  color: #f44336;
 }

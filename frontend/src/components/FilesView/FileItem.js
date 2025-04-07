@@ -61,8 +61,20 @@ const FileItem = ({ file, onFileClick, onDelete, onDownload }) => {
         </div>
       </div>
       <div className="file-actions">
-        <button onClick={(e) => { e.stopPropagation(); onDownload(); }}>⬇️</button>
-        <button onClick={(e) => { e.stopPropagation(); onDelete(); }}>🗑️</button>
+        <button 
+          className="action-button download-btn"
+          onClick={(e) => { e.stopPropagation(); onDownload(); }}
+          aria-label="Скачать"
+        >
+          ⬇️
+        </button>
+        <button 
+          className="action-button delete-btn"
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          aria-label="Удалить"
+        >
+          🗑️
+        </button>
       </div>
     </div>
   );
