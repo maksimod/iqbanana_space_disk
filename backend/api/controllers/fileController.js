@@ -52,6 +52,11 @@ const uploadFile = async (req, res) => {
     // Normalize the target file path
     filePath = filePath || '';
     
+    // If no file path is specified, use the original file name from the upload
+    if (!filePath) {
+      filePath = req.file.originalname;
+    }
+    
     // Remove any starting slashes
     filePath = filePath.replace(/^\/*/, '');
     
