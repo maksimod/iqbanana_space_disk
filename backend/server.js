@@ -316,24 +316,20 @@ function startDiskMonitoring() {
         app.use(`/api/${API_VERSION}/system`, authMiddleware.authenticate, systemRoutes);
         app.use('/api/system', authMiddleware.authenticate, systemRoutes); // Обратная совместимость
         
-        // API для работы с дисками (защищенные только API ключом)
-        app.use(`/api/${API_VERSION}/disks`, apiKeyAuth, diskRoutes);
-        app.use(`/api/${API_VERSION}/disks`, apiKeyAuth, fileRoutes);
+        // API для работы с дисками (защищенные маршруты)
+        app.use(`/api/${API_VERSION}/disks`, authMiddleware.authenticate, diskRoutes);
+        app.use(`/api/${API_VERSION}/disks`, authMiddleware.authenticate, fileRoutes);
         
         // Обратная совместимость с предыдущей версией API
-        app.use('/api/disks', apiKeyAuth, diskRoutes);
-        app.use('/api/disks', apiKeyAuth, fileRoutes);
+        app.use('/api/disks', authMiddleware.authenticate, diskRoutes);
+        app.use('/api/disks', authMiddleware.authenticate, fileRoutes);
         
         // Регистрация маршрутов для удаленного API доступа
         // Это API не требует аутентификации через authMiddleware, вместо этого
         // используется API ключ для доступа из любой точки мира
         const remoteApiRoutes = require('./api/routes/index');
         app.use('/api/remote', remoteApiRoutes);
-        
-        // Добавляем маршрут для прямого доступа к files API через основной API
-        const apiFileRoutes = require('./api/routes/fileRoutes');
-        app.use(`/api/${API_VERSION}/files`, apiKeyAuth, apiFileRoutes);
-        app.use('/api/files', apiKeyAuth, apiFileRoutes);
+        logger.info(`Удаленный API зарегистрирован по адресу /api/remote`);
         
         // Обработка ошибок
         app.use(errorHandler);
