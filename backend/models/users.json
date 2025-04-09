@@ -12,7 +12,7 @@
       "id": 1,
       "username": "admin",
       "password": "c287dfd2f748ef17679bbbb9c5c2cef51db544d19779523b6fcef1616a1f1bc8",
-      "token": "c093fdada13a7a544d3f39bd13ae6bdad7c99e92de7cc4ef75c8418925d6c471",
+      "token": "24fa87637762b2f7020c864684e4dd86e10ffaf98dd02199ca788cf49f1fa007",
       "created": "2025-04-07T20:18:31.602Z"
     },
     {
@@ -21,6 +21,27 @@
       "password": "b68eed5f8f4eccf8c6fefffd536ffe67ddaf26b5cd8ae7cad745e9cf1eef5a37",
       "token": null,
       "created": "2025-04-07T20:19:55.685Z"
+    },
+    {
+      "id": 3,
+      "username": "Перевощиков Григорий",
+      "password": "0b9bcc2f47e98c8b3556183799ce8cc73bc50df540154647545696a71389a738",
+      "token": "ebd8107f9a6d9348873c9fcb0b06899525aa05b06548ea999ef6dd0dd3b8fb2f",
+      "created": "2025-04-09T15:42:39.125Z"
+    },
+    {
+      "id": 4,
+      "username": "Бабий Кирилл",
+      "password": "9809c56238f603cfe15876f64edad0a05b5384d6db4c4415c64e3183c522db00",
+      "token": "84a90ce51363ea23912ccc828c5ffb7ad4bbdfd6c3ae22a638df5490753b7d8a",
+      "created": "2025-04-09T15:56:57.612Z"
+    },
+    {
+      "id": 5,
+      "username": "Кобзев Андрей",
+      "password": "80e947139887391ed4694b0ee5a65097fac4c6612c629ef1e20d28e9ce12c304",
+      "token": "e37c50d76d2ab3cf6fe8bc306031f7c8ac652570315cf19edd676fe0fbef65a2",
+      "created": "2025-04-09T17:14:52.930Z"
     }
   ]
 }

@@ -11,6 +11,7 @@ debian/mini.iso
 .env.test.local
 .env.production.local
 *.bak*
+*.mp4
 
 secrets.yml
 
