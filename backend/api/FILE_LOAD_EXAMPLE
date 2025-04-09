@@ -1,3 +1,9 @@
+#Для загрузки файла на сервер
 curl -X POST "http://46.35.241.37:6005/api/remote/files/C/upload" \
   -H "X-API-Key: iq-banana-secure-api-key-2024" \
   -F "file=@test.txt"
+
+#Для скачивания файла с сервера
+curl -X GET "http://46.35.241.37:6005/api/remote/files/C/download?filePath=путь/к/файлу.txt" \
+  -H "X-API-Key: iq-banana-secure-api-key-2024" \
+  --output downloaded_file.txt
