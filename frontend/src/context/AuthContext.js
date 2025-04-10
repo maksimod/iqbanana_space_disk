@@ -56,7 +56,7 @@ export const AuthProvider = ({ children }) => {
     // Вспомогательная функция для паузы
     const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
     
-    const checkAuth = async (retryCount = 0, maxRetries = 3) => {
+    const checkAuth = async (retryCount = 0, maxRetries = 1) => {
       // Если инициализация уже завершена, пропускаем повторную проверку
       if (initialized) {
         logDebug('Аутентификация уже инициализирована, пропускаем проверку');
@@ -130,8 +130,18 @@ export const AuthProvider = ({ children }) => {
             setError(null);
             setLoading(false);
             setInitialized(true);
+          } else if (response.status === 401 || response.status === 403 || (data && !data.success)) {
+            // Токен недействителен - сразу перенаправляем на логин без повторных попыток
+            logDebug('Authentication failed - invalid token:', data.message || 'Unknown error');
+            localStorage.removeItem('token');
+            setUser(null);
+            setError(data.message || 'Требуется повторная авторизация');
+            setLoading(false);
+            setInitialized(true);
+            isAuthenticating.current = false;
+            return;
           } else if (retryCount < maxRetries) {
-            // Попробуем повторить через увеличенную паузу
+            // Попробуем повторить через увеличенную паузу только при ошибках сервера, не связанных с авторизацией
             logDebug(`Auth check retry ${retryCount + 1}/${maxRetries}`);
             isAuthenticating.current = false;
             // Увеличиваем интервал с каждой попыткой
@@ -158,6 +168,30 @@ export const AuthProvider = ({ children }) => {
           }
         }
       } catch (err) {
+        if (err.name === 'AbortError') {
+          // Превышен таймаут запроса
+          logDebug('Auth check timed out');
+          
+          if (getStoredToken() && retryCount === 0) {
+            // При первом таймауте сразу очищаем токен и переадресуем на логин
+            logDebug('Auth check timed out on first attempt, redirecting to login');
+            localStorage.removeItem('token');
+            setUser(null);
+            setError('Время ожидания истекло, требуется повторная авторизация');
+            setLoading(false);
+            setInitialized(true);
+            isAuthenticating.current = false;
+            return;
+          } else if (retryCount < maxRetries) {
+            // Попробуем повторить через увеличенную паузу при ошибке соединения
+            logDebug(`Auth check retry ${retryCount + 1}/${maxRetries} after timeout`);
+            isAuthenticating.current = false;
+            // Увеличиваем интервал с каждой попыткой
+            setTimeout(() => checkAuth(retryCount + 1, maxRetries), 1500 * (retryCount + 1));
+            return;
+          }
+        }
+        
         if (retryCount < maxRetries) {
           // Попробуем повторить через увеличенную паузу при ошибке соединения
           logDebug(`Auth check retry ${retryCount + 1}/${maxRetries} after error: ${err.message}`);
@@ -200,13 +234,13 @@ export const AuthProvider = ({ children }) => {
 
     checkAuth();
     
-    // Проверяем авторизацию каждые 10 минут
+    // Проверяем авторизацию каждые 5 минут
     const authCheckInterval = setInterval(() => {
       // Только если уже успешно авторизованы
       if (initialized && user && !isAuthenticating.current) {
         checkAuth();
       }
-    }, 10 * 60 * 1000);
+    }, 5 * 60 * 1000);
     
     return () => {
       clearInterval(authCheckInterval);
