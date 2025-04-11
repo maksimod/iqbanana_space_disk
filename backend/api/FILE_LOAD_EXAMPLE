@@ -1,9 +1,33 @@
 #Для загрузки файла на сервер
-curl -X POST "http://46.35.241.37:6005/api/remote/files/C/upload" \
+curl -X POST "http://46.35.241.37:6005/api/remote/files/Videos/upload" \
   -H "X-API-Key: iq-banana-secure-api-key-2024" \
   -F "file=@test.txt"
 
 #Для скачивания файла с сервера
-curl -X GET "http://46.35.241.37:6005/api/remote/files/C/download?filePath=путь/к/файлу.txt" \
+curl -X GET "http://46.35.241.37:6005/api/remote/files/Videos/download?filePath=путь/к/файлу.txt" \
   -H "X-API-Key: iq-banana-secure-api-key-2024" \
   --output downloaded_file.txt
+
+#Для создания новой папки на сервере
+curl -X POST "http://46.35.241.37:6005/api/remote/files/Videos/createFolder" \
+  -H "X-API-Key: iq-banana-secure-api-key-2024" \
+  -H "Content-Type: application/json" \
+  -d '{"folderPath": "путь/к/директории", "folderName": "новая_папка"}'
+
+#Для удаления файла
+curl -X DELETE "http://46.35.241.37:6005/api/remote/files/Videos/delete" \
+  -H "X-API-Key: iq-banana-secure-api-key-2024" \
+  -H "Content-Type: application/json" \
+  -d '{"pattern": "путь/к/файлу.txt", "confirm": true}'
+
+#Для удаления директории
+curl -X DELETE "http://46.35.241.37:6005/api/remote/files/Videos/delete" \
+  -H "X-API-Key: iq-banana-secure-api-key-2024" \
+  -H "Content-Type: application/json" \
+  -d '{"pattern": "путь/к/директории", "confirm": true}'
+
+#Для создания пустого файла
+curl -X POST "http://46.35.241.37:6005/api/remote/files/Videos/createFile" \
+  -H "X-API-Key: iq-banana-secure-api-key-2024" \
+  -H "Content-Type: application/json" \
+  -d '{"filePath": "путь/к/директории", "fileName": "новый_файл.txt"}'

@@ -56,7 +56,7 @@ const config = {
 
   // Соответствие имен дисков и UUID для бэкапов
   backup_disks: {
-  "C": "ae3ff395-3049-4ec8-8524-3ed631eb4a46"
+  "Videos": "ae3ff395-3049-4ec8-8524-3ed631eb4a46",
 }
 };
 
