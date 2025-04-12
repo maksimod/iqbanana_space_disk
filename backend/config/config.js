@@ -7,7 +7,8 @@ const config = {
       'http://46.35.241.37:6001', 
       'http://localhost:6001',
       'https://iqbanana.online',
-      'http://iqbanana.online'
+      'http://iqbanana.online',
+      '*' // Разрешить доступ с любого домена
     ]
   },
 

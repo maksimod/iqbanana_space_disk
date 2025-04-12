@@ -160,24 +160,15 @@ const createFakeModels = () => {
 
 // Настройка CORS более детально
 const corsOptions = {
-  origin: ['http://iqbanana.online:6001', 'http://localhost:6001', 'http://localhost:3000', 'http://127.0.0.1:6001', '*'],
+  origin: '*', // Разрешить доступ с любого домена
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-KEY'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-KEY', 'X-API-Key'],
   credentials: true,
   optionsSuccessStatus: 200
 };
 app.use(cors(corsOptions));
 
-// Опция для общего доступа к API (для тестирования)
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, X-API-KEY, Authorization');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  next();
-});
-
 // Основные middleware
-app.use(corsMiddleware);
 app.use(express.json());
 app.use(logger.requestLogger);
 
