@@ -8,6 +8,12 @@ curl -X GET "http://46.35.241.37:6005/api/remote/files/Videos/download?filePath=
   -H "X-API-Key: iq-banana-secure-api-key-2024" \
   --output downloaded_file.txt
 
+#Для частичной загрузки видео (поддержка стриминга)
+curl -X GET "http://46.35.241.37:6005/api/remote/files/Videos/download?filePath=путь/к/видео.mp4" \
+  -H "X-API-Key: iq-banana-secure-api-key-2024" \
+  -H "Range: bytes=0-1048575" \
+  --output video_chunk.mp4
+
 #Для создания новой папки на сервере
 curl -X POST "http://46.35.241.37:6005/api/remote/files/Videos/createFolder" \
   -H "X-API-Key: iq-banana-secure-api-key-2024" \

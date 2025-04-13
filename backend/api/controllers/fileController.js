@@ -169,27 +169,121 @@ const downloadFile = async (req, res) => {
       });
     }
     
-    // Set response headers for download
-    res.setHeader('Content-Disposition', `attachment; filename="${path.basename(normalizedPath)}"`);
-    res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Length', fileStats.size);
+    const fileSize = fileStats.size;
     
-    // Stream the file to the response
-    const fileStream = fs.createReadStream(fullFilePath);
-    fileStream.pipe(res);
+    // Определяем MIME-тип файла на основе расширения
+    const extname = path.extname(fullFilePath).toLowerCase();
+    let contentType = 'application/octet-stream';
     
-    // Handle errors during streaming
-    fileStream.on('error', (error) => {
-      logger.error(`Error streaming file ${fullFilePath}:`, error);
-      if (!res.headersSent) {
-        res.status(500).json({
+    // Определение MIME-типа для распространенных медиафайлов
+    if (extname === '.mp4') contentType = 'video/mp4';
+    else if (extname === '.webm') contentType = 'video/webm';
+    else if (extname === '.ogg') contentType = 'video/ogg';
+    else if (extname === '.mp3') contentType = 'audio/mpeg';
+    else if (extname === '.wav') contentType = 'audio/wav';
+    else if (extname === '.jpg' || extname === '.jpeg') contentType = 'image/jpeg';
+    else if (extname === '.png') contentType = 'image/png';
+    else if (extname === '.pdf') contentType = 'application/pdf';
+    
+    // Проверяем, запрашивается ли часть файла
+    if (req.headers.range) {
+      // Парсим заголовок Range
+      const range = req.headers.range;
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      
+      // Проверка корректности диапазона
+      if (isNaN(start) || isNaN(end) || start < 0 || end >= fileSize || start > end) {
+        return res.status(416).json({
           success: false,
-          error: `Failed to stream file: ${error.message}`
+          error: 'Requested range not satisfiable'
+        });
+      }
+      
+      const chunkSize = (end - start) + 1;
+      logger.info(`Запрос частичного контента: ${diskId}:${normalizedPath}, диапазон: ${start}-${end}/${fileSize} (${chunkSize} байт)`);
+      
+      // Создаем поток чтения только для запрошенного диапазона
+      const fileStream = fs.createReadStream(fullFilePath, { start, end });
+      
+      // Отправляем заголовки для частичного контента
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunkSize,
+        'Content-Type': contentType,
+        'Content-Disposition': `inline; filename="${path.basename(normalizedPath)}"`
+      });
+      
+      // Передаем данные
+      fileStream.pipe(res);
+      
+      // Обработка ошибок при передаче
+      fileStream.on('error', (error) => {
+        logger.error(`Ошибка при потоковой передаче файла ${fullFilePath}:`, error);
+        if (!res.headersSent) {
+          res.status(500).json({
+            success: false,
+            error: `Failed to stream file: ${error.message}`
+          });
+        } else {
+          res.end();
+        }
+      });
+    } else {
+      // Если Range не указан, отправляем либо метаданные + первую часть, либо весь файл
+      logger.info(`Запрос полного файла: ${diskId}:${normalizedPath} (${fileSize} байт)`);
+      
+      // Set response headers for full file or initial request
+      res.writeHead(200, {
+        'Content-Length': fileSize,
+        'Accept-Ranges': 'bytes',
+        'Content-Type': contentType,
+        'Content-Disposition': `inline; filename="${path.basename(normalizedPath)}"`
+      });
+      
+      // Для больших медиафайлов отправляем только первый мегабайт для инициализации плеера
+      if (contentType.startsWith('video/') && fileSize > 1024 * 1024) {
+        // Отправляем только первый мегабайт
+        const initialChunkSize = 1024 * 1024;
+        const end = Math.min(initialChunkSize - 1, fileSize - 1);
+        
+        logger.info(`Отправка инициализирующего сегмента: ${diskId}:${normalizedPath}, 0-${end}/${fileSize}`);
+        const fileStream = fs.createReadStream(fullFilePath, { start: 0, end });
+        fileStream.pipe(res);
+        
+        // Handle errors during streaming
+        fileStream.on('error', (error) => {
+          logger.error(`Ошибка при потоковой передаче файла ${fullFilePath}:`, error);
+          if (!res.headersSent) {
+            res.status(500).json({
+              success: false,
+              error: `Failed to stream file: ${error.message}`
+            });
+          } else {
+            res.end();
+          }
         });
       } else {
-        res.end();
+        // Для небольших файлов или других типов контента отправляем файл целиком
+        const fileStream = fs.createReadStream(fullFilePath);
+        fileStream.pipe(res);
+        
+        // Handle errors during streaming
+        fileStream.on('error', (error) => {
+          logger.error(`Ошибка при потоковой передаче файла ${fullFilePath}:`, error);
+          if (!res.headersSent) {
+            res.status(500).json({
+              success: false,
+              error: `Failed to stream file: ${error.message}`
+            });
+          } else {
+            res.end();
+          }
+        });
       }
-    });
+    }
   } catch (error) {
     if (error.code === 'ENOENT') {
       return res.status(404).json({
